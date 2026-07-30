@@ -246,6 +246,29 @@ export interface PredictPositionSummary {
   originalCost: DecimalString;
   /** Still-deployed cost. Below `originalCost` after a partial exit. */
   remainingCost: DecimalString;
+  /**
+   * Shares still held.
+   *
+   * Null when the settling chain event carried no share count. Null is NOT zero:
+   * zero would say the position is empty, which would read as a total loss.
+   */
+  shares: DecimalString | null;
+  /** `remainingCost / shares`. Null when shares are unknown or zero. */
+  avgEntryPrice: PriceString | null;
+  /**
+   * The live SELL-side price this valuation used — what the position could be
+   * exited at, not the mid or the ask. Null when there is no fresh quote.
+   */
+  currentPrice: PriceString | null;
+  /**
+   * `shares × currentPrice − remainingCost`. Signed: a losing position is
+   * negative.
+   *
+   * Null — never 0 — when the share count or the sell quote is unknown (spec
+   * §19.2). Zero would tell a strategy the position is exactly break-even, and a
+   * stop-loss reading that would sit on its hands through a crash.
+   */
+  unrealizedPnl: DecimalString | null;
   openedAt: Iso8601;
 }
 
