@@ -506,13 +506,7 @@ export class PredictAgentClient {
     return await this.transport.request<ListMarketsResponseBody>({
       method: 'GET',
       path: PREDICT_AGENT_API_ROUTES.markets,
-      // `tradeable` is stringified explicitly: the transport's query type takes
-      // strings and numbers, and letting a boolean through as `undefined` would
-      // silently drop `tradeable=false` — the filter most likely to be relied on.
-      query: {
-        ...query,
-        ...(query.tradeable !== undefined ? { tradeable: String(query.tradeable) } : {}),
-      },
+      query: toMarketQuery(query),
       token: this.requireToken(),
       idempotent: true,
       ...(signal !== undefined ? { signal } : {}),
@@ -635,4 +629,19 @@ export class PredictAgentClient {
     }
     return this.token;
   }
+}
+
+/**
+ * Serializes the catalog filters for the query string.
+ *
+ * `tradeable` is stringified explicitly rather than spread through: the
+ * transport takes strings and numbers, and a raw boolean would be dropped — the
+ * value that goes missing being `false`, the filter most likely to be relied on.
+ */
+function toMarketQuery(query: ListMarketsQuery): Record<string, string | number | undefined> {
+  const { tradeable, ...rest } = query;
+  return {
+    ...rest,
+    ...(tradeable !== undefined ? { tradeable: String(tradeable) } : {}),
+  };
 }
