@@ -13,6 +13,7 @@ import type { AgentSigner } from '../src/signer.ts';
 
 const signer: AgentSigner = {
   signTransaction: () => Promise.resolve({ signature: 'sig', bytes: 'b' }),
+  signPersonalMessage: () => Promise.resolve({ signature: 'personal', bytes: 'b' }),
   toSuiAddress: () => '0xagent',
 };
 

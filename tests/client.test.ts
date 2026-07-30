@@ -15,6 +15,8 @@ const AGENT = '0xagent';
 const signer: AgentSigner = {
   signTransaction: (bytes) =>
     Promise.resolve({ signature: `sig(${String(bytes.length)})`, bytes: 'b' }),
+  signPersonalMessage: (bytes) =>
+    Promise.resolve({ signature: `personal(${String(bytes.length)})`, bytes: 'b' }),
   toSuiAddress: () => AGENT,
 };
 
@@ -283,6 +285,29 @@ describe('authentication', () => {
       `Sign in to Bucket Agent\nWallet: ${AGENT}\nTimestamp: ${String(body.timestamp)}`,
     );
     expect(body.walletAddress).toBe(AGENT);
+  });
+
+  it('signs the challenge as a PERSONAL MESSAGE, not as a transaction', async () => {
+    // Sui prefixes signed bytes with an intent: a personal message (scope 3) and
+    // a transaction (scope 0) hash differently. The server verifies this with
+    // verifyPersonalMessageSignature, so signing it as a transaction produces a
+    // well-formed signature over the wrong bytes and EVERY login is rejected.
+    // Shipped exactly that way once; caught only by running the SDK against a
+    // real server, because both the signer and fetch are stubbed here.
+    const signTransaction = vi.fn(() => Promise.resolve({ signature: 'tx', bytes: 'b' }));
+    const signPersonalMessage = vi.fn(() => Promise.resolve({ signature: 'personal', bytes: 'b' }));
+    const { fetch, calls } = stubFetch([json(200, { token: 'tok-2', expiresIn: 900 })]);
+    const client = new PredictAgentClient({
+      baseUrl: 'https://api.test',
+      fetch,
+      signer: { signTransaction, signPersonalMessage, toSuiAddress: () => AGENT },
+    });
+
+    await client.authenticate();
+
+    expect(signPersonalMessage).toHaveBeenCalledTimes(1);
+    expect(signTransaction).not.toHaveBeenCalled();
+    expect((calls[0]?.body as { signature: string }).signature).toBe('personal');
   });
 
   it('uses the new token for subsequent calls', async () => {

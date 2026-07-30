@@ -213,6 +213,20 @@ therefore degrades to plain polling instead of hanging a strategy.
   feed behind it is a ~2 s poll that cannot satisfy the target latency, and fixing
   that lives outside this SDK.
 
+## Signer
+
+`AgentSigner` needs **two** signing methods, and they are not interchangeable:
+
+- `signTransaction` — the sponsored order bytes.
+- `signPersonalMessage` — the login challenge.
+
+Sui prefixes signed bytes with an intent, so a personal message (scope 3) and a
+transaction (scope 0) hash differently. The server verifies the challenge with
+`verifyPersonalMessageSignature`; signing it as a transaction produces a
+well-formed signature over the wrong bytes and every login is rejected. A
+`Keypair` implements both, so passing one still just works — a KMS-backed signer
+must route each to the right primitive.
+
 ## Wire contract
 
 `src/contract.ts` is **vendored** from

@@ -25,6 +25,18 @@ export interface AgentSigner {
    * the client decodes the base64 for you.
    */
   signTransaction(bytes: Uint8Array): Promise<SignatureWithBytes>;
+  /**
+   * Sign the login challenge as a PERSONAL MESSAGE.
+   *
+   * Deliberately separate from `signTransaction`, and not interchangeable with
+   * it: Sui prefixes the signed bytes with an intent, and a personal message
+   * (scope 3) and a transaction (scope 0) hash differently. The server verifies
+   * the challenge with `verifyPersonalMessageSignature`, so signing it as a
+   * transaction produces a valid signature over the wrong bytes and every login
+   * is rejected. A `Keypair` implements both, so this costs an implementer
+   * nothing; a KMS-backed signer must route it to its personal-message path.
+   */
+  signPersonalMessage(bytes: Uint8Array): Promise<SignatureWithBytes>;
   /** The address the signature must resolve to — the API checks it server-side. */
   toSuiAddress(): string;
 }

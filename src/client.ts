@@ -207,7 +207,11 @@ export class PredictAgentClient {
     const walletAddress = this.signer.toSuiAddress();
     const timestamp = Date.now();
     const message = buildAuthMessage(walletAddress, timestamp);
-    const { signature } = await this.signer.signTransaction(
+    // signPersonalMessage, NOT signTransaction: the server verifies this with
+    // verifyPersonalMessageSignature, and Sui's intent prefixes differ between
+    // the two. Signing it as a transaction yields a well-formed signature over
+    // the wrong bytes, and authentication fails for every agent.
+    const { signature } = await this.signer.signPersonalMessage(
       new TextEncoder().encode(message),
     );
     const response = await this.transport.request<AgentAuthResponseBody>({
