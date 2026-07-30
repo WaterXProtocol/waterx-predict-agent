@@ -188,11 +188,30 @@ unaffected:
 new PredictAgentClient({ baseUrl, signer, priceWatcher: myStreamWatcher });
 ```
 
+## Execution stream
+
+`waitFor: 'TERMINAL'` polls `getExecution` by default. Supply an `executionStream`
+adapter and a wait reacts to pushed frames instead — one connection instead of a
+request per second per execution:
+
+```ts
+new PredictAgentClient({ baseUrl, signer, executionStream: mySocketAdapter });
+```
+
+The seam exists because this package has no runtime dependencies and the server's
+stream is Socket.IO; the adapter is yours to supply.
+
+**A stream can only ever make a wait faster — it is never the answer.** Frames get
+lost (the server's ready frame says `gap: true` when its replay cursor was too old)
+and a socket can die without saying so, so the terminal state is always confirmed
+with a REST read, and the poll interval stays a floor on liveness. A dead stream
+therefore degrades to plain polling instead of hanging a strategy.
+
 ## Not implemented yet
 
-- **`getMarkets` / `getMarket` / `getFills`** — no backend endpoints yet.
-- **Quote streaming** — see [Price source](#price-source). The **execution**
-  stream (order status) does exist server-side; wiring it into this client is next.
+- **Quote streaming** — see [Price source](#price-source). Blocked upstream: the
+  feed behind it is a ~2 s poll that cannot satisfy the target latency, and fixing
+  that lives outside this SDK.
 
 ## Wire contract
 

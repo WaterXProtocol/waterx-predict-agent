@@ -340,6 +340,7 @@ export type PredictAgentErrorCode =
   | 'CHAIN_REJECTED'
   | 'EXECUTION_TIMEOUT'
   | 'RECONCILIATION_REQUIRED'
+  | 'UNAUTHENTICATED'
   | 'INVALID_REQUEST';
 
 /**
@@ -369,6 +370,168 @@ export const RETRYABLE_PREDICT_AGENT_ERROR_CODES = [
   'EXECUTION_TIMEOUT',
 ] as const satisfies readonly PredictAgentErrorCode[];
 
+/* ── Private execution stream ────────────────────────────────────────────── */
+
+/**
+ * Socket.IO namespace for the authenticated agent stream. SEPARATE from the
+ * browser-facing gateway on purpose: this one authenticates at handshake and an
+ * agent is joined to its own room automatically, so there is no subscribe message
+ * to forge and no room name to guess.
+ */
+export const PREDICT_AGENT_STREAM_NAMESPACE = '/agent-api/v1/predict';
+
+/** Event name carrying execution state changes. */
+export const PREDICT_EXECUTION_STREAM = 'predict.executions.v1';
+
+/**
+ * One execution state change.
+ *
+ * `cursor` is monotonically increasing PER AGENT. Persist the last one you
+ * processed and send it as `handshake.auth.cursor` on reconnect to receive
+ * everything missed — the socket is a convenience, the server's log is the source
+ * of truth, and a REST read of the execution is always authoritative.
+ */
+export interface PredictExecutionFrame {
+  stream: typeof PREDICT_EXECUTION_STREAM;
+  /** Opaque, ordered, per-agent. Compare only for equality and ordering. */
+  cursor: string;
+  executionId: string;
+  status: PredictExecutionStatus;
+  errorCode?: PredictAgentErrorCode;
+  occurredAt: Iso8601;
+}
+
+/**
+ * Sent once after a successful handshake, before any live frame.
+ *
+ * `replayed` is how many missed frames were delivered from the durable log.
+ * `gap: true` means the requested cursor was too old to serve — the client MUST
+ * reconcile over REST rather than assume it is caught up.
+ */
+export interface PredictStreamReadyFrame {
+  stream: typeof PREDICT_EXECUTION_STREAM;
+  agentWallet: string;
+  cursor: string;
+  replayed: number;
+  gap: boolean;
+}
+
+export const PREDICT_STREAM_READY = 'predict.stream.ready';
+
+/* ── Markets ─────────────────────────────────────────────────────────────── */
+
+/**
+ * Where a market sits in its round's life (spec §8.3).
+ *
+ * `CLOSED` and `RESOLVED` are both untradeable; they differ in whether the payout
+ * is known yet. Only `PREGAME` and `IN_PLAY` can ever quote.
+ */
+export type PredictMarketStatus = 'PREGAME' | 'IN_PLAY' | 'CLOSED' | 'RESOLVED';
+
+/**
+ * One leg of a binary market.
+ *
+ * All three prices are INDICATIVE — they come from the same top-of-book cache the
+ * FE reads, carry no depth, and are not committable. To trade, mint a quote via
+ * `POST /quotes` and pass its id; only that path produces a price an execution
+ * will honour. `null` means "we do not know", never "zero".
+ */
+export interface PredictMarketOutcome {
+  outcomeId: PredictOutcomeId;
+  name: string;
+  /** Mid-market, derived from bid/ask. Null when either side is missing. */
+  impliedProbability: PriceString | null;
+  indicativeBid: PriceString | null;
+  indicativeAsk: PriceString | null;
+}
+
+/**
+ * The agent-facing market projection.
+ *
+ * `marketId` IS the on-chain market id — the same identifier `/quotes` and
+ * `/executions` take, so a market from this list can be traded without a second
+ * lookup.
+ *
+ * Two fields spec §8.3 lists are deliberately ABSENT rather than faked:
+ * `priorityScore` is browse/trending product policy we retune freely, and
+ * publishing it would invite strategies to depend on a ranking that is not a
+ * trading signal; and the nested `event` object is reduced to `eventId`, which is
+ * enough to group multi-outcome boards without this API taking on the event
+ * catalog's read path.
+ */
+export interface PredictAgentMarket {
+  marketId: string;
+  title: string;
+  category: string;
+  status: PredictMarketStatus;
+  /** False whenever an execution would be refused; `tradeabilityReason` says why. */
+  tradeable: boolean;
+  tradeabilityReason?: string;
+  /** Groups the legs of a multi-outcome board. Null for standalone markets. */
+  eventId: string | null;
+  outcomes: PredictMarketOutcome[];
+  /** When the round stops accepting orders. Null when the end is not scheduled. */
+  closesAt: Iso8601 | null;
+  updatedAt: Iso8601;
+}
+
+export interface ListMarketsResponseBody {
+  markets: PredictAgentMarket[];
+}
+
+export interface GetMarketResponseBody {
+  market: PredictAgentMarket;
+}
+
+/* ── Fills ───────────────────────────────────────────────────────────────── */
+
+/**
+ * A confirmed fill, recorded when the reconciler observed the chain event that
+ * settled an execution (spec §19.1).
+ *
+ * Scope: fills this API produced. Direct-chain activity by the same delegated key
+ * is NOT included — it never had an execution row, and inventing one would make
+ * allowance accounting disagree with itself. That is a real gap for an agent
+ * reconstructing total position history, and it is stated here rather than hidden
+ * behind a list that merely looks complete.
+ */
+export interface PredictFill {
+  executionId: string;
+  orderId: string | null;
+  positionId: string | null;
+  marketId: string;
+  outcomeId: PredictOutcomeId;
+  side: PredictSide;
+  /** What the agent asked for, for comparison against what filled. */
+  requestedSize: PredictOrderSize;
+  /** Cost for a BUY, proceeds for a SELL. */
+  filledAmount: DecimalString;
+  /** Null when the chain event carried no share count. */
+  filledShares: DecimalString | null;
+  /**
+   * `filledAmount / filledShares`, computed on read so it can never disagree with
+   * the two numbers it derives from. Null when shares are unknown or zero.
+   */
+  avgFillPrice: PriceString | null;
+  /**
+   * Always null today, and NOT zero: the broker's published price is already
+   * fee-adjusted, so there is no separately observable fee to report. Zero would
+   * assert a free trade (spec §19.1 forbids estimated fees here).
+   */
+  actualFee: DecimalString | null;
+  /** The quote the agent priced against, and the price it carried. */
+  referenceQuoteId: string;
+  referenceQuotePrice: PriceString;
+  /** The keeper's fill transaction — NOT the agent's submit digest. */
+  txDigest: string | null;
+  strategyId: string | null;
+  filledAt: Iso8601;
+}
+
+export interface ListFillsResponseBody {
+  fills: PredictFill[];
+}
+
 /* ── Routes ──────────────────────────────────────────────────────────────── */
 
 /**
@@ -380,12 +543,15 @@ export const RETRYABLE_PREDICT_AGENT_ERROR_CODES = [
  */
 export const PREDICT_AGENT_API_ROUTES = {
   auth: 'agent-api/v1/auth',
+  markets: 'agent-api/v1/predict/markets',
+  market: 'agent-api/v1/predict/markets/:marketId',
   quotes: 'agent-api/v1/predict/quotes',
   executions: 'agent-api/v1/predict/executions',
   submitExecution: 'agent-api/v1/predict/executions/:executionId/submit',
   getExecution: 'agent-api/v1/predict/executions/:executionId',
   allowance: 'agent-api/v1/predict/accounts/:accountId/allowance',
   positions: 'agent-api/v1/predict/accounts/:accountId/positions',
+  fills: 'agent-api/v1/predict/accounts/:accountId/fills',
   listExecutions: 'agent-api/v1/predict/accounts/:accountId/executions',
   riskProfile: 'agent-api/v1/predict/accounts/:accountId/agents/:agentWallet/risk-profile',
   listRiskProfiles: 'agent-api/v1/predict/accounts/agents/risk-profiles',

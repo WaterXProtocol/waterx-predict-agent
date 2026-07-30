@@ -21,7 +21,10 @@ import {
   type CreateExecutionRequestBody,
   type CreateExecutionResponseBody,
   type CreateQuoteRequestBody,
+  type GetMarketResponseBody,
   type ListExecutionsResponseBody,
+  type ListFillsResponseBody,
+  type ListMarketsResponseBody,
   type ListPositionsResponseBody,
   PREDICT_AGENT_API_ROUTES,
   type PredictAllowanceResponseBody,
@@ -48,6 +51,13 @@ export interface PredictAgentClientOptions extends TransportOptions {
   token?: string;
   /** Override how prices are observed. Defaults to polling `POST /quotes`. */
   priceWatcher?: PriceWatcher;
+  /**
+   * Push source for execution updates. Supplied, waits react to frames instead of
+   * sleeping a fixed interval; omitted, they poll. Either way the terminal state
+   * is confirmed over REST, so a gapped or dead stream degrades to the poll path
+   * rather than hanging.
+   */
+  executionStream?: ExecutionStream;
 }
 
 export interface ExecuteMarketOrderIntent
@@ -95,6 +105,30 @@ export interface ExecuteMarketOrderResult {
 export interface PriceWatcher {
   /** The current side-appropriate price, or null when there is none right now. */
   currentPrice(request: CreateQuoteRequestBody, signal?: AbortSignal): Promise<string | null>;
+}
+
+/**
+ * A push source for execution state (spec §16.2), so a wait costs one connection
+ * instead of one request per second per execution.
+ *
+ * A SEAM for the same reason PriceWatcher is one: this SDK has no runtime
+ * dependencies, and the server's stream is Socket.IO. Supplying an adapter is the
+ * caller's choice; without one, waits poll exactly as before.
+ *
+ * Two properties any adapter MUST preserve, because the wait logic relies on them:
+ *  - frames may be LOST. The server's ready frame carries `gap: true` when the
+ *    replay cursor was too old, and a dropped connection loses frames silently.
+ *    So a stream can only ever ACCELERATE a wait, never be its sole source of
+ *    truth — `waitForTerminal` still confirms over REST before returning.
+ *  - `onExecutionUpdate` must not throw; a listener error must not strand a wait.
+ */
+export interface ExecutionStream {
+  /**
+   * Invoke `listener` whenever this execution may have moved. The payload is a
+   * hint, not a value: an adapter that knows only "something changed" may call
+   * with no argument. Returns an unsubscribe function.
+   */
+  onExecutionUpdate(executionId: string, listener: () => void): () => void;
 }
 
 export interface WaitForPriceIntent {
@@ -149,10 +183,12 @@ export class PredictAgentClient {
   private readonly transport: Transport;
   private readonly signer: AgentSigner;
   private readonly watcher: PriceWatcher;
+  private readonly executionStream: ExecutionStream | undefined;
   private token: string | undefined;
 
   constructor(options: PredictAgentClientOptions) {
     this.transport = new Transport(options);
+    this.executionStream = options.executionStream;
     this.signer = options.signer;
     this.token = options.token;
     // Defaults to polling the quote endpoint — the only price source an agent can
@@ -431,8 +467,53 @@ export class PredictAgentClient {
     });
   }
 
+  /** This agent's confirmed fills on one account, newest first. */
+  async getFills(
+    accountId: string,
+    limit?: number,
+    signal?: AbortSignal,
+  ): Promise<ListFillsResponseBody> {
+    return await this.transport.request<ListFillsResponseBody>({
+      method: 'GET',
+      path: PREDICT_AGENT_API_ROUTES.fills.replace(':accountId', accountId),
+      query: { limit },
+      token: this.requireToken(),
+      idempotent: true,
+      ...(signal !== undefined ? { signal } : {}),
+    });
+  }
+
   /**
-   * Poll until the execution stops moving.
+   * The tradeable catalog.
+   *
+   * The prices on an outcome are INDICATIVE — top-of-book, no depth, not
+   * committable. Call `getQuote` before acting on one; a strategy that trades off
+   * `indicativeAsk` is trading off a number nothing will honour.
+   */
+  async getMarkets(limit?: number, signal?: AbortSignal): Promise<ListMarketsResponseBody> {
+    return await this.transport.request<ListMarketsResponseBody>({
+      method: 'GET',
+      path: PREDICT_AGENT_API_ROUTES.markets,
+      query: { limit },
+      token: this.requireToken(),
+      idempotent: true,
+      ...(signal !== undefined ? { signal } : {}),
+    });
+  }
+
+  /** One market by its on-chain id. A closed market resolves; an unknown one 404s. */
+  async getMarket(marketId: string, signal?: AbortSignal): Promise<GetMarketResponseBody> {
+    return await this.transport.request<GetMarketResponseBody>({
+      method: 'GET',
+      path: PREDICT_AGENT_API_ROUTES.market.replace(':marketId', marketId),
+      token: this.requireToken(),
+      idempotent: true,
+      ...(signal !== undefined ? { signal } : {}),
+    });
+  }
+
+  /**
+   * Wait until the execution stops moving.
    *
    * A timeout throws EXECUTION_TIMEOUT but does NOT cancel anything — the order
    * is on-chain and a keeper may still fill it. Callers must treat the timeout as
@@ -445,19 +526,89 @@ export class PredictAgentClient {
     const deadline = Date.now() + (options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
     const interval = options.pollIntervalMs ?? DEFAULT_POLL_MS;
 
-    for (;;) {
-      const current = await this.getExecution(executionId, options.signal);
-      if (TERMINAL.has(current.status)) return current;
-      if (Date.now() >= deadline) {
-        throw new PredictAgentApiError(504, {
-          code: 'EXECUTION_TIMEOUT',
-          message: `Execution ${executionId} was still ${current.status} when the wait expired; it may still fill`,
-          retryable: false,
-          executionId,
-        });
+    // A stream only ever decides WHEN to look; what the execution IS always comes
+    // from the REST read below. Frames can be lost (the server says so with
+    // `gap: true`) and a socket can die silently, so trusting a frame as the
+    // answer would let a wait return a stale status or hang forever.
+    const wake = this.subscribeToUpdates(executionId);
+    try {
+      for (;;) {
+        const current = await this.getExecution(executionId, options.signal);
+        if (TERMINAL.has(current.status)) return current;
+        if (Date.now() >= deadline) {
+          throw new PredictAgentApiError(504, {
+            code: 'EXECUTION_TIMEOUT',
+            message: `Execution ${executionId} was still ${current.status} when the wait expired; it may still fill`,
+            retryable: false,
+            executionId,
+          });
+        }
+        // Whichever comes first: a pushed hint, or the poll interval. The
+        // interval is retained as a FLOOR on liveness even when a stream is
+        // supplied — that is what makes a dead stream degrade instead of hang.
+        await wake.next(interval);
       }
-      await new Promise((resolve) => setTimeout(resolve, interval));
+    } finally {
+      wake.stop();
     }
+  }
+
+  /**
+   * Bridges the push seam to the wait loop.
+   *
+   * Frames that arrive while the loop is mid-request are not lost: they set a
+   * pending flag, so the next `next()` returns immediately rather than sleeping
+   * through an update that already happened.
+   */
+  private subscribeToUpdates(executionId: string): {
+    next: (timeoutMs: number) => Promise<void>;
+    stop: () => void;
+  } {
+    const stream = this.executionStream;
+    if (stream === undefined) {
+      return {
+        next: async (timeoutMs) => {
+          await new Promise((resolve) => setTimeout(resolve, timeoutMs));
+        },
+        stop: () => undefined,
+      };
+    }
+
+    let pending = false;
+    let notify: (() => void) | undefined;
+    const unsubscribe = stream.onExecutionUpdate(executionId, () => {
+      pending = true;
+      notify?.();
+    });
+
+    return {
+      next: async (timeoutMs) => {
+        if (pending) {
+          pending = false;
+          return;
+        }
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(finish, timeoutMs);
+          notify = finish;
+          function finish(): void {
+            clearTimeout(timer);
+            notify = undefined;
+            resolve();
+          }
+        });
+        pending = false;
+      },
+      stop: () => {
+        notify = undefined;
+        // An adapter that throws on unsubscribe must not fail the caller's trade,
+        // which by this point has already completed.
+        try {
+          unsubscribe();
+        } catch {
+          /* ignore */
+        }
+      },
+    };
   }
 
   private requireToken(): string {

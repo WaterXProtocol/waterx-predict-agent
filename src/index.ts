@@ -9,6 +9,7 @@
 export { compareDecimal, targetReached, toScaled } from './decimal.ts';
 export {
   PredictAgentClient,
+  type ExecutionStream,
   type PriceWatcher,
   type WaitForPriceIntent,
   type WaitForPriceOptions,

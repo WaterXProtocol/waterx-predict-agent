@@ -18,12 +18,15 @@ describe('vendored wire contract', () => {
   it('pins every route path', () => {
     expect(PREDICT_AGENT_API_ROUTES).toEqual({
       auth: 'agent-api/v1/auth',
+      markets: 'agent-api/v1/predict/markets',
+      market: 'agent-api/v1/predict/markets/:marketId',
       quotes: 'agent-api/v1/predict/quotes',
       executions: 'agent-api/v1/predict/executions',
       submitExecution: 'agent-api/v1/predict/executions/:executionId/submit',
       getExecution: 'agent-api/v1/predict/executions/:executionId',
       allowance: 'agent-api/v1/predict/accounts/:accountId/allowance',
       positions: 'agent-api/v1/predict/accounts/:accountId/positions',
+      fills: 'agent-api/v1/predict/accounts/:accountId/fills',
       listExecutions: 'agent-api/v1/predict/accounts/:accountId/executions',
       riskProfile: 'agent-api/v1/predict/accounts/:accountId/agents/:agentWallet/risk-profile',
       listRiskProfiles: 'agent-api/v1/predict/accounts/agents/risk-profiles',
