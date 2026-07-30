@@ -203,6 +203,31 @@ export interface SubmitExecutionRequestBody {
 }
 
 /**
+ * What the chain actually settled, once it has.
+ *
+ * Absent until the reconciler observes the fill — an order that is merely
+ * SUBMITTED has no fill, and inventing zeroes for one would let a strategy book a
+ * trade that has not happened.
+ */
+export interface PredictExecutionFill {
+  /** Cost for a BUY, proceeds for a SELL. */
+  filledAmount: DecimalString;
+  /** Null when the chain event carried no share count. */
+  filledShares: DecimalString | null;
+  /** `filledAmount / filledShares`. Null when shares are unknown or zero. */
+  avgFillPrice: PriceString | null;
+  /**
+   * Always null today, and NOT zero: the broker's published price is already
+   * fee-adjusted, so no separately observable fee exists (spec §19.1 forbids
+   * putting an estimate here).
+   */
+  actualFee: DecimalString | null;
+  /** The KEEPER's fill transaction — NOT the agent's submit digest. */
+  txDigest: string | null;
+  filledAt: Iso8601;
+}
+
+/**
  * 202 response. A submitted predict order is NOT a completed fill — the contract
  * is a two-stage broker model and a keeper fills asynchronously.
  */
@@ -211,6 +236,17 @@ export interface SubmitExecutionResponseBody {
   status: PredictExecutionStatus;
   /** The EXECUTED on-chain digest, which may differ from `sponsoredDigest`. */
   transactionDigest?: string;
+  /** Present once the fill has been observed on chain. */
+  fill?: PredictExecutionFill;
+  /**
+   * Spendable API allowance remaining after this execution settled.
+   *
+   * Present only on a TERMINAL read: while an order is in flight its reservation
+   * is held but not yet spent, so a figure reported then would be neither the
+   * before nor the after and a strategy sizing its next order off it would be
+   * wrong in whichever direction the fill lands.
+   */
+  remainingAllowance?: DecimalString;
 }
 
 /** One execution, as returned by the history and single-read endpoints. */
@@ -227,6 +263,8 @@ export interface PredictExecutionSummary {
   enforcedWorstPrice: PriceString | null;
   transactionDigest: string | null;
   positionId: string | null;
+  /** Present once the fill has been observed on chain. */
+  fill?: PredictExecutionFill;
   createdAt: Iso8601;
   terminalAt: Iso8601 | null;
 }
