@@ -24,6 +24,7 @@ import {
   type GetMarketResponseBody,
   type ListExecutionsResponseBody,
   type ListFillsResponseBody,
+  type ListMarketsQuery,
   type ListMarketsResponseBody,
   type ListPositionsResponseBody,
   PREDICT_AGENT_API_ROUTES,
@@ -493,12 +494,25 @@ export class PredictAgentClient {
    * The prices on an outcome are INDICATIVE — top-of-book, no depth, not
    * committable. Call `getQuote` before acting on one; a strategy that trades off
    * `indicativeAsk` is trading off a number nothing will honour.
+   *
+   * Filtering on `status` or `tradeable` narrows AFTER the server assembles the
+   * page, so a filtered result can be shorter than `limit` without the catalog
+   * being exhausted — ask for more than you need when using them.
    */
-  async getMarkets(limit?: number, signal?: AbortSignal): Promise<ListMarketsResponseBody> {
+  async getMarkets(
+    query: ListMarketsQuery = {},
+    signal?: AbortSignal,
+  ): Promise<ListMarketsResponseBody> {
     return await this.transport.request<ListMarketsResponseBody>({
       method: 'GET',
       path: PREDICT_AGENT_API_ROUTES.markets,
-      query: { limit },
+      // `tradeable` is stringified explicitly: the transport's query type takes
+      // strings and numbers, and letting a boolean through as `undefined` would
+      // silently drop `tradeable=false` — the filter most likely to be relied on.
+      query: {
+        ...query,
+        ...(query.tradeable !== undefined ? { tradeable: String(query.tradeable) } : {}),
+      },
       token: this.requireToken(),
       idempotent: true,
       ...(signal !== undefined ? { signal } : {}),

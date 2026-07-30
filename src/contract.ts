@@ -507,18 +507,37 @@ export interface PredictMarketOutcome {
 }
 
 /**
+ * What is being predicted, for grounding a judgement.
+ *
+ * Every field except `eventId` is best-effort: it is derived from the market's
+ * own structured display, so a sport match carries its league and teams while a
+ * generic binary proposition carries neither. An absent key means "this family
+ * does not have that", not "we failed to load it".
+ */
+export interface PredictMarketEvent {
+  /** Groups the legs of a multi-outcome board. Null for standalone markets. */
+  eventId: string | null;
+  /** e.g. `NBA`. Present for sport families only. */
+  league?: string;
+  /** e.g. the two teams. Present for sport families only. */
+  participants?: string[];
+  /** When the round opens — kickoff, for a match. */
+  startsAt?: Iso8601;
+}
+
+/**
  * The agent-facing market projection.
  *
  * `marketId` IS the on-chain market id — the same identifier `/quotes` and
  * `/executions` take, so a market from this list can be traded without a second
  * lookup.
  *
- * Two fields spec §8.3 lists are deliberately ABSENT rather than faked:
- * `priorityScore` is browse/trending product policy we retune freely, and
- * publishing it would invite strategies to depend on a ranking that is not a
- * trading signal; and the nested `event` object is reduced to `eventId`, which is
- * enough to group multi-outcome boards without this API taking on the event
- * catalog's read path.
+ * `priorityScore` from spec §8.3 is still absent. Publishing it correctly means
+ * reusing the feed's own scorer rather than re-deriving it here, and that needs a
+ * module extraction (see the backlog) — a second implementation of the same
+ * number is precisely the drift this codebase avoids elsewhere. Note when it does
+ * land that it is a ranking tuned for HUMAN attention (it includes a "fun" bonus
+ * and a category boost), not a trading signal.
  */
 export interface PredictAgentMarket {
   marketId: string;
@@ -528,12 +547,28 @@ export interface PredictAgentMarket {
   /** False whenever an execution would be refused; `tradeabilityReason` says why. */
   tradeable: boolean;
   tradeabilityReason?: string;
-  /** Groups the legs of a multi-outcome board. Null for standalone markets. */
-  eventId: string | null;
+  event: PredictMarketEvent;
   outcomes: PredictMarketOutcome[];
   /** When the round stops accepting orders. Null when the end is not scheduled. */
   closesAt: Iso8601 | null;
   updatedAt: Iso8601;
+}
+
+/**
+ * Narrowing for the catalog list. Every filter is optional and they AND together.
+ *
+ * `status` and `tradeable` are applied AFTER the page is assembled, because both
+ * are derived from the round clock rather than stored — so a filtered page can
+ * be shorter than `limit` without meaning the catalog is exhausted. Ask for more
+ * than you need when filtering on them.
+ */
+export interface ListMarketsQuery {
+  limit?: number;
+  category?: string;
+  status?: PredictMarketStatus;
+  tradeable?: boolean;
+  /** ISO-8601. Only markets whose definition changed after this instant. */
+  updatedAfter?: Iso8601;
 }
 
 export interface ListMarketsResponseBody {
