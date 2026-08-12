@@ -1,19 +1,24 @@
 /**
  * The signer boundary.
  *
- * Two properties here are worth more than the rest of the file put together.
+ * Three properties here are worth more than the rest of the file put together.
  *
- * First: `signTransaction` is refused locally, before a process is spawned. A
- * read-only runtime that merely never calls the write path is one bug away from
- * calling it; this one cannot produce a transaction signature at all.
+ * First: under a read-only policy `signTransaction` is refused locally, before a
+ * process is spawned. A runtime that merely never calls the write path is one
+ * bug away from calling it; this one cannot produce a transaction signature.
  *
- * Second: a signer that misbehaves produces an error, never a guess. An empty
+ * Second: with any other policy, signing a transaction still costs a PERMIT from
+ * the signing gate. A code path that reaches the signer without having been
+ * authorized does not skip a check — it runs out of permits and refuses.
+ *
+ * Third: a signer that misbehaves produces an error, never a guess. An empty
  * stdout, a non-zero exit, a hang — each must end the invocation, because the
  * alternative is authenticating with something the key holder did not sign.
  */
 import { describe, expect, it, vi } from 'vitest';
 
 import { CliError, describeSigner, EXIT_CODES, loadConfig } from '../src/index.ts';
+import { SigningGate, type WriteAuthorization } from '../src/policy.ts';
 import { createSigner, type SignerRunner } from '../src/signer.ts';
 import { AGENT_WALLET, AUTH_OK, CONFIGURED_ENV, invoke } from './harness.ts';
 
@@ -35,16 +40,63 @@ const runnerReturning = (
     }),
   );
 
-describe('read-only enforcement', () => {
-  it('refuses to sign a transaction without starting the signer', async () => {
+const READ_ONLY_ENV = { ...CONFIGURED_ENV, WATERX_PREDICT_POLICY: 'read-only' };
+
+const authorization = (permits: number): WriteAuthorization => ({
+  permits,
+  basis: 'INTERACTIVE_APPROVAL',
+  token: 'apv1_test',
+  checks: [],
+});
+
+describe('policy enforcement in the signer', () => {
+  it('refuses to sign a transaction under read-only, without starting the signer', async () => {
     const run = runnerReturning({ stdout: '{"signature":"never-reached"}' });
-    const signer = createSigner(configFrom(), run, () => undefined);
+    const gate = new SigningGate('read-only');
+    const signer = createSigner(configFrom(READ_ONLY_ENV), run, () => undefined, gate);
+
+    await expect(signer.signTransaction(new Uint8Array([1, 2, 3]))).rejects.toMatchObject({
+      code: 'POLICY_DENIED',
+      details: { policy: 'read-only' },
+    });
+    // The decisive assertion: the key holder was never even asked.
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('refuses under any policy when no order authorized the signature', async () => {
+    const run = runnerReturning({ stdout: '{"signature":"never-reached"}' });
+    // Interactive, gate installed, and nothing granted: the write path was
+    // reached without an authorization, which is the bug this gate exists for.
+    const signer = createSigner(configFrom(), run, () => undefined, new SigningGate('interactive'));
 
     await expect(signer.signTransaction(new Uint8Array([1, 2, 3]))).rejects.toMatchObject({
       code: 'POLICY_DENIED',
     });
-    // The decisive assertion: the key holder was never even asked.
     expect(run).not.toHaveBeenCalled();
+  });
+
+  it('spends exactly one permit per transaction, and no more than were granted', async () => {
+    const run = runnerReturning({ stdout: '{"signature":"sig-tx"}' });
+    const gate = new SigningGate('interactive');
+    gate.grant(authorization(1));
+    const signer = createSigner(configFrom(), run, () => undefined, gate);
+
+    const signed = await signer.signTransaction(new Uint8Array([7]));
+    expect(signed.signature).toBe('sig-tx');
+    expect(JSON.parse(run.mock.calls[0]?.[1] ?? '{}')).toMatchObject({ type: 'TRANSACTION' });
+    expect(gate.stats).toEqual({ granted: 1, used: 1, unused: 0 });
+
+    // One approved order buys one signature. The second is refused, and the
+    // signer is not started for it.
+    await expect(signer.signTransaction(new Uint8Array([8]))).rejects.toMatchObject({
+      code: 'POLICY_DENIED',
+    });
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it('never grants a permit under read-only, even when a command asks for one', () => {
+    const gate = new SigningGate('read-only');
+    expect(() => gate.grant(authorization(1))).toThrow(CliError);
   });
 
   it('still signs a personal message, which is what the login challenge is', async () => {
@@ -193,9 +245,9 @@ describe('a signer that is not there', () => {
 });
 
 describe('describeSigner', () => {
-  it('never claims transaction signing, configured or not', () => {
-    expect(describeSigner(configFrom()).canSignTransactions).toBe(false);
-    expect(describeSigner(configFrom({})).canSignTransactions).toBe(false);
+  it('reports transaction signing from the policy, not from wishful thinking', () => {
+    expect(describeSigner(configFrom()).canSignTransactions).toBe(true);
+    expect(describeSigner(configFrom(READ_ONLY_ENV)).canSignTransactions).toBe(false);
   });
 
   it('names the executable by base name only, because an argument may be a path', () => {

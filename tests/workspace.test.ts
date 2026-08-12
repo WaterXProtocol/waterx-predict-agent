@@ -264,8 +264,7 @@ describe('the command contract compiles to the SDK', () => {
     // would be advertised by an adapter and then refused.
     const availableCommands = new Set(advertised.map((capability) => capability.command));
     for (const name of contractNames) {
-      const isWrite = name.startsWith('order.');
-      expect(availableCommands.has(name) || isWrite, name).toBe(true);
+      expect(availableCommands.has(name), name).toBe(true);
     }
   });
 });

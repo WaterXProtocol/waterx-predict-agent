@@ -799,6 +799,108 @@
       ]
     },
     {
+      "name": "order.preview",
+      "cli": "order preview",
+      "summary": "Resolve, price and policy-check an order without placing it.",
+      "description": "The step before a write, and it signs nothing: the market and outcome are resolved by the server, a fresh quote is minted, the worst acceptable price the stated protection implies is estimated locally, and the execution policy is evaluated against the real intent. Under the interactive policy the result carries the approval token that authorizes exactly this order — change any field of it and the token stops matching. The estimated bound is against THIS quote: the server recomputes the authoritative bound against the submission-time quote and may tighten it, never loosen it. Effective risk limits are reported as unavailable rather than guessed, because the risk profile is owner-authenticated (ADR-0003).",
+      "classification": "read",
+      "sideEffects": [
+        "MINTS_QUOTE"
+      ],
+      "longRunning": false,
+      "idempotency": {
+        "required": false,
+        "callerSupplied": "UNSUPPORTED",
+        "note": "A preview places nothing, so there is no logical write to key. The idempotency key belongs to order.execute."
+      },
+      "confirmation": "NOT_REQUIRED",
+      "implementation": {
+        "kind": "runtime",
+        "note": "Composes getMarket() and getQuote() with the local execution policy. Places no order and signs no transaction."
+      },
+      "input": {
+        "type": "object",
+        "required": [
+          "accountId",
+          "marketId",
+          "outcomeId",
+          "side",
+          "size",
+          "maxSlippageBps"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "accountId": {
+            "$ref": "#/$defs/accountId"
+          },
+          "marketId": {
+            "$ref": "#/$defs/marketId"
+          },
+          "outcomeId": {
+            "$ref": "#/$defs/outcomeId"
+          },
+          "side": {
+            "$ref": "#/$defs/side"
+          },
+          "size": {
+            "$ref": "#/$defs/orderSize"
+          },
+          "positionId": {
+            "title": "Position id",
+            "description": "Required for a SELL: the on-chain position being closed. Absent for a BUY.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "maxSlippageBps": {
+            "$ref": "#/$defs/maxSlippageBps"
+          },
+          "worstAcceptablePrice": {
+            "$ref": "#/$defs/probabilityPrice",
+            "title": "Worst acceptable price",
+            "description": "A probability price in the inclusive range 0–1, as a decimal string. An absolute bound, applied only when it is stricter than the slippage budget. The price the chain enforces may be stricter still after granularity rounding, never looser."
+          },
+          "clientOrderId": {
+            "title": "Client order id",
+            "description": "A business label. NOT a substitute for the idempotency key.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "strategyId": {
+            "title": "Strategy id",
+            "description": "Attribution label carried onto executions and fills.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "allOf": [
+          {
+            "$ref": "#/$defs/sideSizeAgreement"
+          },
+          {
+            "$ref": "#/$defs/positionAgreement"
+          }
+        ]
+      },
+      "examples": [
+        {
+          "title": "Preview a 50 wxUSD buy",
+          "input": {
+            "accountId": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "marketId": "0x2222222222222222222222222222222222222222222222222222222222222222",
+            "outcomeId": "YES",
+            "side": "BUY",
+            "size": {
+              "buyAmount": "50"
+            },
+            "maxSlippageBps": 100
+          }
+        }
+      ]
+    },
+    {
       "name": "order.get",
       "cli": "order get",
       "summary": "Read one execution by id.",
@@ -837,6 +939,65 @@
       "examples": [
         {
           "title": "Reconcile one execution",
+          "input": {
+            "executionId": "exec_example_000000000"
+          }
+        }
+      ]
+    },
+    {
+      "name": "order.reconcile",
+      "cli": "order reconcile",
+      "summary": "Wait for one execution to reach a terminal state.",
+      "description": "What to run after an ambiguous outcome — a timed-out wait, a lost connection, a restarted process. It polls one execution until the status is terminal and reports the authoritative fill facts. It places nothing, cancels nothing and signs nothing, so it is always safe to repeat. Exhausting the timeout is again NOT a failure: timedOut is reported and the execution id stays valid.",
+      "classification": "read",
+      "sideEffects": [
+        "NONE"
+      ],
+      "longRunning": true,
+      "idempotency": {
+        "required": false,
+        "callerSupplied": "UNSUPPORTED",
+        "note": "A read is safe to repeat; no key applies."
+      },
+      "confirmation": "NOT_REQUIRED",
+      "implementation": {
+        "kind": "sdk",
+        "method": "waitForExecution"
+      },
+      "input": {
+        "type": "object",
+        "required": [
+          "executionId"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "executionId": {
+            "title": "Execution id",
+            "description": "From order.execute, and preserved even when its wait timed out.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "timeoutMs": {
+            "title": "Reconciliation timeout (ms)",
+            "description": "Bounds the wait. Exceeding it reports timedOut rather than an error, because the order is unaffected either way.",
+            "type": "integer",
+            "minimum": 1000,
+            "maximum": 600000
+          },
+          "pollIntervalMs": {
+            "title": "Poll interval (ms)",
+            "description": "How often the execution is re-read while waiting.",
+            "type": "integer",
+            "minimum": 250,
+            "maximum": 60000
+          }
+        }
+      },
+      "examples": [
+        {
+          "title": "Resolve an ambiguous outcome",
           "input": {
             "executionId": "exec_example_000000000"
           }

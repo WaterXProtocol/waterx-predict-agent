@@ -31,6 +31,13 @@ import { commandSchema } from './commands/command-schema.ts';
 import { describeRuntime } from './commands/describe.ts';
 import { doctorFailure, runDoctor } from './commands/doctor.ts';
 import { marketGet, marketList, marketQuote } from './commands/market.ts';
+import {
+  orderExecute,
+  orderExecuteMany,
+  orderGet,
+  orderPreview,
+  orderReconcile,
+} from './commands/order.ts';
 import { loadConfig, type ResolvedConfig } from './config.ts';
 import type { CommandContext, CommandHandler } from './context.ts';
 import { errorEnvelope, successEnvelope, type EnvelopeMeta } from './envelope.ts';
@@ -49,6 +56,7 @@ import {
   type OutputStreams,
 } from './output.ts';
 import { parseArgv, requireFlagValue, type ParsedArgv } from './parse.ts';
+import { SigningGate } from './policy.ts';
 import { Redactor, SECRET_ENV_KEYS } from './redact.ts';
 import { createNodeSignerRunner, type SignerRunner } from './signer.ts';
 import { CLI_NAME, CLI_VERSION } from './version.ts';
@@ -85,6 +93,11 @@ const HANDLERS: Readonly<Record<string, CommandHandler>> = {
   'account.positions': accountPositions,
   'account.executions': accountExecutions,
   'account.fills': accountFills,
+  'order.preview': orderPreview,
+  'order.get': orderGet,
+  'order.reconcile': orderReconcile,
+  'order.execute': orderExecute,
+  'order.execute-many': orderExecuteMany,
 };
 
 /** CLI invocation → contract command, taken from the contract's own `cli` field. */
@@ -93,7 +106,7 @@ const BY_CLI_PATH: ReadonlyMap<string, AgentCommandSpec> = new Map(
 );
 
 const USAGE = [
-  `${CLI_NAME} ${CLI_VERSION} — read-only agent surface for WaterX Predict.`,
+  `${CLI_NAME} ${CLI_VERSION} — universal agent surface for WaterX Predict.`,
   '',
   'Usage: waterx-predict <command> [flags]',
   '',
@@ -107,6 +120,8 @@ const USAGE = [
   '',
   "Input:  --input '<json>' | --file <path> | --stdin, plus typed --flags per the command schema.",
   'Output: one JSON document on stdout. Diagnostics on stderr. Exit codes: see `describe`.',
+  'Policy: writes need the interactive approval from `order preview` (--approve <token>), or a',
+  '        configured delegated-auto scope. --policy read-only narrows any configuration.',
 ].join('\n');
 
 /**
@@ -165,6 +180,15 @@ export async function run(io: CliIo): Promise<number> {
   let meta: EnvelopeMeta | undefined;
   let timeoutMs = 0;
 
+  // A successful result that still must not read as "done" — see
+  // `CommandContext.exitAs`. AMBIGUOUS wins outright; otherwise the first class
+  // asked for stands, so one failed leg cannot be overwritten by a later one.
+  let successExit: ExitCode = EXIT_CODES.OK;
+  const exitAs = (code: ExitCode): void => {
+    if (successExit === EXIT_CODES.AMBIGUOUS) return;
+    if (code === EXIT_CODES.AMBIGUOUS || successExit === EXIT_CODES.OK) successExit = code;
+  };
+
   try {
     parsed = parseArgv(io.argv);
     timeoutMs = parseTimeoutFlag(parsed.flags) ?? 0;
@@ -210,10 +234,10 @@ export async function run(io: CliIo): Promise<number> {
       );
     }
 
-    // Refuse an unimplemented command BEFORE parsing its input. A read-only
-    // build rejecting `order execute` because a field was malformed would tell
-    // the caller to fix the field, and the fixed invocation would be refused
-    // anyway — for the real reason, one round trip later.
+    // Refuse an unimplemented command BEFORE parsing its input. Rejecting
+    // `order cancel` because a field was malformed would tell the caller to fix
+    // the field, and the fixed invocation would be refused anyway — for the real
+    // reason, one round trip later.
     const handler = HANDLERS[spec.name];
     if (handler === undefined && spec.name !== 'runtime.doctor') {
       const capability = getCapability(spec.cli);
@@ -232,6 +256,7 @@ export async function run(io: CliIo): Promise<number> {
       homeDir: io.homeDir,
       explicitPath: requireFlagValue(parsed.flags, 'config'),
       timeoutMs: parseTimeoutFlag(parsed.flags),
+      policy: requireFlagValue(parsed.flags, 'policy'),
     });
     redactor.register(config.token);
     timeoutMs = config.timeoutMs;
@@ -248,7 +273,10 @@ export async function run(io: CliIo): Promise<number> {
     });
 
     meta = buildMeta(config, built.defaultsApplied);
-    const context = createContext(io, config, built.input, diagnostic);
+    const context = createContext(io, config, built.input, diagnostic, {
+      approval: requireFlagValue(parsed.flags, 'approve'),
+      exitAs,
+    });
 
     if (spec.name === 'runtime.doctor') {
       const report = await runDoctor(context);
@@ -271,7 +299,7 @@ export async function run(io: CliIo): Promise<number> {
       successEnvelope(command, requestId, await handler(context), meta),
       redactor,
     );
-    return EXIT_CODES.OK;
+    return successExit;
   } catch (error: unknown) {
     const envelopeError = toEnvelopeError(error, timeoutMs);
     emitEnvelope(io.streams, errorEnvelope(command, requestId, envelopeError, meta), redactor);
@@ -315,8 +343,13 @@ function createContext(
   config: ResolvedConfig,
   input: Readonly<Record<string, unknown>>,
   diagnostic: (text: string) => void,
+  options: { approval: string | undefined; exitAs: (code: ExitCode) => void },
 ): CommandContext {
   let session: Promise<PredictAgentClient> | undefined;
+  // One gate per invocation, created before any client exists so that every
+  // signer this run builds shares it. A command that never authorizes a write
+  // leaves it empty, and an empty gate signs nothing.
+  const gate = new SigningGate(config.policy.mode);
   /**
    * Build, then open a session unless the caller supplied a token. Memoized as a
    * PROMISE rather than as a client, so `account status`'s two concurrent reads
@@ -328,6 +361,7 @@ function createContext(
       fetch: io.fetch,
       runSigner: io.runSigner,
       onDiagnostic: diagnostic,
+      gate,
     });
     if (config.token === undefined) await client.authenticate();
     return client;
@@ -336,8 +370,11 @@ function createContext(
   return {
     input,
     config,
+    approval: options.approval,
+    gate,
     client: () => (session ??= open()),
-    signal: () => deadline(config.timeoutMs),
+    signal: (atLeastMs?: number) => deadline(Math.max(config.timeoutMs, atLeastMs ?? 0)),
+    exitAs: options.exitAs,
     diagnostic,
     nodeVersion: io.nodeVersion,
     now: io.now,

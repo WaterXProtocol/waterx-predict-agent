@@ -25,6 +25,11 @@ export const GLOBAL_FLAGS = new Set([
   'help',
   'version',
   'json',
+  // Both belong to the execution policy rather than to any intent: `--approve`
+  // carries assent to an order that was already previewed, and `--policy` can
+  // only narrow what the configuration already allows.
+  'approve',
+  'policy',
 ]);
 
 export function parseArgv(argv: readonly string[]): ParsedArgv {

@@ -51,12 +51,24 @@ describe('capability negotiation', () => {
   });
 
   it('separates "no endpoint exists" from "not built yet"', async () => {
-    const notBuilt = await invoke(['order', 'execute'], { env: CONFIGURED_ENV });
+    // `order cancel` has no endpoint and never will for a market order;
+    // `strategy` is specified and unbuilt. Both refuse before the network, and
+    // a caller can branch on which of the two it hit.
+    const noEndpoint = await invoke(['order', 'cancel'], { env: CONFIGURED_ENV });
+    expect(noEndpoint.envelope.error?.code).toBe('CAPABILITY_UNAVAILABLE');
+    expect(noEndpoint.envelope.error?.details).toMatchObject({
+      capability: 'order cancel',
+      reason: 'NO_SERVER_ENDPOINT',
+    });
 
+    const notBuilt = await invoke(['strategy', 'create'], { env: CONFIGURED_ENV });
     expect(notBuilt.envelope.error?.code).toBe('COMMAND_NOT_IMPLEMENTED');
-    expect(notBuilt.exit).toBe(EXIT_CODES.UNAVAILABLE);
-    expect(notBuilt.fetches).toHaveLength(0);
-    expect(notBuilt.signerRuns).toHaveLength(0);
+
+    for (const result of [noEndpoint, notBuilt]) {
+      expect(result.exit).toBe(EXIT_CODES.UNAVAILABLE);
+      expect(result.fetches).toHaveLength(0);
+      expect(result.signerRuns).toHaveLength(0);
+    }
   });
 
   it('answers an invented command with UNKNOWN_COMMAND, not a refusal', async () => {

@@ -7,11 +7,14 @@
  *
  * The authentication check signs the login challenge as a PERSONAL MESSAGE. That
  * moves no funds, is not a transaction signature, and is the only signing this
- * command does. The write-plane check always skips, truthfully: this build signs
- * no transactions at all.
+ * command does. The write-plane check never signs a transaction: the only honest
+ * proof that the write path works is a real order, and `doctor` will not place
+ * one. It reports the policy in force and the one write-blocking fact it can
+ * settle without trading — a delegation whose window has already closed.
  */
 import { isPredictAgentApiError } from '@waterx/predict-agent-sdk';
 
+import type { ResolvedConfig } from '../config.ts';
 import type { CommandContext } from '../context.ts';
 import type { EnvelopeError } from '../envelope.ts';
 import { isCliError, isCliErrorCode } from '../errors.ts';
@@ -44,6 +47,58 @@ const failureCode = (error: unknown): string => {
 
 const failureMessage = (error: unknown): string =>
   error instanceof Error ? error.message : 'The check failed for an unrecognised reason.';
+
+/**
+ * Can this runtime write at all, and would the policy let it?
+ *
+ * Deliberately NOT a live test. Proving the write path end to end means placing
+ * a real order, and a diagnostic command that trades is a diagnostic command
+ * nobody can safely run. So this reports the policy as a fact and settles the
+ * one write-blocker that is knowable without trading: a delegated-auto scope
+ * whose `notAfter` has passed authorizes nothing, and finding that out here is
+ * far better than finding it out from the first refused order.
+ */
+function writePlaneCheck(config: ResolvedConfig, now: Date): DoctorCheck {
+  const { mode, scope } = config.policy;
+
+  if (mode === 'read-only') {
+    return {
+      id: 'write-plane',
+      status: 'SKIP',
+      summary: 'Not applicable: the execution policy is read-only, so no transaction can be signed.',
+      detail:
+        '`signTransaction` throws before a signer process is spawned. Reads, `market quote` and `order preview` still work.',
+    };
+  }
+
+  if (mode === 'delegated-auto') {
+    const notAfter = scope === undefined ? Number.NaN : Date.parse(scope.notAfter);
+    if (Number.isNaN(notAfter) || now.getTime() > notAfter) {
+      return {
+        id: 'write-plane',
+        status: 'FAIL',
+        code: 'POLICY_DENIED',
+        summary: 'The delegated-auto window has closed, so this policy authorizes no order.',
+        detail: `policy.scope.notAfter is ${scope?.notAfter ?? 'unset'} and it is now ${now.toISOString()}. Renew the delegation deliberately, or run under the interactive policy and approve each order.`,
+      };
+    }
+    return {
+      id: 'write-plane',
+      status: 'SKIP',
+      summary: `Not attempted: writes are pre-authorized within the delegated-auto scope until ${scope?.notAfter ?? ''}.`,
+      detail:
+        'The only proof that the write path works is a real order, and `doctor` will not place one. The scope is checked per order, and the server enforces the owner’s risk profile independently.',
+    };
+  }
+
+  return {
+    id: 'write-plane',
+    status: 'SKIP',
+    summary: 'Not attempted: the policy is interactive, so a write needs an explicit approval.',
+    detail:
+      'Run `order preview` and pass its `policy.approvalToken` back as `--approve <token>`. The only proof that the write path works is a real order, and `doctor` will not place one.',
+  };
+}
 
 export async function runDoctor(context: CommandContext): Promise<DoctorReport> {
   const { config } = context;
@@ -222,13 +277,7 @@ export async function runDoctor(context: CommandContext): Promise<DoctorReport> 
     }
   }
 
-  checks.push({
-    id: 'write-plane',
-    status: 'SKIP',
-    summary: 'Not applicable: this build is read-only and signs no transactions.',
-    detail:
-      'The signer refuses `signTransaction` locally, so there is no order path to check. Tracked as backlog 1.9.',
-  });
+  checks.push(writePlaneCheck(config, context.now()));
 
   return {
     checks,

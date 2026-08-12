@@ -5,6 +5,11 @@
  * flags. Nothing here is required — `describe` has to answer on a machine with
  * no configuration at all, because discovery precedes setup.
  *
+ * The one non-obvious setting is `policy`, which decides what this runtime may
+ * sign (see `policy.ts`). It lives in the config file rather than only in the
+ * environment because a delegated-auto scope is a document an operator reviews,
+ * not a value pasted into a shell — and `--policy` can only ever narrow it.
+ *
  * THE SECRET RULE: the config file is scanned for credential-shaped keys and
  * REFUSED if it has any. A private key belongs behind the signer command inside
  * the Runner's trust boundary (ADR-0001 §6), never in a JSON file this process
@@ -13,6 +18,7 @@
  * it to every log the message reaches.
  */
 import { CliError } from './errors.ts';
+import { parseExecutionPolicy, type ExecutionPolicy } from './policy.ts';
 
 export interface ResolvedConfig {
   readonly baseUrl: string | undefined;
@@ -22,6 +28,8 @@ export interface ResolvedConfig {
   readonly defaultAccountId: string | undefined;
   /** argv for the external signer process. Never a key. */
   readonly signerCommand: readonly string[] | undefined;
+  /** What this runtime is allowed to sign, and on whose say-so. */
+  readonly policy: ExecutionPolicy;
   readonly timeoutMs: number;
   /** A pre-minted session token, if one was supplied. Registered for redaction. */
   readonly token: string | undefined;
@@ -49,6 +57,7 @@ const KNOWN_FILE_KEYS = new Set([
   'agentWallet',
   'defaultAccountId',
   'signerCommand',
+  'policy',
   'timeoutMs',
 ]);
 
@@ -59,6 +68,7 @@ export const ENV_KEYS = {
   agentWallet: 'WATERX_PREDICT_AGENT_WALLET',
   accountId: 'WATERX_PREDICT_ACCOUNT_ID',
   signerCommand: 'WATERX_PREDICT_SIGNER_COMMAND',
+  policy: 'WATERX_PREDICT_POLICY',
   timeoutMs: 'WATERX_PREDICT_TIMEOUT_MS',
   token: 'WATERX_PREDICT_TOKEN',
 } as const;
@@ -75,6 +85,8 @@ export interface ConfigSources {
   explicitPath?: string | undefined;
   /** From `--timeout-ms`. */
   timeoutMs?: number | undefined;
+  /** From `--policy`. May only narrow the configured policy. */
+  policy?: string | undefined;
 }
 
 interface FileConfig {
@@ -83,6 +95,7 @@ interface FileConfig {
   agentWallet?: unknown;
   defaultAccountId?: unknown;
   signerCommand?: unknown;
+  policy?: unknown;
   timeoutMs?: unknown;
 }
 
@@ -267,6 +280,20 @@ export function loadConfig(sources: ConfigSources): ResolvedConfig {
   const warning = plaintextWarning(baseUrl);
   if (warning !== null) warnings.push(warning);
 
+  const policy = parseExecutionPolicy({
+    file: config.policy,
+    env: env[ENV_KEYS.policy],
+    flag: sources.policy,
+    where,
+  });
+  if (policy.mode === 'delegated-auto') {
+    // Loud on purpose. An unattended write policy is the one setting an operator
+    // must never discover by reading a trade confirmation.
+    warnings.push(
+      `The execution policy is delegated-auto (from ${policy.source.toLowerCase().replace('_', ' ')}): writes within the configured scope proceed without a per-order approval, until ${policy.scope?.notAfter ?? 'the configured end instant'}.`,
+    );
+  }
+
   return {
     baseUrl: baseUrl?.replace(/\/+$/u, ''),
     environment:
@@ -281,6 +308,7 @@ export function loadConfig(sources: ConfigSources): ResolvedConfig {
     signerCommand:
       asCommand(env[ENV_KEYS.signerCommand], ENV_KEYS.signerCommand, 'the environment') ??
       asCommand(config.signerCommand, 'signerCommand', where),
+    policy,
     timeoutMs,
     token: env[ENV_KEYS.token] === '' ? undefined : env[ENV_KEYS.token],
     configPath: path,

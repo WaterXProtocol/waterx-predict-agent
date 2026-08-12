@@ -144,37 +144,47 @@ export const CAPABILITIES: readonly Capability[] = [
   },
   {
     id: 'order preview',
-    status: 'NOT_IMPLEMENTED',
-    summary: 'Dry-run an order without placing it.',
-    reason: 'NOT_BUILT',
-    detail: 'Named in the plan; not built in this version, and absent from the command contract.',
-    tracking: '1.7',
+    command: 'order.preview',
+    status: 'AVAILABLE',
+    summary:
+      'Resolve, price and policy-check an order without placing it. Mints a quote; signs nothing.',
   },
   {
     id: 'order execute',
-    status: 'NOT_IMPLEMENTED',
-    summary: 'Place a protected market order.',
-    reason: 'READ_ONLY_BUILD',
-    detail:
-      'The SDK implements this and the command contract defines it, but this CLI signs no transactions: its signer refuses `signTransaction` locally. The write plane is a separate work package.',
-    tracking: '1.9',
+    command: 'order.execute',
+    status: 'AVAILABLE',
+    summary:
+      'Place one protected market order. Refused under a read-only policy, and needs an approval or a delegation scope otherwise.',
   },
   {
     id: 'order execute-many',
-    status: 'NOT_IMPLEMENTED',
-    summary: 'Place several independent orders.',
-    reason: 'READ_ONLY_BUILD',
-    detail: 'See `order execute`. Legs are never atomic; that semantic is unchanged when it ships.',
-    tracking: '1.9',
+    command: 'order.execute-many',
+    status: 'AVAILABLE',
+    summary:
+      'Place several independent orders. Client-side and never atomic: legs succeed, fail and skip independently.',
   },
   {
     id: 'order get',
-    status: 'NOT_IMPLEMENTED',
-    summary: 'Read one execution, and reconcile an ambiguous outcome.',
-    reason: 'NOT_BUILT',
+    command: 'order.get',
+    status: 'AVAILABLE',
+    summary: 'Read one execution by id.',
+  },
+  {
+    id: 'order reconcile',
+    command: 'order.reconcile',
+    status: 'AVAILABLE',
+    summary: 'Wait for one execution to reach a terminal state. The recovery path after a timeout.',
+  },
+  {
+    id: 'order cancel',
+    status: 'UNAVAILABLE',
+    summary: 'Cancel a submitted order.',
+    reason: 'NO_SERVER_ENDPOINT',
     detail:
-      'The SDK implements this and the command contract defines it. It ships with the write plane it exists to reconcile, rather than as a read that can only ever return other people’s orders.',
-    tracking: '1.9',
+      'These are market orders: once submitted, an order is on-chain and a keeper fills or rejects it. The API exposes nothing that cancels one, and a command that appeared to would be describing an effect it cannot have.',
+    alternative:
+      'Bound the exposure before submitting — `maxSlippageBps` and `worstAcceptablePrice` — and reconcile the outcome with `order reconcile`.',
+    tracking: 'D-25',
   },
   {
     id: 'strategy',

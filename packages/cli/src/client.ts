@@ -12,8 +12,15 @@ import {
 } from '@waterx/predict-agent-sdk';
 
 import type { ResolvedConfig } from './config.ts';
-import { CliError } from './errors.ts';
+import { CliError, isCliError } from './errors.ts';
+import {
+  EXIT_CODES,
+  exitCodeForCliError,
+  exitCodeForServerError,
+  type ExitCode,
+} from './exit-codes.ts';
 import type { EnvelopeError } from './envelope.ts';
+import type { SigningGate } from './policy.ts';
 import { createSigner, type SignerRunner } from './signer.ts';
 
 export interface ClientFactoryOptions {
@@ -21,6 +28,11 @@ export interface ClientFactoryOptions {
   readonly fetch: typeof globalThis.fetch;
   readonly runSigner: SignerRunner;
   onDiagnostic(text: string): void;
+  /**
+   * The invocation's signing gate. Omitted only where no write can occur (the
+   * doctor's reachability probe); a signer without one signs no transaction.
+   */
+  readonly gate?: SigningGate | undefined;
 }
 
 export function createClient(options: ClientFactoryOptions): PredictAgentClient {
@@ -31,7 +43,7 @@ export function createClient(options: ClientFactoryOptions): PredictAgentClient 
       'No API base URL is configured. Set WATERX_PREDICT_BASE_URL or `baseUrl` in the config file. Nothing was attempted.',
     );
   }
-  const signer = createSigner(config, options.runSigner, options.onDiagnostic);
+  const signer = createSigner(config, options.runSigner, options.onDiagnostic, options.gate);
   return new PredictAgentClient({
     baseUrl: config.baseUrl,
     fetch: options.fetch,
@@ -109,4 +121,20 @@ export function toEnvelopeError(error: unknown, timeoutMs: number): EnvelopeErro
     retryable: false,
     source: 'CLI',
   };
+}
+
+/**
+ * The exit class for one thrown value.
+ *
+ * Shared by the dispatcher and by `order execute-many`, whose legs each fail on
+ * their own: a per-leg failure must land in the same class it would have landed
+ * in as a single command, or a caller's retry logic would have to branch on how
+ * the order happened to be submitted.
+ */
+export function exitCodeForThrown(error: unknown): ExitCode {
+  if (isCliError(error)) return exitCodeForCliError(error.code);
+  const envelope = toEnvelopeError(error, 0);
+  if (envelope.source === 'SERVER') return exitCodeForServerError(envelope.code);
+  if (envelope.source === 'TRANSPORT') return EXIT_CODES.TRANSPORT;
+  return EXIT_CODES.INTERNAL;
 }

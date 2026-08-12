@@ -20,6 +20,40 @@ import { EXIT_CODE_TABLE } from '../exit-codes.ts';
 import { describeSigner } from '../signer.ts';
 import { API_VERSION, CLI_NAME, CLI_VERSION } from '../version.ts';
 
+/**
+ * The execution policy in force, described honestly.
+ *
+ * Including what an approval token is NOT. A host that believed the token
+ * authenticated a human would build exactly the wrong thing on top of it, and a
+ * policy believed to be stronger than it is, is worse than no policy at all.
+ */
+function describePolicy(config: ResolvedConfig): unknown {
+  const { mode, source, scope } = config.policy;
+  return {
+    mode,
+    source,
+    enforced: true,
+    writesAllowed: mode !== 'read-only',
+    enforcement:
+      'Enforced in the signer and a counted signing gate, not by convention. Under read-only `signTransaction` throws before a signer process is spawned; otherwise it must spend a permit that only an authorized write can have granted, so an unauthorized path runs out of permits rather than trading.',
+    approval:
+      mode === 'interactive'
+        ? {
+            required: true,
+            how: 'Run `order preview`, then pass its `policy.approvalToken` back as `--approve <token>` on `order execute`.',
+            binds:
+              'One exact intent: account, market, outcome, side, size unit and amount, position, slippage, absolute bound, strategy and client order id.',
+            isNotAuthentication:
+              'The token is a digest of the intent, computable by anything that can run a preview. It proves a caller carried a value from a preview into an execution — not that a person saw the order. A human-in-the-loop host puts the human at that seam.',
+          }
+        : { required: false },
+    ...(scope !== undefined ? { scope } : {}),
+    cannotWiden:
+      'Local policy only ever narrows. The owner’s risk profile is enforced server-side (ADR-0003) and this runtime cannot read or raise it; a delegated-auto BUY is additionally checked against the server’s own effectiveBuyCapacity.',
+    narrowWith: '--policy read-only (the flag may narrow the configured policy, never widen it)',
+  };
+}
+
 export function describeRuntime(config: ResolvedConfig, nodeVersion: string): unknown {
   const signer = describeSigner(config);
   return {
@@ -50,11 +84,7 @@ export function describeRuntime(config: ResolvedConfig, nodeVersion: string): un
       configFile: config.configPath,
     },
     signer,
-    policy: {
-      mode: 'read-only',
-      enforced: true,
-      note: 'Enforced in the signer, not by convention: `signTransaction` throws before a signer process is started, so no code path in this build can produce a transaction signature. Approval policy for the write plane is a separate work package.',
-    },
+    policy: describePolicy(config),
     capabilities: CAPABILITIES,
     conventions: {
       output:
@@ -84,7 +114,9 @@ export function describeRuntime(config: ResolvedConfig, nodeVersion: string): un
       agentReadableRiskLimits: false,
     },
     limitations: [
-      'Read-only. No command in this build places, cancels or reconciles an order.',
+      'An order cannot be cancelled. These are market orders: once submitted, a keeper fills or rejects them, and the API exposes nothing that recalls one.',
+      '`order execute-many` is client-side orchestration and is never atomic. Legs succeed, fail and skip independently.',
+      'An approval token binds an intent; it is not authentication and does not prove a human saw the order.',
       'Paging is limit-only. There is no cursor, so a history longer than the cap cannot be fully reconstructed (backlog B6).',
       'Quotes are size-blind: availableSize and expectedFillSize come back null and a large order can be correctly priced and still fail to fill (backlog B5).',
       'Listed positions, executions and fills cover API-attributed activity only. A direct-chain trade by the same delegated key is not included.',

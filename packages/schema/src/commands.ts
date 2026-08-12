@@ -11,11 +11,11 @@
  * `implementation`, which is what keeps two hosts issuing the same intent from
  * producing two different requests (ADR-0001 §3).
  *
- * SCOPE OF v1: only commands the execution core can actually perform today.
- * `order preview` and the `strategy` family are named in the plan but have no
- * implementation, and a schema entry is exactly what an adapter would turn into
- * an advertised tool. They are added when they exist — the document is versioned
- * and adding a command is backwards-compatible.
+ * SCOPE OF v1: only commands the execution core can actually perform today. The
+ * `strategy` family is named in the plan but has no implementation, and a schema
+ * entry is exactly what an adapter would turn into an advertised tool. Those are
+ * added when they exist — the document is versioned and adding a command is
+ * backwards-compatible.
  *
  * `market search` and `market history` are absent for a different reason: the
  * API has no endpoint behind either (backlog B2, D-25). The CLI still answers
@@ -301,6 +301,66 @@ const accountFills: AgentCommandSpec = {
   examples: [{ title: 'List fills', input: { accountId: EXAMPLE_ACCOUNT_ID, limit: 50 } }],
 };
 
+/**
+ * The preview intent: the order intent, minus the two fields a preview cannot
+ * take a position on.
+ *
+ * `referenceQuoteId` is absent because preview MINTS the quote it prices
+ * against — asking a caller to supply one would mean previewing a quote that had
+ * already aged. `idempotencyKey` is absent because a preview is not a logical
+ * write and has nothing to make replayable.
+ */
+const PREVIEW_PROPERTIES: Readonly<Record<string, JsonSchema>> = Object.fromEntries(
+  Object.entries(ORDER_INTENT_PROPERTIES).filter(
+    ([key]) => key !== 'referenceQuoteId' && key !== 'idempotencyKey',
+  ),
+);
+
+const PREVIEW_REQUIRED: readonly string[] = ORDER_INTENT_REQUIRED.filter(
+  (key) => key !== 'referenceQuoteId',
+);
+
+const orderPreview: AgentCommandSpec = {
+  name: 'order.preview',
+  cli: 'order preview',
+  summary: 'Resolve, price and policy-check an order without placing it.',
+  description:
+    'The step before a write, and it signs nothing: the market and outcome are resolved by the server, a fresh quote is minted, the worst acceptable price the stated protection implies is estimated locally, and the execution policy is evaluated against the real intent. Under the interactive policy the result carries the approval token that authorizes exactly this order — change any field of it and the token stops matching. The estimated bound is against THIS quote: the server recomputes the authoritative bound against the submission-time quote and may tighten it, never loosen it. Effective risk limits are reported as unavailable rather than guessed, because the risk profile is owner-authenticated (ADR-0003).',
+  classification: 'read',
+  sideEffects: ['MINTS_QUOTE'],
+  longRunning: false,
+  idempotency: {
+    required: false,
+    callerSupplied: 'UNSUPPORTED',
+    note: 'A preview places nothing, so there is no logical write to key. The idempotency key belongs to order.execute.',
+  },
+  confirmation: 'NOT_REQUIRED',
+  implementation: {
+    kind: 'runtime',
+    note: 'Composes getMarket() and getQuote() with the local execution policy. Places no order and signs no transaction.',
+  },
+  input: {
+    type: 'object',
+    required: [...PREVIEW_REQUIRED],
+    additionalProperties: false,
+    properties: PREVIEW_PROPERTIES,
+    allOf: [...ORDER_INTENT_RULES],
+  },
+  examples: [
+    {
+      title: 'Preview a 50 wxUSD buy',
+      input: {
+        accountId: EXAMPLE_ACCOUNT_ID,
+        marketId: EXAMPLE_MARKET_ID,
+        outcomeId: 'YES',
+        side: 'BUY',
+        size: { buyAmount: '50' },
+        maxSlippageBps: 100,
+      },
+    },
+  ],
+};
+
 const orderGet: AgentCommandSpec = {
   ...readOnly,
   name: 'order.get',
@@ -324,6 +384,49 @@ const orderGet: AgentCommandSpec = {
     },
   },
   examples: [{ title: 'Reconcile one execution', input: { executionId: EXAMPLE_EXECUTION_ID } }],
+};
+
+const orderReconcile: AgentCommandSpec = {
+  ...readOnly,
+  name: 'order.reconcile',
+  cli: 'order reconcile',
+  summary: 'Wait for one execution to reach a terminal state.',
+  description:
+    'What to run after an ambiguous outcome — a timed-out wait, a lost connection, a restarted process. It polls one execution until the status is terminal and reports the authoritative fill facts. It places nothing, cancels nothing and signs nothing, so it is always safe to repeat. Exhausting the timeout is again NOT a failure: timedOut is reported and the execution id stays valid.',
+  longRunning: true,
+  implementation: { kind: 'sdk', method: 'waitForExecution' },
+  input: {
+    type: 'object',
+    required: ['executionId'],
+    additionalProperties: false,
+    properties: {
+      executionId: {
+        title: 'Execution id',
+        description: 'From order.execute, and preserved even when its wait timed out.',
+        type: 'string',
+        minLength: 1,
+        maxLength: 128,
+      },
+      timeoutMs: {
+        title: 'Reconciliation timeout (ms)',
+        description:
+          'Bounds the wait. Exceeding it reports timedOut rather than an error, because the order is unaffected either way.',
+        type: 'integer',
+        minimum: 1_000,
+        maximum: 600_000,
+      },
+      pollIntervalMs: {
+        title: 'Poll interval (ms)',
+        description: 'How often the execution is re-read while waiting.',
+        type: 'integer',
+        minimum: 250,
+        maximum: 60_000,
+      },
+    },
+  },
+  examples: [
+    { title: 'Resolve an ambiguous outcome', input: { executionId: EXAMPLE_EXECUTION_ID } },
+  ],
 };
 
 const WAIT_PROPERTIES: Readonly<Record<string, JsonSchema>> = {
@@ -585,7 +688,9 @@ export const AGENT_COMMANDS: readonly AgentCommandSpec[] = [
   accountPositions,
   accountExecutions,
   accountFills,
+  orderPreview,
   orderGet,
+  orderReconcile,
   orderExecute,
   orderExecuteMany,
 ];

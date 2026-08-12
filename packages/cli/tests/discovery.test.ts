@@ -9,14 +9,20 @@
 import { describe, expect, it } from 'vitest';
 
 import { CLI_VERSION, EXIT_CODES } from '../src/index.ts';
-import { BASE_URL, invoke } from './harness.ts';
+import { BASE_URL, CONFIGURED_ENV, invoke } from './harness.ts';
 import manifest from '../package.json' with { type: 'json' };
 
 interface Described {
   runtime: { name: string; version: string; node: string; supportedPlatforms: string[] };
   api: { configured: boolean; baseUrl: string | null; version: string };
   signer: { configured: boolean; canSignTransactions: boolean; policy: string };
-  policy: { mode: string; enforced: boolean };
+  policy: {
+    mode: string;
+    source: string;
+    enforced: boolean;
+    writesAllowed: boolean;
+    approval: { required: boolean; isNotAuthentication?: string };
+  };
   capabilities: { id: string; status: string }[];
   exitCodes: { name: string; code: number; meaning: string }[];
   serverCapabilities: { source: string; marketTextSearch: boolean };
@@ -37,11 +43,34 @@ describe('describe', () => {
     expect(data.signer.configured).toBe(false);
   });
 
-  it('states the read-only policy as enforced, and the signer as unable to sign transactions', async () => {
+  it('defaults to the interactive policy and says an approval is not authentication', async () => {
     const data = (await invoke(['describe'])).envelope.data as Described;
 
-    expect(data.policy).toEqual({ mode: 'read-only', enforced: true, note: expect.any(String) });
-    expect(data.signer.canSignTransactions).toBe(false);
+    expect(data.policy.mode).toBe('interactive');
+    expect(data.policy.source).toBe('DEFAULT');
+    expect(data.policy.enforced).toBe(true);
+    expect(data.policy.writesAllowed).toBe(true);
+    expect(data.policy.approval.required).toBe(true);
+    // The load-bearing disclaimer: a host that read this as authentication would
+    // build a human-in-the-loop guarantee on top of a value any caller can
+    // compute. It has to be stated where the policy is reported.
+    expect(data.policy.approval.isNotAuthentication).toMatch(/not that a person saw/iu);
+  });
+
+  it('reports a narrowed policy as read-only, and the signer as unable to sign', async () => {
+    const configured = (await invoke(['describe'], { env: CONFIGURED_ENV })).envelope
+      .data as Described;
+    expect(configured.signer.canSignTransactions).toBe(true);
+
+    const narrowed = (
+      await invoke(['describe', '--policy', 'read-only'], { env: CONFIGURED_ENV })
+    ).envelope.data as Described;
+
+    expect(narrowed.policy.mode).toBe('read-only');
+    expect(narrowed.policy.source).toBe('FLAG');
+    expect(narrowed.policy.writesAllowed).toBe(false);
+    // Not a promise to behave: `signTransaction` throws before it spawns.
+    expect(narrowed.signer.canSignTransactions).toBe(false);
   });
 
   it('claims only the platforms the plan has committed to', async () => {
@@ -68,7 +97,9 @@ describe('describe', () => {
   it('lists what it cannot do alongside what it can', async () => {
     const data = (await invoke(['describe'])).envelope.data as Described;
 
-    expect(data.limitations.join(' ')).toMatch(/read-only/iu);
+    const limitations = data.limitations.join(' ');
+    expect(limitations).toMatch(/cannot be cancelled/iu);
+    expect(limitations).toMatch(/never atomic/iu);
     expect(data.capabilities.some((entry) => entry.status !== 'AVAILABLE')).toBe(true);
   });
 
