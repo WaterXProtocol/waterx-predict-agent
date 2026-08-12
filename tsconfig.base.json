@@ -4,8 +4,6 @@
     "module": "NodeNext",
     "lib": ["dom", "esnext"],
     "declaration": true,
-    "outDir": "./dist",
-    "rootDir": ".",
     "moduleResolution": "NodeNext",
     "rewriteRelativeImportExtensions": true,
     "esModuleInterop": true,
@@ -16,7 +14,5 @@
     "noImplicitReturns": true,
     "skipLibCheck": true,
     "types": ["node"]
-  },
-  "include": ["src"],
-  "exclude": ["node_modules", "dist", "tests"]
+  }
 }

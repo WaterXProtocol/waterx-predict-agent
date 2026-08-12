@@ -1,0 +1,9 @@
+{
+  "name": "@waterx/predict-agent-mcp",
+  "version": "0.0.0",
+  "private": true,
+  "description": "RESERVED BOUNDARY, NOT IMPLEMENTED. Optional MCP adapter: a thin translation over the same command contract, never a second command surface.",
+  "license": "MIT",
+  "type": "module",
+  "engines": { "node": ">=20" }
+}

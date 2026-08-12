@@ -1,0 +1,9 @@
+{
+  "name": "@waterx/predict-agent-runner",
+  "version": "0.0.0",
+  "private": true,
+  "description": "RESERVED BOUNDARY, NOT IMPLEMENTED. The self-hosted local Runner: durable jobs, approval policy and the signer trust boundary.",
+  "license": "MIT",
+  "type": "module",
+  "engines": { "node": ">=20" }
+}

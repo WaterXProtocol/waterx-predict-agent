@@ -1,14 +1,13 @@
 {
-  "extends": "./tsconfig.base.json",
+  "extends": "./tsconfig.build.json",
   "compilerOptions": {
     "noEmit": true,
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "allowImportingTsExtensions": true,
     "rewriteRelativeImportExtensions": false,
-    "resolveJsonModule": true,
     "types": ["node", "vitest/globals"]
   },
-  "include": ["tests", "vitest.config.ts"],
-  "exclude": ["node_modules", "packages"]
+  "include": ["src", "tests"],
+  "exclude": ["node_modules", "dist"]
 }
