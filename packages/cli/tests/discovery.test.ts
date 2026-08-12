@@ -25,7 +25,12 @@ interface Described {
   };
   capabilities: { id: string; status: string }[];
   exitCodes: { name: string; code: number; meaning: string }[];
-  serverCapabilities: { source: string; marketTextSearch: boolean };
+  serverCapabilities: {
+    source: string;
+    note: string;
+    marketTextSearch: boolean;
+    cursorPagination: boolean;
+  };
   limitations: string[];
   commandContract: { commandCount: number; schemaVersion: string };
 }
@@ -81,8 +86,21 @@ describe('describe', () => {
   it('labels its server-capability claims as its own, not as the server’s', async () => {
     const data = (await invoke(['describe'])).envelope.data as Described;
 
+    // The flags are this build's beliefs about the API and move as the server
+    // grows — `marketTextSearch` became true when B2 landed. What must never
+    // move is the label: nothing here was advertised by a server, so a caller
+    // that hits a disagreement should believe the server's error, not this.
     expect(data.serverCapabilities.source).toBe('STATIC');
-    expect(data.serverCapabilities.marketTextSearch).toBe(false);
+    expect(data.serverCapabilities.note).toMatch(/not something the server advertised/u);
+  });
+
+  it('reports cursor paging as available, because the server grew it', async () => {
+    const data = (await invoke(['describe'])).envelope.data as Described;
+
+    expect(data.serverCapabilities.cursorPagination).toBe(true);
+    // And says plainly where it does NOT apply, so an agent does not go looking
+    // for a cursor on the catalog and read its absence as a bug.
+    expect(data.limitations.join(' ')).toMatch(/catalog pages by `limit` only/u);
   });
 
   it('publishes the exit-code table so a caller need not hard-code it', async () => {

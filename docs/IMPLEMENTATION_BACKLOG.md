@@ -6,11 +6,11 @@ implemented**. The plan describes the intended system; an ADR constrains how it
 gets built; neither is evidence that anything works.
 
 - Verified: 2026-08-12
-- SDK: `codex/waterx-predict-agent-runtime` @ `79ea2ec` plus this commit
-- Backend: `codex/waterx-predict-agent-runtime` @ `7ecad3f3` (**changed** — see
+- SDK: `codex/waterx-predict-agent-runtime` @ `07f030c` plus this commit
+- Backend: `codex/waterx-predict-agent-runtime` @ `2e247fc4` (**changed** — see
   "Contract sync"; the wire surface moved first, then was vendored here)
-- SDK verification: `pnpm typecheck` clean, `pnpm test` 308/308 in 19 files
-  (76 SDK, 71 schema, 141 CLI, 20 workspace), `pnpm build` clean,
+- SDK verification: `pnpm typecheck` clean, `pnpm test` 316/316 in 19 files
+  (78 SDK, 71 schema, 147 CLI, 20 workspace), `pnpm build` clean,
   `pnpm schema:generate` reproduces the committed artifact byte-for-byte.
 
 The repository is a pnpm workspace. `packages/sdk` is the SDK this file tracked
@@ -43,20 +43,29 @@ seam for. The SDK has two, and both are correctly disclosed in
 
 `packages/sdk/src/contract.ts` and
 `bucket-backend-mono/apps/waterx/src/predict/agent-api/agent-api.contract.ts`
-were diffed in full at SDK `HEAD` and backend `7ecad3f3`. Below the file header
+were diffed in full at SDK `HEAD` and backend `2e247fc4`. Below the file header
 (SDK lines 1–28, backend lines 1–22, which differ only in the vendoring notice)
 they are byte-identical. No drift.
 
-**The backend moved first this time.** B1 and B2 could not be closed on the
+**The backend moved first, three times.** B1 and B2 could not be closed on the
 client side — one needs a text index the catalog endpoint did not expose, the
 other needs a risk profile that only an owner-authenticated controller could
 read — so the wire surface changed at `7ecad3f3` (`?search=` plus
 `ListMarketsResponseBody.resolution`; `GET
-accounts/:accountId/effective-limits`), and the complete contract body was then
-re-vendored here in one commit alongside the SDK method, the CLI commands, the
-schema entries and the tests. The change is purely **additive**: no field was
-removed, renamed or retyped, so a client built against the previous contract
-still compiles and still parses every response.
+accounts/:accountId/effective-limits`). B6 followed at `2e247fc4`
+(`PredictAgentListQuery.cursor` on the three account reads, `nextCursor` on their
+response bodies), because paging is a property of the query the database runs and
+no client can synthesise it. Each time the complete contract body was re-vendored
+here in one commit alongside the SDK method, the CLI commands, the schema entries
+and the tests. Every change is purely **additive**: no field was removed, renamed
+or retyped, so a client built against the previous contract still compiles and
+still parses every response.
+
+`nextCursor` is declared **optional**, which is the whole reason a client can tell
+an old server from an exhausted history. If it were `string | null` a server that
+never wrote the key would deserialise as `undefined` and read as "no more pages",
+and a caller reconstructing its full history would stop early while reporting
+itself complete. Absent means unknown; `null` means proven exhausted.
 
 The write plane did not change this. It composes `createOrder` → sign →
 `submitOrder`, `executeMany`, `getExecution` and `waitForExecution` exactly as the
@@ -78,7 +87,8 @@ signing gate are **local** constructs that never appear on the wire.
 | Server-driven retry policy | DONE | `packages/sdk/src/transport.ts`, `packages/sdk/src/errors.ts` |
 | Exact decimal comparison | DONE | `packages/sdk/src/decimal.ts`, `packages/sdk/tests/wait-for-price.test.ts` |
 | `executeMany` independent legs + STOP/CONTINUE | DONE | `packages/sdk/src/client.ts:340` |
-| Allowance / positions / executions / fills reads | DONE | `packages/sdk/src/client.ts:474`–`:531` |
+| Allowance / positions / executions / fills reads | DONE | `packages/sdk/src/client.ts:474`–`:531`. The three history reads take `{ limit?, cursor? }` and return `nextCursor` (B6). |
+| Keyset paging over account history | DONE | `packages/sdk/src/pagination.ts`, backend `2e247fc4`. Opaque row-anchored cursor over `(created_at, id)` for executions, `(filled_at, id)` for fills, `(created_at, id)` for positions, so a page boundary holds while new rows land at the head. `hasMorePages` is three-valued — `true` / `false` / `null` for "the server did not say" — and `isExhausted` is true only on an explicit `null` cursor, which the server proves by reading one row past the page. A malformed, edited, foreign-list or unowned cursor is refused as `INVALID_INPUT`, never ignored (B6). |
 | `waitForPriceAndExecute` in-process trigger | PARTIAL | `packages/sdk/src/client.ts:396`. Correct trigger, fresh re-quote, re-verify, one submission — but in-process only. Dies with the process; not durable. |
 | Execution stream | SEAM | `packages/sdk/src/client.ts:141`. Interface only; caller supplies a Socket.IO adapter. Default path polls. |
 | Quote stream | SEAM | `packages/sdk/src/client.ts:121`. Interface only; default polls `POST /quotes`. |
@@ -205,7 +215,7 @@ Ordered by what blocks the most SDK work.
 | B3 | Quote WS: snapshot + monotonic sequence + gap + SLO | TODO | 2.1, 2.3, 3.3 |
 | B4 | Machine-readable tradeability reason code (closed set) | TODO | 2.9 — ADR-0004 §8. `tradeabilityReason` is free text today. |
 | B5 | Size-aware executable quote | TODO | Honest large-size preview. Today `availableSize`, `expectedFillSize`, `feeAmount` are null and `qualityFlags` carries `TOP_OF_BOOK_ONLY`. |
-| B6 | Cursor pagination for executions / fills / positions | TODO | Complete history reconstruction. `limit` only today, on both the account reads and `market list`, so a caller cannot page past the first window and cannot tell a full page from an exhausted one. Next backend change: an opaque keyset cursor over `(created_at\|filled_at, id)` with `nextCursor` on each list response. |
+| B6 | Cursor pagination for executions / fills / positions | DONE (backend `2e247fc4`) | Unblocked complete history reconstruction. An opaque base64url keyset cursor anchored on a **row id**, not a timestamp — `TIMESTAMPTZ` is microsecond-precision and a JS `Date` is millisecond, so a timestamp cursor loses rows at the boundary. Keyset, not offset: rows arrive at the head mid-walk, and an offset would repeat or skip. `limit` alone still works, so the change is additive. Every cursor is version-tagged, kind-tagged and canonically re-encoded on decode, and is refused as `INVALID_REQUEST` if it is malformed, truncated, non-canonically spelled, minted for a different list, or names a row belonging to another agent — silently ignoring one restarts the page at the newest row and the caller double-counts it. `nextCursor: null` is proven by reading `limit + 1`, never inferred from page length. **`market list` deliberately gets no cursor**: the catalog is a mutable set with no stable insert order to anchor on, so `?cursor=` there is a 400 rather than a no-op, and the CLI rejects the flag before any request. |
 | B7 | Server capability advertisement | TODO | 3.3 |
 | B8 | Performance reads: realized PnL, win rate, trade count, attribution | TODO | Scenario 5. Scope-gated by D-24. |
 

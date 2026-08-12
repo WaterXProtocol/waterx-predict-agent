@@ -318,11 +318,33 @@ describe('reads', () => {
   it('passes limit as a query parameter', async () => {
     const { client, calls } = makeClient([json(200, { positions: [] })]);
 
-    await client.getPositions('0xacct', 10);
+    await client.getPositions('0xacct', { limit: 10 });
 
     expect(calls[0]?.url).toBe(
       'https://api.test/agent-api/v1/predict/accounts/0xacct/positions?limit=10',
     );
+  });
+
+  it('sends a page cursor back exactly as the server issued it', async () => {
+    const { client, calls } = makeClient([json(200, { fills: [], nextCursor: null })]);
+    const cursor = 'djE6RklMTFM6M2YxYjljMmU';
+
+    await client.getFills('0xacct', { limit: 2, cursor });
+
+    // Verbatim, and URL-encoded rather than reformatted. A client that
+    // normalised a cursor would be honoured against a row it did not mean.
+    expect(calls[0]?.url).toBe(
+      `https://api.test/agent-api/v1/predict/accounts/0xacct/fills?limit=2&cursor=${cursor}`,
+    );
+  });
+
+  it('does not send a cursor parameter when there is no cursor', async () => {
+    const { client, calls } = makeClient([json(200, { fills: [] })]);
+
+    await client.getFills('0xacct', { limit: 2 });
+
+    // `?cursor=` is not "no cursor" — the server refuses it, correctly.
+    expect(calls[0]?.url).not.toContain('cursor');
   });
 
   it('omits limit when not supplied', async () => {

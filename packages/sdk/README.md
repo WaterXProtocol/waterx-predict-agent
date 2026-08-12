@@ -173,8 +173,9 @@ for (const entry of results) {
 | `executeMany(intents, options?)` | Independent legs, bounded concurrency |
 | `waitForExecution(id, options?)` | Wait for terminal facts; also the reconciliation entry point |
 | `getExecution(id)` | Poll one execution |
-| `listExecutions(accountId, limit?)` | Your order history on that account |
-| `getPositions(accountId, limit?)` | Positions you opened, with cost basis |
+| `listExecutions(accountId, page?)` | Your order history on that account, newest first |
+| `getFills(accountId, page?)` | Filled executions only, by fill time |
+| `getPositions(accountId, page?)` | Positions you opened, with cost basis |
 | `getAllowance(accountId)` | API allowance, real balance, and the binding minimum |
 | `getEffectiveLimits(accountId)` | The mandate: limits, window usage, delegation, blockers |
 | `searchMarkets(query)` | Free text → one market id, **resolved server-side** |
@@ -196,6 +197,32 @@ page of one is never a unique answer. The client does not match, score or
 tie-break locally: against a server too old to answer with a `resolution` it
 reports `NOT_FOUND` rather than inferring an id. Candidate order is a
 reproducible tie-break, not a ranking of which market is worth trading.
+
+### Paging the account history
+
+`listExecutions`, `getFills` and `getPositions` take `{ limit?, cursor? }` and
+answer with `nextCursor`. Paging is **keyset**, anchored on a row rather than an
+offset or a timestamp, so a page boundary does not shift when new executions land
+at the head mid-walk — an offset would silently repeat or skip rows there.
+
+`nextCursor` is three-valued and the three must stay apart:
+
+| Value | Meaning |
+| --- | --- |
+| a string | Pass it as `cursor` for the next page |
+| `null` | Provably exhausted — the server read one row past the page and found none |
+| absent | The server predates keyset paging. **Unknown**, not finished |
+
+`hasMorePages(response)` returns `true | false | null` for exactly those three,
+and `isExhausted(response)` is true only on an explicit `null`. A reconstruction
+that must be complete should treat `null` as a failure to answer.
+
+A cursor is opaque, is minted for one list, and is **refused** — `INVALID_INPUT`,
+not ignored — if it is malformed, edited, minted for a different list, or names a
+row belonging to another agent. A silently-ignored cursor restarts the page at
+the newest row, and a caller walking backwards would then count that page twice.
+The market catalog is deliberately limit-only: `market list` has no cursor, and
+sending one is rejected rather than dropped.
 
 > The API allowance is a WaterX **API policy**, not a protocol guarantee. A
 > delegated key can bypass it by submitting directly to Sui. On-chain delegation

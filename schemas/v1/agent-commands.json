@@ -174,10 +174,17 @@
     },
     "limit": {
       "title": "Page size",
-      "description": "Rows to return. The server caps this at 200 and has no cursor yet.",
+      "description": "Rows to return. The server caps this at 200. On the account history reads it composes with `cursor`; the market catalog has no cursor, so there `limit` is the whole of paging.",
       "type": "integer",
       "minimum": 1,
       "maximum": 200
+    },
+    "cursor": {
+      "title": "Page cursor",
+      "description": "The `nextCursor` from the previous page, passed back VERBATIM. Omit it for the newest page. It names the exact row the last page ended on, so rows arriving at the head between two requests cannot shift anything past you. A cursor that is edited, truncated, or taken from a different list is REJECTED with INVALID_REQUEST, never silently ignored.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
     },
     "searchText": {
       "title": "Search text",
@@ -822,6 +829,9 @@
           },
           "limit": {
             "$ref": "#/$defs/limit"
+          },
+          "cursor": {
+            "$ref": "#/$defs/cursor"
           }
         },
         "description": "Positions on one account, newest first."
@@ -840,7 +850,7 @@
       "name": "account.executions",
       "cli": "account executions",
       "summary": "List this agent’s executions on one account.",
-      "description": "Order history including non-terminal rows. SUBMITTED and PENDING_FILL are not fills — read the terminal status before reporting a trade as done. Paging is limit-only today; there is no cursor, so a complete history cannot be reconstructed past the cap.",
+      "description": "Order history including non-terminal rows. SUBMITTED and PENDING_FILL are not fills — read the terminal status before reporting a trade as done. Paging is keyset: pass the response’s nextCursor back as cursor to walk older rows. nextCursor null means the server proved the history is exhausted; an absent nextCursor means it did not answer, which is not the same as no.",
       "classification": "read",
       "sideEffects": [
         "NONE"
@@ -868,6 +878,9 @@
           },
           "limit": {
             "$ref": "#/$defs/limit"
+          },
+          "cursor": {
+            "$ref": "#/$defs/cursor"
           }
         },
         "description": "Executions on one account, newest first."
@@ -878,6 +891,14 @@
           "input": {
             "accountId": "0x1111111111111111111111111111111111111111111111111111111111111111",
             "limit": 50
+          }
+        },
+        {
+          "title": "Walk to the next page",
+          "input": {
+            "accountId": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "limit": 50,
+            "cursor": "ZXhhbXBsZS1jdXJzb3ItZG8tbm90LWNvbnN0cnVjdA"
           }
         }
       ]
@@ -914,6 +935,9 @@
           },
           "limit": {
             "$ref": "#/$defs/limit"
+          },
+          "cursor": {
+            "$ref": "#/$defs/cursor"
           }
         },
         "description": "Fills on one account, newest first."

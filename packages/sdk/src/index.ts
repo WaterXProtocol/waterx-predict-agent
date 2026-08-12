@@ -35,6 +35,7 @@ export {
   isRetryable,
   isUnauthenticated,
 } from './errors.ts';
+export { hasMorePages, isExhausted, pageQuery } from './pagination.ts';
 export { buildAuthMessage, type AgentSigner, type SignatureWithBytes } from './signer.ts';
 export type { RetryOptions, TransportOptions } from './transport.ts';
 export type * from './contract.ts';

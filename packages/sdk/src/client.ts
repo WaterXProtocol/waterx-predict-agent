@@ -28,6 +28,7 @@ import {
   type ListMarketsResponseBody,
   type ListPositionsResponseBody,
   PREDICT_AGENT_API_ROUTES,
+  type PredictAgentListQuery,
   type PredictAllowanceResponseBody,
   type PredictEffectiveLimitsResponseBody,
   type PredictMarketResolution,
@@ -35,6 +36,7 @@ import {
   type SubmitExecutionResponseBody,
 } from './contract.ts';
 import { targetReached } from './decimal.ts';
+import { pageQuery } from './pagination.ts';
 import { PredictAgentApiError } from './errors.ts';
 import {
   type ExecutionOutcome,
@@ -511,46 +513,55 @@ export class PredictAgentClient {
     });
   }
 
+  /**
+   * Positions this agent opened on one account, newest first.
+   *
+   * Pass `{ cursor }` from the previous response's `nextCursor` to continue.
+   * `nextCursor: null` is the end of the history; an ABSENT `nextCursor` means
+   * the server did not answer the question and the walk is incomplete — see
+   * {@link isExhausted}.
+   */
   async getPositions(
     accountId: string,
-    limit?: number,
+    page?: PredictAgentListQuery,
     signal?: AbortSignal,
   ): Promise<ListPositionsResponseBody> {
     return await this.transport.request<ListPositionsResponseBody>({
       method: 'GET',
       path: PREDICT_AGENT_API_ROUTES.positions.replace(':accountId', accountId),
-      query: { limit },
+      query: pageQuery(page),
       authenticated: true,
       idempotent: true,
       ...(signal !== undefined ? { signal } : {}),
     });
   }
 
+  /** This agent's order history on one account, newest first. Paged like {@link getPositions}. */
   async listExecutions(
     accountId: string,
-    limit?: number,
+    page?: PredictAgentListQuery,
     signal?: AbortSignal,
   ): Promise<ListExecutionsResponseBody> {
     return await this.transport.request<ListExecutionsResponseBody>({
       method: 'GET',
       path: PREDICT_AGENT_API_ROUTES.listExecutions.replace(':accountId', accountId),
-      query: { limit },
+      query: pageQuery(page),
       authenticated: true,
       idempotent: true,
       ...(signal !== undefined ? { signal } : {}),
     });
   }
 
-  /** This agent's confirmed fills on one account, newest first. */
+  /** This agent's confirmed fills on one account, newest first. Paged like {@link getPositions}. */
   async getFills(
     accountId: string,
-    limit?: number,
+    page?: PredictAgentListQuery,
     signal?: AbortSignal,
   ): Promise<ListFillsResponseBody> {
     return await this.transport.request<ListFillsResponseBody>({
       method: 'GET',
       path: PREDICT_AGENT_API_ROUTES.fills.replace(':accountId', accountId),
-      query: { limit },
+      query: pageQuery(page),
       authenticated: true,
       idempotent: true,
       ...(signal !== undefined ? { signal } : {}),

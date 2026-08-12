@@ -185,10 +185,30 @@ const maxSlippageBps: JsonSchema = {
 
 const limit: JsonSchema = {
   title: 'Page size',
-  description: 'Rows to return. The server caps this at 200 and has no cursor yet.',
+  description:
+    'Rows to return. The server caps this at 200. On the account history reads it composes with `cursor`; the market catalog has no cursor, so there `limit` is the whole of paging.',
   type: 'integer',
   minimum: 1,
   maximum: 200,
+};
+
+/**
+ * The keyset page cursor for the account history reads.
+ *
+ * Opaque: it is passed back exactly as received. No `pattern` is asserted beyond
+ * non-empty, because its contents are the server's business and a local format
+ * rule would start refusing valid cursors the day the server changes its
+ * encoding. The server refuses one it cannot honour, and that refusal is the
+ * check that matters — an ignored cursor would restart the page at the newest
+ * row and a caller walking a history would count those rows twice.
+ */
+const cursor: JsonSchema = {
+  title: 'Page cursor',
+  description:
+    'The `nextCursor` from the previous page, passed back VERBATIM. Omit it for the newest page. It names the exact row the last page ended on, so rows arriving at the head between two requests cannot shift anything past you. A cursor that is edited, truncated, or taken from a different list is REJECTED with INVALID_REQUEST, never silently ignored.',
+  type: 'string',
+  minLength: 1,
+  maxLength: 512,
 };
 
 /**
@@ -318,6 +338,7 @@ export const COMMAND_SCHEMA_DEFS: Readonly<Record<string, JsonSchema>> = {
   positionAgreement,
   maxSlippageBps,
   limit,
+  cursor,
   searchText,
   idempotencyKey,
   orderIntent,

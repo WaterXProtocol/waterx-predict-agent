@@ -116,6 +116,8 @@ const EXAMPLE_MARKET_ID = `0x${'22'.repeat(32)}`;
 const EXAMPLE_POSITION_ID = `0x${'33'.repeat(32)}`;
 const EXAMPLE_QUOTE_ID = 'quo_example_0000000000';
 const EXAMPLE_EXECUTION_ID = 'exec_example_000000000';
+/** Obviously not a real cursor: a caller must only ever echo one back verbatim. */
+const EXAMPLE_CURSOR = 'ZXhhbXBsZS1jdXJzb3ItZG8tbm90LWNvbnN0cnVjdA';
 
 const NO_IDEMPOTENCY: AgentCommandIdempotency = {
   required: false,
@@ -138,6 +140,7 @@ const accountScopedList = (rowDescription: string): JsonSchema => ({
   properties: {
     accountId: { $ref: '#/$defs/accountId' },
     limit: { $ref: '#/$defs/limit' },
+    cursor: { $ref: '#/$defs/cursor' },
   },
   description: rowDescription,
 });
@@ -345,10 +348,16 @@ const accountExecutions: AgentCommandSpec = {
   cli: 'account executions',
   summary: 'List this agent’s executions on one account.',
   description:
-    'Order history including non-terminal rows. SUBMITTED and PENDING_FILL are not fills — read the terminal status before reporting a trade as done. Paging is limit-only today; there is no cursor, so a complete history cannot be reconstructed past the cap.',
+    'Order history including non-terminal rows. SUBMITTED and PENDING_FILL are not fills — read the terminal status before reporting a trade as done. Paging is keyset: pass the response’s nextCursor back as cursor to walk older rows. nextCursor null means the server proved the history is exhausted; an absent nextCursor means it did not answer, which is not the same as no.',
   implementation: { kind: 'sdk', method: 'listExecutions' },
   input: accountScopedList('Executions on one account, newest first.'),
-  examples: [{ title: 'List executions', input: { accountId: EXAMPLE_ACCOUNT_ID, limit: 50 } }],
+  examples: [
+    { title: 'List executions', input: { accountId: EXAMPLE_ACCOUNT_ID, limit: 50 } },
+    {
+      title: 'Walk to the next page',
+      input: { accountId: EXAMPLE_ACCOUNT_ID, limit: 50, cursor: EXAMPLE_CURSOR },
+    },
+  ],
 };
 
 const accountFills: AgentCommandSpec = {

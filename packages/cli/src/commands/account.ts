@@ -12,7 +12,12 @@
  * default: an agent that reads a fabricated limit will size against it, and
  * "unset" and "unlimited" are opposite instructions.
  */
-import type { PredictEffectiveLimitsResponseBody } from '@waterx/predict-agent-sdk';
+import {
+  hasMorePages,
+  type PredictAgentListQuery,
+  type PredictEffectiveLimitsResponseBody,
+  type PredictPagedListResponse,
+} from '@waterx/predict-agent-sdk';
 
 import type { CommandContext } from '../context.ts';
 
@@ -25,6 +30,13 @@ const NO_MANDATE = {
     'The account owner must create the profile through the owner-authenticated surface (ADR-0003). An agent credential can read a mandate and can never raise one.',
 } as const;
 
+/**
+ * Said on every history read, because the guarantee is not obvious and the
+ * failure it prevents is silent.
+ */
+const PAGING_CAVEAT =
+  'Pass `nextCursor` back as `--cursor` to continue; the cursor names a row, so a trade landing between two pages cannot shift rows past you. `hasMore: false` means the server proved there is nothing older; `hasMore: null` means it did not say.';
+
 const RISK_CAVEATS: readonly string[] = [
   'An empty `blockers` is not a promise of a fill. It says these limits do not currently refuse an order; the market must still be tradeable, the quote still executable, and the chain still decides last.',
   'A null `delegation` permission means the chain read FAILED — not that it was denied. Treat it as unknown and retry; treating it as a revocation would tear down a healthy strategy.',
@@ -35,6 +47,46 @@ const accountId = (context: CommandContext): string => String(context.input.acco
 
 const limitOf = (context: CommandContext): number | undefined =>
   typeof context.input.limit === 'number' ? context.input.limit : undefined;
+
+/**
+ * The page request, with absent fields left absent.
+ *
+ * A cursor is passed through UNREAD. It is the server's opaque text; parsing,
+ * trimming or regenerating one here would make this CLI a second authority on
+ * where a page starts, and a cursor it "repaired" would be honoured against the
+ * wrong row.
+ */
+function pageOf(context: CommandContext): PredictAgentListQuery {
+  const limit = limitOf(context);
+  const cursor = typeof context.input.cursor === 'string' ? context.input.cursor : undefined;
+  return {
+    ...(limit !== undefined ? { limit } : {}),
+    ...(cursor !== undefined ? { cursor } : {}),
+  };
+}
+
+/**
+ * The paging facts of a list response, in the shape every history command
+ * reports them.
+ *
+ * `hasMore: null` is load-bearing. It means the server did not answer the
+ * question — an older deployment with no keyset paging — and it must not read as
+ * `false`, or a caller reconstructing a history would stop early and believe it
+ * had everything.
+ */
+function pagingOf(response: PredictPagedListResponse): Record<string, unknown> {
+  const more = hasMorePages(response);
+  return {
+    nextCursor: response.nextCursor ?? null,
+    hasMore: more,
+    ...(more === null
+      ? {
+          hasMoreReason:
+            'This server did not return a `nextCursor` field at all, so whether more rows exist is UNKNOWN — not no.',
+        }
+      : {}),
+  };
+}
 
 export async function accountAllowance(context: CommandContext): Promise<unknown> {
   const client = await context.client();
@@ -51,12 +103,14 @@ export async function accountAllowance(context: CommandContext): Promise<unknown
 
 export async function accountPositions(context: CommandContext): Promise<unknown> {
   const client = await context.client();
-  const response = await client.getPositions(accountId(context), limitOf(context), context.signal());
+  const response = await client.getPositions(accountId(context), pageOf(context), context.signal());
   return {
     accountId: accountId(context),
     positions: response.positions,
     count: response.positions.length,
+    ...pagingOf(response),
     caveats: [
+      PAGING_CAVEAT,
       'Scope is API-attributed activity. A direct-chain trade by the same delegated key is not included.',
       '`shares`, `avgEntryPrice` and `unrealizedPnl` are null — not zero — when the underlying fact is unknown. Zero would assert a flat or break-even position.',
     ],
@@ -65,26 +119,29 @@ export async function accountPositions(context: CommandContext): Promise<unknown
 
 export async function accountExecutions(context: CommandContext): Promise<unknown> {
   const client = await context.client();
-  const response = await client.listExecutions(accountId(context), limitOf(context), context.signal());
+  const response = await client.listExecutions(accountId(context), pageOf(context), context.signal());
   return {
     accountId: accountId(context),
     executions: response.executions,
     count: response.executions.length,
+    ...pagingOf(response),
     caveats: [
       'SUBMITTED and PENDING_FILL are not fills. Read a terminal status before reporting a trade as done.',
-      'Paging is limit-only; there is no cursor, so a history longer than the cap cannot be fully reconstructed (backlog B6).',
+      PAGING_CAVEAT,
     ],
   };
 }
 
 export async function accountFills(context: CommandContext): Promise<unknown> {
   const client = await context.client();
-  const response = await client.getFills(accountId(context), limitOf(context), context.signal());
+  const response = await client.getFills(accountId(context), pageOf(context), context.signal());
   return {
     accountId: accountId(context),
     fills: response.fills,
     count: response.fills.length,
+    ...pagingOf(response),
     caveats: [
+      PAGING_CAVEAT,
       '`txDigest` is the keeper transaction that settled the fill, not the agent’s submission.',
       '`actualFee` is null rather than zero: the published price is already fee-adjusted, so no separate fee is observable.',
       'Scope is API-attributed activity. A direct-chain trade by the same delegated key is not included.',
@@ -146,7 +203,7 @@ export async function accountStatus(context: CommandContext): Promise<unknown> {
   const client = await context.client();
   const [facts, positions] = await Promise.all([
     client.getEffectiveLimits(id, context.signal()),
-    client.getPositions(id, limitOf(context), context.signal()),
+    client.getPositions(id, pageOf(context), context.signal()),
   ]);
 
   return {
@@ -159,7 +216,7 @@ export async function accountStatus(context: CommandContext): Promise<unknown> {
     },
     caveats: [
       '`asOf` is when this runtime assembled the two reads, not a server-side consistent snapshot. They can differ by the time between them.',
-      'The position list obeys `limit`, so `openPositions` counts what was returned, not necessarily everything held.',
+      'The position list obeys `limit`, so `openPositions` counts what was returned, not necessarily everything held. `account positions --cursor` walks the rest; this composite reports only its first page.',
       '`capacity` is null exactly when there is no mandate: the allowance ledger only exists under one. Null is denial, not an unlimited budget.',
       ...RISK_CAVEATS,
     ],

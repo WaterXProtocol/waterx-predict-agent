@@ -130,6 +130,59 @@ export interface PredictQuote {
   onchainSelection: PredictOutcomeId;
 }
 
+/* ── Paging ──────────────────────────────────────────────────────────────── */
+
+/**
+ * An opaque page cursor. Base64url text whose contents are this server's
+ * business — a client must never parse, construct, or edit one.
+ *
+ * It is a KEYSET cursor, not an offset. It names the exact row the previous page
+ * ended on, and the next page is everything ordered strictly after that row. An
+ * offset would silently skip rows whenever anything landed at the head between
+ * two requests, and an agent reconstructing its own order history would end up
+ * with a gap it has no way to detect.
+ */
+export type PredictPageCursor = string;
+
+/**
+ * Paging for the agent-scoped history reads.
+ *
+ * The two fields compose: `limit` sizes a page, `cursor` says where it starts,
+ * and `limit` alone still means "the newest page".
+ *
+ * A cursor this server cannot decode — truncated, edited, or minted for a
+ * DIFFERENT list — is REJECTED with `INVALID_REQUEST`. It is never ignored:
+ * ignoring it restarts the page at the head, and a caller walking its history
+ * would append the newest rows a second time and double-count every fill in them.
+ */
+export interface PredictAgentListQuery {
+  /** Rows per page. The server's own default and maximum still apply. */
+  limit?: number;
+  /** The `nextCursor` of the previous page. Omit for the first page. */
+  cursor?: PredictPageCursor;
+}
+
+export type ListExecutionsQuery = PredictAgentListQuery;
+export type ListFillsQuery = PredictAgentListQuery;
+export type ListPositionsQuery = PredictAgentListQuery;
+
+/**
+ * The paging half of a list response. Three-valued on purpose:
+ *
+ *   - a STRING is the cursor to pass back for the next page;
+ *   - `null` means EXHAUSTED. The server looked one row past this page and found
+ *     nothing, so this is the end of the history — not merely the end of a page;
+ *   - ABSENT means the deployment predates keyset paging and did not answer the
+ *     question at all. That is UNKNOWN, and reading it as exhausted would end a
+ *     reconstruction early while claiming it was complete.
+ *
+ * A full page is not evidence that more exists, and a short one is not evidence
+ * that it does not — only this field answers that.
+ */
+export interface PredictPagedListResponse {
+  nextCursor?: PredictPageCursor | null;
+}
+
 /* ── Executions ──────────────────────────────────────────────────────────── */
 
 export interface CreateExecutionRequestBody {
@@ -269,7 +322,7 @@ export interface PredictExecutionSummary {
   terminalAt: Iso8601 | null;
 }
 
-export interface ListExecutionsResponseBody {
+export interface ListExecutionsResponseBody extends PredictPagedListResponse {
   executions: PredictExecutionSummary[];
 }
 
@@ -310,7 +363,7 @@ export interface PredictPositionSummary {
   openedAt: Iso8601;
 }
 
-export interface ListPositionsResponseBody {
+export interface ListPositionsResponseBody extends PredictPagedListResponse {
   positions: PredictPositionSummary[];
 }
 
@@ -680,6 +733,14 @@ export interface PredictMarketResolution {
  * are derived from the round clock rather than stored — so a filtered page can
  * be shorter than `limit` without meaning the catalog is exhausted. Ask for more
  * than you need when filtering on them.
+ *
+ * DELIBERATELY NO `cursor`, unlike the account history reads. Those page over
+ * stored rows with an immutable sort key; this page is projected in memory and
+ * ordered partly by facts derived from the round clock, so a key that identified
+ * a row now can order differently a minute later — a cursor over it would look
+ * exactly like the keyset guarantee while skipping markets as rounds advance.
+ * Narrow the catalog with `category`, `status`, `updatedAfter` or `search`
+ * instead; it is bounded, and history is the thing that grows without limit.
  */
 export interface ListMarketsQuery {
   limit?: number;
@@ -764,7 +825,7 @@ export interface PredictFill {
   filledAt: Iso8601;
 }
 
-export interface ListFillsResponseBody {
+export interface ListFillsResponseBody extends PredictPagedListResponse {
   fills: PredictFill[];
 }
 

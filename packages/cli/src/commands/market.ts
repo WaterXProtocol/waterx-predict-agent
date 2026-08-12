@@ -28,7 +28,7 @@ function toMarketQuery(input: Readonly<Record<string, unknown>>): ListMarketsQue
 const LIST_CAVEATS: readonly string[] = [
   'Outcome prices here are INDICATIVE top-of-book and are not executable. Use `market quote` before acting on one.',
   '`status` and `tradeable` are applied after the page is assembled, so a filtered page can be shorter than `limit` without the catalog being exhausted.',
-  'Paging is limit-only on this API version; there is no cursor (backlog B6).',
+  'The catalog has NO cursor, unlike the account history reads: this page is projected in memory and ordered partly by round-clock facts, so no stable key exists to anchor one. Narrow with category, status, updatedAfter or search rather than paging deeper — `?cursor=` here is refused, not ignored.',
 ];
 
 export async function marketList(context: CommandContext): Promise<unknown> {

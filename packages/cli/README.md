@@ -393,11 +393,15 @@ key file. This is covered by `tests/secrets.test.ts`.
   independently, and a partial batch is a normal outcome, not an error.
 - A wait that times out is not a failure: it exits `AMBIGUOUS` (11) and the
   order may still fill. Reconcile it — never resubmit it.
-- Risk limits are owner-authenticated. An agent credential may read effective
-  limits but cannot raise them, and this build cannot yet read them at all
-  (ADR-0003, backlog B1) — so `riskLimits.available` is `false`.
-- Paging is limit-only; there is no cursor, so a history longer than the cap
-  cannot be fully reconstructed (backlog B6).
+- Risk limits are owner-authenticated. An agent credential may **read** its
+  effective limits and can never raise them (ADR-0003); every write stays on the
+  owner-authenticated controller and is not reachable from this CLI.
+- The market catalog pages by `--limit` only. It has no cursor — the page is
+  projected in memory and ordered partly by round-clock facts, so there is no
+  stable key to anchor on — and `--cursor` is refused there rather than ignored.
+  Account history (`positions`, `executions`, `fills`) does page by `--cursor`:
+  each response carries `nextCursor` plus a `hasMore` reading, where `hasMore:
+  null` means the server did not answer and the walk may be incomplete.
 - Quotes are size-blind: `availableSize` and `expectedFillSize` come back null
   and a large order can be correctly priced and still fail to fill (backlog B5).
 - Positions, executions and fills cover API-attributed activity only. A

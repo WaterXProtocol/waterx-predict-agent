@@ -523,3 +523,75 @@ describe('account reads', () => {
     expect(result.fetches).toHaveLength(0);
   });
 });
+
+/**
+ * Paging, from the caller's side. What matters is not that a cursor round-trips
+ * — it is that the three answers stay three: "here is the next page", "there is
+ * provably nothing older", and "this server did not say".
+ */
+describe('account history paging', () => {
+  const EXECUTIONS = `GET ${ACCOUNT_PATH}/executions`;
+
+  it('sends --cursor to the server untouched and reports the next one', async () => {
+    const cursor = 'djE6RVhFQ1VUSU9OUzozZjFiOWMyZQ';
+    const result = await invoke(
+      ['account', 'executions', '--accountId', ACCOUNT_ID, '--limit', '1', '--cursor', cursor],
+      withAuth({
+        [EXECUTIONS]: { status: 200, body: { executions: [{ executionId: 'e1' }], nextCursor: 'next-1' } },
+      }),
+    );
+    const data = result.envelope.data as { nextCursor: string | null; hasMore: boolean | null };
+
+    expect(result.exit).toBe(EXIT_CODES.OK);
+    expect(result.fetches[1]?.url).toContain(`cursor=${cursor}`);
+    expect(data.nextCursor).toBe('next-1');
+    expect(data.hasMore).toBe(true);
+  });
+
+  it('reports hasMore: false only when the server proved the history is exhausted', async () => {
+    const result = await invoke(
+      ['account', 'fills', '--accountId', ACCOUNT_ID, '--limit', '50'],
+      withAuth({ [`GET ${ACCOUNT_PATH}/fills`]: { status: 200, body: { fills: [], nextCursor: null } } }),
+    );
+    const data = result.envelope.data as { nextCursor: string | null; hasMore: boolean | null };
+
+    expect(data.nextCursor).toBeNull();
+    expect(data.hasMore).toBe(false);
+  });
+
+  it('reports hasMore: null — with a reason — when the server never answered', async () => {
+    // An older deployment with no keyset paging. Reporting `false` here would
+    // tell a caller its reconstruction was complete when it may not be.
+    const result = await invoke(
+      ['account', 'positions', '--accountId', ACCOUNT_ID, '--limit', '1'],
+      withAuth({ [`GET ${ACCOUNT_PATH}/positions`]: { status: 200, body: { positions: [] } } }),
+    );
+    const data = result.envelope.data as {
+      hasMore: boolean | null;
+      hasMoreReason?: string;
+    };
+
+    expect(data.hasMore).toBeNull();
+    expect(data.hasMoreReason).toMatch(/UNKNOWN/u);
+  });
+
+  it('sends no cursor parameter at all when none was given', async () => {
+    const result = await invoke(
+      ['account', 'executions', '--accountId', ACCOUNT_ID, '--limit', '1'],
+      withAuth({ [EXECUTIONS]: { status: 200, body: { executions: [], nextCursor: null } } }),
+    );
+
+    // `?cursor=` is a malformed cursor, not an absent one, and the server
+    // refuses it — so an empty flag must never be synthesised here.
+    expect(result.fetches[1]?.url).not.toContain('cursor');
+  });
+
+  it('refuses a cursor on the market catalog, which has none', async () => {
+    const result = await invoke(['market', 'list', '--cursor', 'anything'], withAuth({}));
+
+    // Rejected locally rather than sent and silently ignored: `market list`
+    // pages by limit only, on purpose, so there is no such flag to accept.
+    expect(result.exit).toBe(EXIT_CODES.USAGE);
+    expect(result.fetches).toHaveLength(0);
+  });
+});
