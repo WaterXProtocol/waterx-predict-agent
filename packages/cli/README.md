@@ -87,7 +87,7 @@ On failure, `data` is absent and `error` is present:
 - **`command`** is the contract command name (`market.list`) when the invocation
   resolved to one. A refused capability has no contract entry — deliberately, so
   an adapter cannot advertise it — so it reports the invocation instead
-  (`market search`).
+  (`market history`).
 - **`error.source`** says whose namespace `error.code` belongs to: `CLI` for
   this runtime's own refusals, `SERVER` for the exchange's, `TRANSPORT` when no
   response was seen at all.
@@ -128,22 +128,41 @@ it without reconciling is how an agent places the same order twice.
 | --- | --- |
 | `describe`, `command-schema`, `doctor` | available; the first two need no network |
 | `market list`, `market get`, `market quote` | available |
+| `market search` | available; the **server** resolves the text, exits 11 unless exactly one matched |
 | `account status`, `account allowance`, `account positions`, `account executions`, `account fills` | available |
+| `account risk-limits` | available; reads the mandate, cannot raise it |
 | `order preview` | available; places nothing, signs nothing |
 | `order execute`, `order execute-many` | available; subject to the execution policy |
 | `order get`, `order reconcile` | available; reads only |
-| `market search` | **refused** — `NO_SERVER_ENDPOINT` (B2) |
 | `market history` | **refused** — `NO_SERVER_ENDPOINT` (D-25) |
-| `account risk-limits` | **refused** — `OWNER_AUTHENTICATED` (ADR-0003, B1) |
 | `order cancel` | **refused** — `NO_SERVER_ENDPOINT`; a market order is filled or refused, never resting |
 | `strategy`, `runner` | not implemented in this build |
 
 A refusal exits 7 with `error.code` `CAPABILITY_UNAVAILABLE` and a symbolic
-`reason`, and it makes **no network call at all**. `market search` is the
-clearest case: the API filters on category, status, tradeable and updatedAfter
-only, so matching free text against a truncated page locally would hand back a
-`marketId` this CLI chose rather than one the server resolved. Market identity
-is resolved by the server or not at all.
+`reason`, and it makes **no network call at all**. `market history` is the
+clearest case: there is no endpoint that returns a price series, and a CLI that
+assembled one out of repeated catalog reads would be publishing a history it
+invented.
+
+`market search` and `account risk-limits` were both on that list and are not any
+more. The only thing that moves a command off it is a **server endpoint**, never
+the client learning to approximate one:
+
+- `market search` sends the text to `?search=` and reports the server's
+  `resolution` verbatim. It never matches, scores or tie-breaks locally, and it
+  never fills in a `marketId` the server left null. Anything but a unique match
+  exits 11 (`AMBIGUOUS`) with `marketId: null` — the read succeeded, the
+  identity did not. Candidate order is a reproducible tie-break (match
+  specificity, then the round clock, then the id); it is not a ranking of which
+  market is worth trading, and nothing here is trading advice.
+- `account risk-limits` reads the effective mandate an owner granted this agent:
+  the limits, the hour already consumed, the on-chain delegation, and what would
+  refuse a write right now. It is **read-only by construction** — risk-profile
+  writes stay with the owner-authenticated UI/API (ADR-0003), and an agent
+  credential cannot raise its own limit. `limits: null` reports
+  `{ "available": false, "reason": "NO_RISK_PROFILE" }`: absence is denial, not
+  an unlimited default. A `null` delegation permission means the chain read
+  **failed**, which is not the same as `false`.
 
 ## Execution policy
 
@@ -257,9 +276,14 @@ whose outcome is *unknown* outranks any known refusal, and the batch exits 11.
 Retrying a batch on a refusal code while one leg is still filling is exactly the
 mistake that ordering prevents.
 
-**Effective risk limits are not readable by an agent credential** on this API
-version. `preview` reports them as unavailable with a reason and points at
-`capacity.effectiveBuyCapacity` instead. None is guessed (ADR-0003, backlog B1).
+**`preview` reports the mandate it would trade under, and can never raise it.**
+Outside `read-only` mode it reads the effective limits alongside the quote and
+returns them with the blockers, the delegation and the hour already consumed, so
+a caller sees what would refuse a write *before* signing anything. That is a
+report, not enforcement: the server decides, and this CLI does not pre-refuse on
+a limit it merely read. Nothing is ever synthesized — a limit that was not read
+says `{"available": false, "reason": "NOT_READ"}`, an account with no mandate
+says `NO_RISK_PROFILE`, and neither is an unlimited default (ADR-0003).
 
 ## Input
 

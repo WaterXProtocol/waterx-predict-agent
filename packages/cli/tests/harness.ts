@@ -94,6 +94,47 @@ export const ALLOWANCE_OK = {
 } as const;
 
 /**
+ * A live mandate with room in it: the same allowance as above, no blockers, both
+ * delegation permissions granted.
+ *
+ * The allowance body is reused deliberately — `account status` and `order
+ * preview` read capacity out of THIS response now, so a test that changed one
+ * and not the other would be asserting against two different accounts.
+ */
+export const EFFECTIVE_LIMITS_OK = {
+  status: 200,
+  body: {
+    accountId: ACCOUNT_ID,
+    agentWallet: AGENT_WALLET,
+    limits: {
+      allowanceLimit: '1000.00',
+      maxOrderAmount: '200.00',
+      maxSlippageBps: 500,
+      maxOrdersPerHour: 20,
+      maxNotionalPerHour: '2000.00',
+      maxInFlightExecutions: 3,
+      isSuspended: false,
+      policyVersion: 4,
+      updatedAt: '2026-08-01T00:00:00.000Z',
+    },
+    allowance: ALLOWANCE_OK.body,
+    usage: {
+      windowSeconds: 3600,
+      ordersInWindow: 2,
+      notionalInWindow: '75.00',
+      inFlightExecutions: 0,
+    },
+    delegation: {
+      mayPlaceOrder: true,
+      mayRequestClose: true,
+      checkedAt: '2026-08-12T00:00:00.000Z',
+    },
+    blockers: [],
+    asOf: '2026-08-12T00:00:00.000Z',
+  },
+} as const;
+
+/**
  * Runs the CLI end to end.
  *
  * `env` REPLACES the process environment rather than extending it, so a test

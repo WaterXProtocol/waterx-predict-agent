@@ -1,39 +1,71 @@
 /**
  * What this runtime refuses, and how it refuses.
  *
- * `market search` and `market history` are the tests that matter most here.
- * Both are things an agent will obviously ask for, and both have no server
- * endpoint behind them. The temptation is to fake them — fetch a page and match
- * text locally for `search`, diff two snapshots for `history`. Either would make
- * this CLI a second source of truth for market identity, and an agent that
- * traded on a locally-guessed market id would be trading the wrong market.
+ * `market history` is the test that matters most here. It is a thing an agent
+ * will obviously ask for, and it has no server endpoint behind it. The
+ * temptation is to fake it by diffing two quote snapshots, which would make this
+ * CLI a second source of truth for prices nothing honoured.
  *
  * So the refusal itself is the feature under test: it must name the capability,
  * give a symbolic reason, point somewhere useful, and never touch the network.
+ *
+ * `market search` used to be the other one, and its test is now the opposite
+ * assertion — that a capability leaves the refusal list only because the SERVER
+ * grew an endpoint, never because the client learned to approximate one.
  */
 import { describe, expect, it } from 'vitest';
 
 import { CAPABILITIES, EXIT_CODES, listRefusals } from '../src/index.ts';
-import { CONFIGURED_ENV, invoke } from './harness.ts';
+import {
+  ACCOUNT_ID,
+  AUTH_OK,
+  CONFIGURED_ENV,
+  EFFECTIVE_LIMITS_OK,
+  invoke,
+} from './harness.ts';
 
 describe('capability negotiation', () => {
-  it('refuses `market search` without approximating it', async () => {
-    const result = await invoke(['market', 'search', '--query', 'election'], {
+  it('runs `market search` now that the SERVER resolves the text', async () => {
+    const result = await invoke(['market', 'search', '--search', 'election'], {
       env: CONFIGURED_ENV,
-      routes: { 'GET /agent-api/v1/predict/markets': { status: 200, body: { markets: [] } } },
+      routes: {
+        'POST /agent-api/v1/auth': AUTH_OK,
+        'GET /agent-api/v1/predict/markets': {
+          status: 200,
+          body: {
+            markets: [],
+            resolution: {
+              status: 'NOT_FOUND',
+              normalizedQuery: 'election',
+              marketId: null,
+              matchCount: 0,
+            },
+          },
+        },
+      },
     });
 
-    expect(result.envelope.ok).toBe(false);
-    expect(result.envelope.command).toBe('market search');
-    expect(result.envelope.error?.code).toBe('CAPABILITY_UNAVAILABLE');
-    expect(result.envelope.error?.details).toMatchObject({
-      capability: 'market search',
-      reason: 'NO_SERVER_ENDPOINT',
-      tracking: 'B2',
+    expect(result.envelope.ok).toBe(true);
+    expect(result.envelope.command).toBe('market.search');
+    // The decisive assertion is unchanged in spirit: no id was produced locally.
+    // The server said NOT_FOUND, and NOT_FOUND is what comes back.
+    expect((result.envelope.data as { marketId: string | null }).marketId).toBeNull();
+    expect(result.exit).toBe(EXIT_CODES.AMBIGUOUS);
+  });
+
+  it('runs `account risk-limits` now that an agent credential may read the mandate', async () => {
+    const result = await invoke(['account', 'risk-limits', '--accountId', ACCOUNT_ID], {
+      env: CONFIGURED_ENV,
+      routes: {
+        'POST /agent-api/v1/auth': AUTH_OK,
+        [`GET /agent-api/v1/predict/accounts/${ACCOUNT_ID}/effective-limits`]: EFFECTIVE_LIMITS_OK,
+      },
     });
-    expect(result.exit).toBe(EXIT_CODES.UNAVAILABLE);
-    // The decisive assertion: no catalog was fetched, so no identity was guessed.
-    expect(result.fetches).toHaveLength(0);
+
+    expect(result.envelope.ok).toBe(true);
+    expect(result.exit).toBe(EXIT_CODES.OK);
+    // Readable, and still not writable: nothing in this build can raise a limit.
+    expect((result.envelope.data as { limits: { available: boolean } }).limits.available).toBe(true);
   });
 
   it('refuses `market history` and says what to use instead', async () => {

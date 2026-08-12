@@ -16,7 +16,16 @@
 import { describe, expect, it } from 'vitest';
 
 import { EXIT_CODES } from '../src/index.ts';
-import { ACCOUNT_ID, AGENT_WALLET, ALLOWANCE_OK, AUTH_OK, BASE_URL, CONFIGURED_ENV, invoke } from './harness.ts';
+import {
+  ACCOUNT_ID,
+  AGENT_WALLET,
+  ALLOWANCE_OK,
+  AUTH_OK,
+  BASE_URL,
+  CONFIGURED_ENV,
+  EFFECTIVE_LIMITS_OK,
+  invoke,
+} from './harness.ts';
 
 const MARKET_ID = `0x${'d'.repeat(63)}3`;
 const POSITION_ID = 'pos-1';
@@ -124,6 +133,7 @@ const READ_ROUTES = {
   'POST /agent-api/v1/auth': AUTH_OK,
   [`GET /agent-api/v1/predict/markets/${MARKET_ID}`]: MARKET_OK,
   'POST /agent-api/v1/predict/quotes': QUOTE_OK,
+  [`GET /agent-api/v1/predict/accounts/${ACCOUNT_ID}/effective-limits`]: EFFECTIVE_LIMITS_OK,
   [`GET /agent-api/v1/predict/accounts/${ACCOUNT_ID}/allowance`]: ALLOWANCE_OK,
 };
 
@@ -225,7 +235,10 @@ describe('order preview', () => {
       quote: { quoteId: string; availableSize: null };
       priceProtection: { estimate: { bound: string; effective: string; binding: string } };
       policy: { decision: string; approvalToken: string; approveWith: string };
-      riskLimits: { available: boolean; tracking: string };
+      capacity: { available: boolean; effectiveBuyCapacity: string };
+      riskLimits: { available: boolean; maxOrderAmount: string; policyVersion: number };
+      blockers: string[];
+      delegation: { mayPlaceOrder: boolean | null };
     };
 
     expect(result.exit).toBe(EXIT_CODES.OK);
@@ -239,9 +252,14 @@ describe('order preview', () => {
     expect(data.priceProtection.estimate.binding).toBe('SLIPPAGE');
     expect(data.policy.decision).toBe('APPROVAL_REQUIRED');
     expect(data.policy.approveWith).toBe(`--approve ${data.policy.approvalToken}`);
-    // Risk limits are owner-authenticated: reported as unavailable, never guessed.
-    expect(data.riskLimits.available).toBe(false);
-    expect(data.riskLimits.tracking).toBe('B1');
+    // The mandate is a server read now, not a refusal — and it is reported as the
+    // server stated it, with the policy version that produced it.
+    expect(data.capacity.effectiveBuyCapacity).toBe('480.00');
+    expect(data.riskLimits.available).toBe(true);
+    expect(data.riskLimits.maxOrderAmount).toBe('200.00');
+    expect(data.riskLimits.policyVersion).toBe(4);
+    expect(data.blockers).toEqual([]);
+    expect(data.delegation.mayPlaceOrder).toBe(true);
 
     // No execution was created and the only signature was the login challenge.
     expect(result.fetches.some((call) => call.url.endsWith('/executions'))).toBe(false);
@@ -269,8 +287,12 @@ describe('order preview', () => {
     expect(result.envelope.ok).toBe(true);
     expect(data.policy.decision).toBe('DENIED');
     expect(data.policy.reason).toBe('READ_ONLY');
-    // Read-only reads. It does not read the allowance for a write it will refuse.
-    expect(result.fetches.some((call) => call.url.endsWith('/allowance'))).toBe(false);
+    // Read-only reads. It does not read the account plane for a write it will
+    // refuse, so there is no mandate to report — and it says NOT_READ rather
+    // than letting silence read as "no limits apply".
+    expect(result.fetches.some((call) => call.url.includes('/effective-limits'))).toBe(false);
+    const risk = (result.envelope.data as { riskLimits: { reason: string } }).riskLimits;
+    expect(risk.reason).toBe('NOT_READ');
   });
 
   it('reports a delegated-auto order as allowed by scope, naming what was checked', async () => {

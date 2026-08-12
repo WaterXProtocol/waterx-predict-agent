@@ -6,10 +6,11 @@ implemented**. The plan describes the intended system; an ADR constrains how it
 gets built; neither is evidence that anything works.
 
 - Verified: 2026-08-12
-- SDK: `codex/waterx-predict-agent-runtime` @ `4bfb258` plus this commit
-- Backend: `codex/waterx-predict-agent-runtime` @ `201fc84` (untouched)
-- SDK verification: `pnpm typecheck` clean, `pnpm test` 296/296 in 19 files
-  (72 SDK, 71 schema, 133 CLI, 20 workspace), `pnpm build` clean,
+- SDK: `codex/waterx-predict-agent-runtime` @ `79ea2ec` plus this commit
+- Backend: `codex/waterx-predict-agent-runtime` @ `7ecad3f3` (**changed** — see
+  "Contract sync"; the wire surface moved first, then was vendored here)
+- SDK verification: `pnpm typecheck` clean, `pnpm test` 308/308 in 19 files
+  (76 SDK, 71 schema, 141 CLI, 20 workspace), `pnpm build` clean,
   `pnpm schema:generate` reproduces the committed artifact byte-for-byte.
 
 The repository is a pnpm workspace. `packages/sdk` is the SDK this file tracked
@@ -42,17 +43,25 @@ seam for. The SDK has two, and both are correctly disclosed in
 
 `packages/sdk/src/contract.ts` and
 `bucket-backend-mono/apps/waterx/src/predict/agent-api/agent-api.contract.ts`
-were diffed in full at the commits above. Below the file header (SDK lines 1–28,
-backend lines 1–22, which differ only in the vendoring notice) they are
-byte-identical. No drift. Re-diffed in full at the commits in the header and
-still identical: the CLI work above is a new surface over the same client and the
-same wire shapes, so no backend change was required and none was made.
+were diffed in full at SDK `HEAD` and backend `7ecad3f3`. Below the file header
+(SDK lines 1–28, backend lines 1–22, which differ only in the vendoring notice)
+they are byte-identical. No drift.
+
+**The backend moved first this time.** B1 and B2 could not be closed on the
+client side — one needs a text index the catalog endpoint did not expose, the
+other needs a risk profile that only an owner-authenticated controller could
+read — so the wire surface changed at `7ecad3f3` (`?search=` plus
+`ListMarketsResponseBody.resolution`; `GET
+accounts/:accountId/effective-limits`), and the complete contract body was then
+re-vendored here in one commit alongside the SDK method, the CLI commands, the
+schema entries and the tests. The change is purely **additive**: no field was
+removed, renamed or retyped, so a client built against the previous contract
+still compiles and still parses every response.
 
 The write plane did not change this. It composes `createOrder` → sign →
 `submitOrder`, `executeMany`, `getExecution` and `waitForExecution` exactly as the
 SDK already implemented them; the approval token, the delegation scope and the
-signing gate are **local** constructs that never appear on the wire. The backend
-worktree is still at `201fc84` with a clean tree.
+signing gate are **local** constructs that never appear on the wire.
 
 ## 1. Current SDK state — verified
 
@@ -73,7 +82,8 @@ worktree is still at `201fc84` with a clean tree.
 | `waitForPriceAndExecute` in-process trigger | PARTIAL | `packages/sdk/src/client.ts:396`. Correct trigger, fresh re-quote, re-verify, one submission — but in-process only. Dies with the process; not durable. |
 | Execution stream | SEAM | `packages/sdk/src/client.ts:141`. Interface only; caller supplies a Socket.IO adapter. Default path polls. |
 | Quote stream | SEAM | `packages/sdk/src/client.ts:121`. Interface only; default polls `POST /quotes`. |
-| Agent-readable effective risk limits | TODO | No client method. Backend exposes risk profile on the **owner** controller only (ADR-0003). |
+| Server-side market resolution | DONE | `packages/sdk/src/client.ts` (`searchMarkets`), backend `7ecad3f3`. `?search=` matches published aliases server-side and returns `resolution` (`RESOLVED` / `AMBIGUOUS` / `NOT_FOUND`); `marketId` is non-null only on exactly one match, and `matchCount` is counted before `limit` truncates the page. A server that answers without a `resolution` reads as `NOT_FOUND` — the client withholds an id rather than inferring one (B2). |
+| Agent-readable effective risk limits | DONE | `packages/sdk/src/client.ts` (`getEffectiveLimits`), backend `7ecad3f3`. `GET accounts/:accountId/effective-limits` returns the limits, the rolling-window usage, the allowance, the on-chain delegation and the blockers. **Read-only**: writes stay owner-authenticated (ADR-0003), so an agent credential can see its mandate and cannot raise it. `limits: null` is denial, not an unlimited default; a `null` delegation permission means the chain read failed, not that it was denied (B1). |
 
 ## 2. Phase 0 — spec freeze and threat model
 
@@ -98,19 +108,19 @@ are open.
 | # | Item | Status | Depends on |
 | --- | --- | --- | --- |
 | 1.1 | pnpm workspace split: `sdk` / `cli` / `runner` / `mcp` | DONE | `pnpm-workspace.yaml`, `packages/*/package.json`, `tests/workspace.test.ts`. SDK moved to `packages/sdk` with its published entry points unchanged; `schema` added; `cli`/`runner`/`mcp` are private, source-free reserved boundaries. Dependency direction and published-package hygiene are enforced by test, not convention. |
-| 1.2 | Versioned runtime command schema (single source of truth) | DONE | `packages/schema/src`, emitted to `schemas/v1/agent-commands.json`; ADR-0006. Sixteen commands, runtime-validated by `validateCommandInput` with no coercion; `packages/schema/tests` (71) cover the validator subset, unsupported-keyword rejection, every published example, BUY/SELL unit and position agreement, decimal/price/address patterns, and byte-for-byte artifact drift. `tests/workspace.test.ts` additionally fails if a contract command is not backed by an AVAILABLE capability, so the contract cannot advertise what no surface runs. |
+| 1.2 | Versioned runtime command schema (single source of truth) | DONE | `packages/schema/src`, emitted to `schemas/v1/agent-commands.json`; ADR-0006. Eighteen commands, runtime-validated by `validateCommandInput` with no coercion; `packages/schema/tests` (71) cover the validator subset, unsupported-keyword rejection, every published example, BUY/SELL unit and position agreement, decimal/price/address patterns, and byte-for-byte artifact drift. `tests/workspace.test.ts` additionally fails if a contract command is not backed by an AVAILABLE capability, so the contract cannot advertise what no surface runs. |
 | 1.3 | Consistent JSON envelope, symbolic error codes, exit codes | DONE | `packages/cli/src/{envelope,exit-codes,errors}.ts`; `packages/cli/tests/envelope.test.ts` (13). Exactly one parseable document on stdout on every path including an unresolvable command; usage prose on stderr only; the exit code derived from the server's own symbolic code rather than the HTTP status; `retryable` copied from the server, never re-derived. The code table is published by `describe` so a host need not hard-code it. |
 | 1.4 | `describe` | DONE | `packages/cli/src/commands/describe.ts`; `packages/cli/tests/discovery.test.ts` (14). Answers with no configuration, no signer and no network. Reports the policy in force, its source, and that an approval token **is not authentication**; reports `signer.canSignTransactions` from the policy rather than from intent. `serverCapabilities.source` is `STATIC` — this build's own claim, not something the server advertised (3.3/B7 is still blocked), and it is labelled as such rather than presented as negotiated. |
 | 1.5 | `doctor` | DONE | `packages/cli/src/commands/doctor.ts`; `packages/cli/tests/doctor.test.ts` (7). Config, signer, reachability, authentication, catalog read, allowance read, and `writePlaneCheck`. The write-plane check never places an order — a diagnostic that trades is one nobody can safely run — so it SKIPs under `read-only` and `interactive`, and under `delegated-auto` it FAILs the one write-blocker knowable without trading: a scope whose `notAfter` has already passed. A check that could not run is SKIP, never PASS, and the command exits with the **first failing check's own code** so a rejected token exits 4 rather than 70. Signs the login challenge as a personal message only. |
-| 1.6 | `market` / `account` / `order` commands | DONE | Read plane: `market list/get/quote` and `account status/allowance/positions/executions/fills` (`packages/cli/tests/read-plane.test.ts` (15), `input.test.ts` (16)). Write plane: `order preview/execute/execute-many/get/reconcile` (`packages/cli/src/commands/order.ts`, `packages/cli/tests/write-plane.test.ts` (34)) — an ambiguous intent (wrong unit for the side, both units, neither, a SELL naming no position, a BUY naming one) is refused with exit `INVALID_INPUT` (2) and **zero network and signer calls**, because guessing the unit trades the wrong thing; a timed-out wait is `ok: true` with exit `AMBIGUOUS` (11) plus a reconcile instruction, never a resubmission; `execute-many` legs succeed, fail and skip independently and the envelope says `atomic: false`. `market search`, `market history` and `order cancel` are refused by capability negotiation with a symbolic reason and **zero network calls**. Durable/conditional order commands are 2.8, not this item. |
-| 1.7 | `order preview` as a first-class command | DONE | `packages/cli/src/commands/order.ts` (`runOrderPreview`); `write-plane.test.ts`. Resolves the market server-side, mints a fresh quote, normalizes the leg, computes the price-protection bound (`CEILING` for BUY, `FLOOR` for SELL) and the effective worst price, runs the same policy engine `execute` runs, and returns the approval token with the exact `--approve …` string. Signs nothing and places nothing. Effective **risk limits** are still unreadable by an agent credential, so `riskLimits.available` is `false` with the reason attached rather than a synthesized number (B1). |
+| 1.6 | `market` / `account` / `order` commands | DONE | Read plane: `market list/search/get/quote` and `account status/allowance/risk-limits/positions/executions/fills` (`packages/cli/tests/read-plane.test.ts` (22), `input.test.ts` (16)). Write plane: `order preview/execute/execute-many/get/reconcile` (`packages/cli/src/commands/order.ts`, `packages/cli/tests/write-plane.test.ts` (34)) — an ambiguous intent (wrong unit for the side, both units, neither, a SELL naming no position, a BUY naming one) is refused with exit `INVALID_INPUT` (2) and **zero network and signer calls**, because guessing the unit trades the wrong thing; a timed-out wait is `ok: true` with exit `AMBIGUOUS` (11) plus a reconcile instruction, never a resubmission; `execute-many` legs succeed, fail and skip independently and the envelope says `atomic: false`. `market search` reports the **server's** `resolution` verbatim and exits `AMBIGUOUS` (11) with `marketId: null` unless exactly one market matched — it never matches text locally, and a truncated page is never read as a unique answer. `account risk-limits` reads the mandate and cannot write one. `market history` and `order cancel` are still refused by capability negotiation with a symbolic reason and **zero network calls**. Durable/conditional order commands are 2.8, not this item. |
+| 1.7 | `order preview` as a first-class command | DONE | `packages/cli/src/commands/order.ts` (`runOrderPreview`); `write-plane.test.ts`. Resolves the market server-side, mints a fresh quote, normalizes the leg, computes the price-protection bound (`CEILING` for BUY, `FLOOR` for SELL) and the effective worst price, runs the same policy engine `execute` runs, and returns the approval token with the exact `--approve …` string. Signs nothing and places nothing. Outside `read-only` it now also reads the **effective mandate** alongside the quote and reports `riskLimits`, `blockers`, `delegation` and the hour already used, so a caller sees what would refuse the write before signing — a report, never local enforcement. Nothing is synthesized: unread limits say `NOT_READ`, an account with no mandate says `NO_RISK_PROFILE` (B1). |
 | 1.8 | Signer provider interface + keystore/keychain/KMS | PARTIAL | ADR-0001 §7. The **external-command** provider exists and is the CLI's only one: `packages/cli/src/signer.ts`, `packages/cli/tests/signer.test.ts` (21). No key enters the process; the request is versioned and typed, so `PERSONAL_MESSAGE` and `TRANSACTION` are distinguishable by the key holder and never interchangeable; a non-zero exit, non-JSON stdout, a missing `signature` or a timeout is `SIGNER_FAILED`, never a fabricated signature. `signTransaction` throws before a child process is spawned under `read-only`, and otherwise spends a permit from the `SigningGate` **before** the child runs, so a write path reached without an authorization runs out of permits rather than signing. **Keystore, keychain and KMS providers are not built.** |
 | 1.9 | Automatic re-auth preserving key and exact bytes | DONE | `packages/sdk/src/session.ts`, `packages/sdk/src/transport.ts:89`, `packages/sdk/src/errors.ts:isUnauthenticated`; `packages/sdk/tests/reauthentication.test.ts` (14) covers replay under a fresh token with identical bytes and key, a token dying between create and submit, five concurrent 401s minting one session, the bound (one re-auth, then the error), a fresh signed challenge per mint, pre-expiry rollover, `autoReauthenticate: false`, and the rejections it must **not** retry (`403 DELEGATION_REVOKED`, `401 SIGNATURE_INVALID`, `409 IDEMPOTENCY_KEY_REUSED`). At the SDK layer only — 1.8's signer provider still gates the CLI/Runner path, where the challenge is signed outside this process. |
 | 1.10 | Secret redaction across stdout, logs, errors, job store | PARTIAL | CLI streams DONE: `packages/cli/src/redact.ts`, `packages/cli/tests/secrets.test.ts` (7), plus the write-plane case that asserts no signature, transaction bytes or token reaches either stream on a successful order. Registered secrets are replaced on the serialized stdout document *and* on every stderr line, including when the server echoes a token back inside its own error message; a credential-shaped config file key is refused naming the key and never the value; the signer is reported by executable base name only. **No job store exists to redact** (2.5). |
 | 1.11 | Testnet quickstart + real E2E | TODO | 1.1–1.9 |
 
 On 1.2 and what it does **not** mean: `schemas/v1/agent-commands.json` describes
-sixteen commands, and the CLI now runs all sixteen — but describing a command is
+eighteen commands, and the CLI now runs all eighteen — but describing a command is
 still not running one, and the guarantee comes from a test rather than from this
 sentence. `tests/workspace.test.ts` fails if any contract command lacks an
 AVAILABLE capability in `packages/cli/src/capabilities.ts`, so the contract
@@ -119,11 +129,19 @@ cannot drift back into advertising an intent no surface performs.
 The v1 command set covers only what a surface can actually perform. `describe`,
 `doctor` and `command-schema` are in it under an `implementation` union whose
 `runtime` arm marks a command the runtime answers locally rather than through an
-SDK method (ADR-0006). `market search`, `market history` and `order cancel` are
-**absent on purpose**: a command entry is precisely what an adapter turns into an
-advertised, callable tool, so listing one would present a capability that does
-not exist. All three are refused by name at the CLI with a symbolic reason and no
-network call, so an agent asking for them gets an answer instead of silence.
+SDK method (ADR-0006). `market history` and `order cancel` are **absent on
+purpose**: a command entry is precisely what an adapter turns into an advertised,
+callable tool, so listing one would present a capability that does not exist.
+Both are refused by name at the CLI with a symbolic reason and no network call,
+so an agent asking for them gets an answer instead of silence.
+
+`market search` and `account risk-limits` were absent for the same reason and are
+now present, because the **server** grew the endpoints behind them (`7ecad3f3`).
+That is the only admissible reason for a name to move in this direction, and
+`packages/schema/tests/document.test.ts` says so at the point where the old list
+lived: a command must never be added because the client learned to approximate
+one. Approximating `market search` locally would mean returning a `marketId` this
+CLI picked out of a truncated page, which ADR-0001 §10 forbids.
 
 On the write plane and what it does **not** mean: an approval token binds one
 exact intent, and it is **not authentication**. It is a digest any caller holding
@@ -182,12 +200,12 @@ Ordered by what blocks the most SDK work.
 
 | # | Capability | Status | Blocks |
 | --- | --- | --- | --- |
-| B1 | Agent-readable effective risk limits | TODO | Degrades 1.7 — ADR-0003. Risk profile is owner-only today (`predict-agent-owner.controller.ts`, `WaterXAuthGuard`), so `order preview` returns `riskLimits.available: false` with the reason rather than a number, and `account risk-limits` refuses. Sizing falls back to `effectiveBuyCapacity`, which is real but is not the limit. |
-| B2 | Market search / aliases for server-side resolution | TODO | Natural-language resolution. `ListMarketsQuery` supports `limit`, `category`, `status`, `tradeable`, `updatedAfter` — **no text search** (`packages/sdk/src/contract.ts:565`). Without it an agent cannot resolve "tonight's A vs B BTTS" without client-side guessing, which ADR-0001 §10 forbids. |
+| B1 | Agent-readable effective risk limits | DONE (backend `7ecad3f3`) | Unblocked 1.7. `GET agent-api/v1/predict/accounts/:accountId/effective-limits` on the **agent** controller returns limits, rolling-window usage, allowance, on-chain delegation and blockers. Read-only: ADR-0003 stands, and the owner-authenticated controller keeps every write. `order preview` and `account risk-limits` now report the real mandate instead of a reason; absence is still absence (`NOT_READ` / `NO_RISK_PROFILE`), never an unlimited default. |
+| B2 | Market search / aliases for server-side resolution | DONE (backend `7ecad3f3`) | Unblocked natural-language resolution. `ListMarketsQuery.search` matches published `aliases` server-side and `ListMarketsResponseBody.resolution` carries the verdict. Matching is deterministic and purely lexical — every query token must prefix an alias token, no fuzzy distance, no synonym table — so the same text against the same catalog always resolves the same way. Candidate order is a tie-break (specificity, `closesAt`, id), **not** a ranking of which market is worth trading, and it is documented as such at the contract, command and CLI layers. `marketId` is non-null only on a unique match, so ADR-0001 §10 holds: identity is resolved by the server or not at all. |
 | B3 | Quote WS: snapshot + monotonic sequence + gap + SLO | TODO | 2.1, 2.3, 3.3 |
 | B4 | Machine-readable tradeability reason code (closed set) | TODO | 2.9 — ADR-0004 §8. `tradeabilityReason` is free text today. |
 | B5 | Size-aware executable quote | TODO | Honest large-size preview. Today `availableSize`, `expectedFillSize`, `feeAmount` are null and `qualityFlags` carries `TOP_OF_BOOK_ONLY`. |
-| B6 | Cursor pagination for executions / fills / positions | TODO | Complete history reconstruction. `limit` only today. |
+| B6 | Cursor pagination for executions / fills / positions | TODO | Complete history reconstruction. `limit` only today, on both the account reads and `market list`, so a caller cannot page past the first window and cannot tell a full page from an exhausted one. Next backend change: an opaque keyset cursor over `(created_at\|filled_at, id)` with `nextCursor` on each list response. |
 | B7 | Server capability advertisement | TODO | 3.3 |
 | B8 | Performance reads: realized PnL, win rate, trade count, attribution | TODO | Scenario 5. Scope-gated by D-24. |
 

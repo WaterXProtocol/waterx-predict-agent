@@ -176,10 +176,26 @@ for (const entry of results) {
 | `listExecutions(accountId, limit?)` | Your order history on that account |
 | `getPositions(accountId, limit?)` | Positions you opened, with cost basis |
 | `getAllowance(accountId)` | API allowance, real balance, and the binding minimum |
+| `getEffectiveLimits(accountId)` | The mandate: limits, window usage, delegation, blockers |
+| `searchMarkets(query)` | Free text → one market id, **resolved server-side** |
 
 `getAllowance` reports `apiAllowance` and `accountSpendableBalance` separately
 because a direct-chain spend moves one without the other. Size against
 `effectiveBuyCapacity`, which is the smaller.
+
+`getEffectiveLimits` is the mandate itself, and it is **read-only** — an agent
+credential can see its limits and can never raise them. `limits: null` means no
+owner granted this agent a risk profile; that is denial, not an unlimited
+default. A `null` delegation permission means the on-chain read **failed**, which
+is not the same as `false`.
+
+`searchMarkets` sends the text and returns the server's `resolution` unchanged.
+`marketId` is non-null only when exactly one market matched, and `matchCount` is
+counted over the whole filtered catalog before `limit` truncates the page — so a
+page of one is never a unique answer. The client does not match, score or
+tie-break locally: against a server too old to answer with a `resolution` it
+reports `NOT_FOUND` rather than inferring an id. Candidate order is a
+reproducible tie-break, not a ranking of which market is worth trading.
 
 > The API allowance is a WaterX **API policy**, not a protocol guarantee. A
 > delegated key can bypass it by submitting directly to Sui. On-chain delegation

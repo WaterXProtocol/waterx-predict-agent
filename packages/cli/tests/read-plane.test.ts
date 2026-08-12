@@ -11,7 +11,14 @@
 import { describe, expect, it } from 'vitest';
 
 import { EXIT_CODES } from '../src/index.ts';
-import { ACCOUNT_ID, ALLOWANCE_OK, AUTH_OK, CONFIGURED_ENV, invoke } from './harness.ts';
+import {
+  ACCOUNT_ID,
+  ALLOWANCE_OK,
+  AUTH_OK,
+  CONFIGURED_ENV,
+  EFFECTIVE_LIMITS_OK,
+  invoke,
+} from './harness.ts';
 
 const MARKET_ID = `0x${'d'.repeat(63)}3`;
 const ACCOUNT_PATH = `/agent-api/v1/predict/accounts/${ACCOUNT_ID}`;
@@ -65,6 +72,146 @@ describe('market reads', () => {
     );
 
     expect((result.envelope.data as { count: number }).count).toBe(1);
+  });
+
+  it('sends the search text to the server and reports its resolution verbatim', async () => {
+    const result = await invoke(
+      ['market', 'search', '--search', 'arsenal chelsea'],
+      withAuth({
+        'GET /agent-api/v1/predict/markets': {
+          status: 200,
+          body: {
+            markets: [{ marketId: MARKET_ID, title: 'Arsenal vs Chelsea' }],
+            resolution: {
+              status: 'RESOLVED',
+              normalizedQuery: 'arsenal chelsea',
+              marketId: MARKET_ID,
+              matchCount: 1,
+            },
+          },
+        },
+      }),
+    );
+    const data = result.envelope.data as {
+      resolution: { status: string; matchCount: number };
+      marketId: string | null;
+      nextStep: { command: string };
+    };
+
+    expect(result.exit).toBe(EXIT_CODES.OK);
+    expect(data.resolution.status).toBe('RESOLVED');
+    expect(data.marketId).toBe(MARKET_ID);
+    expect(data.nextStep.command).toBe('market quote');
+    // The text went to the server. Matching it locally would resolve an identity
+    // the server never resolved.
+    const call = result.fetches.find((entry) => entry.url.includes('/markets'));
+    expect(new URL(call!.url).searchParams.get('search')).toBe('arsenal chelsea');
+  });
+
+  it('exits AMBIGUOUS and withholds an id when the text names more than one market', async () => {
+    const other = `0x${'e'.repeat(63)}4`;
+    const result = await invoke(
+      ['market', 'search', '--search', 'arsenal'],
+      withAuth({
+        'GET /agent-api/v1/predict/markets': {
+          status: 200,
+          body: {
+            markets: [{ marketId: MARKET_ID }, { marketId: other }],
+            resolution: {
+              status: 'AMBIGUOUS',
+              normalizedQuery: 'arsenal',
+              marketId: null,
+              matchCount: 2,
+            },
+          },
+        },
+      }),
+    );
+    const data = result.envelope.data as { marketId: string | null; candidates: unknown[] };
+
+    // The read succeeded, so `ok` stays true — but a script must not read two
+    // matches as a resolved identity, and the exit code is what it cannot miss.
+    expect(result.envelope.ok).toBe(true);
+    expect(result.exit).toBe(EXIT_CODES.AMBIGUOUS);
+    expect(data.marketId).toBeNull();
+    expect(data.candidates).toHaveLength(2);
+  });
+
+  it('never treats a truncated page as a unique match', async () => {
+    const result = await invoke(
+      ['market', 'search', '--search', 'arsenal', '--limit', '1'],
+      withAuth({
+        'GET /agent-api/v1/predict/markets': {
+          status: 200,
+          body: {
+            markets: [{ marketId: MARKET_ID }],
+            // One row on the page, three in the catalog. `matchCount` is the
+            // server's count before `limit`, and it is what decides.
+            resolution: {
+              status: 'AMBIGUOUS',
+              normalizedQuery: 'arsenal',
+              marketId: null,
+              matchCount: 3,
+            },
+          },
+        },
+      }),
+    );
+    const data = result.envelope.data as {
+      marketId: string | null;
+      count: number;
+      resolution: { matchCount: number };
+    };
+
+    expect(data.count).toBe(1);
+    expect(data.resolution.matchCount).toBe(3);
+    expect(data.marketId).toBeNull();
+    expect(result.exit).toBe(EXIT_CODES.AMBIGUOUS);
+  });
+
+  it('withholds an id when a server answers a search without resolving it', async () => {
+    // An older server, or one this build does not understand. Inferring the id
+    // from a one-row page is exactly the local resolution that is forbidden.
+    const result = await invoke(
+      ['market', 'search', '--search', 'arsenal'],
+      withAuth({
+        'GET /agent-api/v1/predict/markets': {
+          status: 200,
+          body: { markets: [{ marketId: MARKET_ID }] },
+        },
+      }),
+    );
+    const data = result.envelope.data as { marketId: string | null; resolution: { status: string } };
+
+    expect(data.resolution.status).toBe('NOT_FOUND');
+    expect(data.marketId).toBeNull();
+    expect(result.exit).toBe(EXIT_CODES.AMBIGUOUS);
+  });
+
+  it('passes a search through `market list` without putting the answer first', async () => {
+    const result = await invoke(
+      ['market', 'list', '--search', 'arsenal'],
+      withAuth({
+        'GET /agent-api/v1/predict/markets': {
+          status: 200,
+          body: {
+            markets: [{ marketId: MARKET_ID }],
+            resolution: {
+              status: 'RESOLVED',
+              normalizedQuery: 'arsenal',
+              marketId: MARKET_ID,
+              matchCount: 1,
+            },
+          },
+        },
+      }),
+    );
+    const data = result.envelope.data as { resolution?: { marketId: string } };
+
+    // `market list` reports the block when it is there and exits OK either way:
+    // it is a catalog read, not a resolution.
+    expect(data.resolution?.marketId).toBe(MARKET_ID);
+    expect(result.exit).toBe(EXIT_CODES.OK);
   });
 
   it('fetches a market by the id it was given, without consulting the catalog', async () => {
@@ -165,13 +312,15 @@ describe('market reads', () => {
 });
 
 describe('account reads', () => {
+  const STATUS_ROUTES = {
+    [`GET ${ACCOUNT_PATH}/effective-limits`]: EFFECTIVE_LIMITS_OK,
+    [`GET ${ACCOUNT_PATH}/positions`]: POSITIONS_OK,
+  };
+
   it('composes status from capacity and exposure in one pass', async () => {
     const result = await invoke(
       ['account', 'status', '--accountId', ACCOUNT_ID],
-      withAuth({
-        [`GET ${ACCOUNT_PATH}/allowance`]: ALLOWANCE_OK,
-        [`GET ${ACCOUNT_PATH}/positions`]: POSITIONS_OK,
-      }),
+      withAuth(STATUS_ROUTES),
     );
     const data = result.envelope.data as {
       capacity: { effectiveBuyCapacity: string };
@@ -188,33 +337,106 @@ describe('account reads', () => {
   it('signs one challenge for the two reads status makes, not one each', async () => {
     const result = await invoke(
       ['account', 'status', '--accountId', ACCOUNT_ID],
-      withAuth({
-        [`GET ${ACCOUNT_PATH}/allowance`]: ALLOWANCE_OK,
-        [`GET ${ACCOUNT_PATH}/positions`]: POSITIONS_OK,
-      }),
+      withAuth(STATUS_ROUTES),
     );
 
     expect(result.signerRuns).toHaveLength(1);
     expect(result.fetches.filter((call) => call.url.endsWith('/auth'))).toHaveLength(1);
   });
 
-  it('says the risk limits are unreadable instead of inventing one', async () => {
+  it('reports the mandate the server stated, and what would refuse a write', async () => {
     const result = await invoke(
-      ['account', 'status', '--accountId', ACCOUNT_ID],
+      ['account', 'risk-limits', '--accountId', ACCOUNT_ID],
+      withAuth({ [`GET ${ACCOUNT_PATH}/effective-limits`]: EFFECTIVE_LIMITS_OK }),
+    );
+    const data = result.envelope.data as {
+      limits: Record<string, unknown>;
+      usage: { windowSeconds: number; ordersInWindow: number };
+      delegation: { mayPlaceOrder: boolean | null };
+      blockers: string[];
+      tradingBlocked: boolean;
+      caveats: string[];
+    };
+
+    expect(result.exit).toBe(EXIT_CODES.OK);
+    // Passed through as the server stated it, including the policy version that
+    // produced it — a decision has to be traceable to the exact mandate.
+    expect(data.limits).toMatchObject({
+      available: true,
+      maxOrdersPerHour: 20,
+      maxNotionalPerHour: '2000.00',
+      policyVersion: 4,
+    });
+    expect(data.usage.windowSeconds).toBe(3600);
+    expect(data.usage.ordersInWindow).toBe(2);
+    expect(data.delegation.mayPlaceOrder).toBe(true);
+    expect(data.blockers).toEqual([]);
+    expect(data.tradingBlocked).toBe(false);
+    // An empty blocker list must never read as a guaranteed fill.
+    expect(data.caveats.join(' ')).toMatch(/not a promise of a fill/u);
+  });
+
+  it('says no mandate exists instead of reading absence as unlimited', async () => {
+    const result = await invoke(
+      ['account', 'risk-limits', '--accountId', ACCOUNT_ID],
       withAuth({
-        [`GET ${ACCOUNT_PATH}/allowance`]: ALLOWANCE_OK,
-        [`GET ${ACCOUNT_PATH}/positions`]: POSITIONS_OK,
+        [`GET ${ACCOUNT_PATH}/effective-limits`]: {
+          status: 200,
+          body: {
+            ...EFFECTIVE_LIMITS_OK.body,
+            limits: null,
+            allowance: null,
+            blockers: ['NO_RISK_PROFILE'],
+          },
+        },
       }),
     );
-    const risk = (result.envelope.data as { riskLimits: Record<string, unknown> }).riskLimits;
+    const data = result.envelope.data as {
+      limits: Record<string, unknown>;
+      capacity: unknown;
+      blockers: string[];
+      tradingBlocked: boolean;
+    };
 
-    // An agent that reads a fabricated limit will size against it.
-    expect(risk).toMatchObject({
-      available: false,
-      reason: 'OWNER_AUTHENTICATED',
-      tracking: 'B1',
-    });
-    expect(JSON.stringify(risk)).not.toMatch(/"limit":/u);
+    // Absence is denial. An agent that read this as "no limits apply" would size
+    // against a mandate nobody granted.
+    expect(data.limits).toMatchObject({ available: false, reason: 'NO_RISK_PROFILE' });
+    expect(data.capacity).toBeNull();
+    expect(data.blockers).toEqual(['NO_RISK_PROFILE']);
+    expect(data.tradingBlocked).toBe(true);
+    expect(JSON.stringify(data.limits)).not.toMatch(/"allowanceLimit":/u);
+  });
+
+  it('keeps a failed delegation read distinct from a denial', async () => {
+    const result = await invoke(
+      ['account', 'risk-limits', '--accountId', ACCOUNT_ID],
+      withAuth({
+        [`GET ${ACCOUNT_PATH}/effective-limits`]: {
+          status: 200,
+          body: {
+            ...EFFECTIVE_LIMITS_OK.body,
+            delegation: {
+              mayPlaceOrder: null,
+              mayRequestClose: false,
+              checkedAt: '2026-08-12T00:00:00.000Z',
+            },
+          },
+        },
+      }),
+    );
+    const data = result.envelope.data as {
+      delegation: { mayPlaceOrder: boolean | null; mayRequestClose: boolean | null };
+      blockers: string[];
+      caveats: string[];
+    };
+
+    // null is "the chain read failed", false is "revoked". Collapsing the two
+    // would make a healthy strategy tear itself down over an RPC blip.
+    expect(data.delegation.mayPlaceOrder).toBeNull();
+    expect(data.delegation.mayRequestClose).toBe(false);
+    // Unknown delegation is not a WaterX policy blocker, and is not reported as one.
+    expect(data.blockers).toEqual([]);
+    expect(data.caveats.join(' ')).toMatch(/chain read FAILED/u);
   });
 
   it('keeps every money figure a string', async () => {

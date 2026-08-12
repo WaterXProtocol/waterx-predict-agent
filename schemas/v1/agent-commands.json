@@ -179,6 +179,13 @@
       "minimum": 1,
       "maximum": 200
     },
+    "searchText": {
+      "title": "Search text",
+      "description": "Free text matched SERVER-SIDE against each market’s published aliases. Matching is deterministic and purely lexical: every token must be a prefix of an alias token. There is no fuzzy distance and no synonym table, so the same text against the same catalog always resolves the same way.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
     "idempotencyKey": {
       "title": "Idempotency key",
       "description": "One key per logical order intent, reused for every retry of that intent. Supply it to make the intent replayable across a process restart; omitted, the runtime mints one that only covers in-process retries.",
@@ -391,7 +398,7 @@
       "name": "market.list",
       "cli": "market list",
       "summary": "List the tradeable market catalog.",
-      "description": "Server-resolved market identity: this is how an agent obtains a marketId, and it must never construct one. Outcome prices in the result are INDICATIVE top-of-book and are not executable — call market.quote before acting on one. The status and tradeable filters are applied after the page is assembled, so a filtered page can be shorter than limit without the catalog being exhausted.",
+      "description": "Server-resolved market identity: this is how an agent obtains a marketId, and it must never construct one. Outcome prices in the result are INDICATIVE top-of-book and are not executable — call market.quote before acting on one. The status and tradeable filters are applied after the page is assembled, so a filtered page can be shorter than limit without the catalog being exhausted. Passing search adds a resolution block that says whether the text named exactly one market; market.search is the same call with that answer put first.",
       "classification": "read",
       "sideEffects": [
         "NONE"
@@ -446,6 +453,9 @@
             "description": "ISO-8601 UTC instant. Only markets whose definition changed after it.",
             "type": "string",
             "minLength": 1
+          },
+          "search": {
+            "$ref": "#/$defs/searchText"
           }
         }
       },
@@ -456,6 +466,85 @@
             "category": "FOOTBALL",
             "tradeable": true,
             "limit": 20
+          }
+        }
+      ]
+    },
+    {
+      "name": "market.search",
+      "cli": "market search",
+      "summary": "Resolve free text to one market id, or say it did not.",
+      "description": "Name-to-id resolution, decided BY THE SERVER against each market’s published aliases — the runtime never matches text against a page it fetched, because a locally-chosen id is an id nothing resolved. status is RESOLVED only when exactly one market matched, and marketId is null on anything else: AMBIGUOUS returns the candidates so the caller can narrow, and picking one for them is the hallucinated identity this contract exists to prevent. matchCount is counted over the whole filtered catalog before limit truncates the page, so a page of one is never mistaken for a unique answer. The candidate order is match specificity, then the round clock, then the id — a reproducible tie-break, not a judgement about which market is worth trading.",
+      "classification": "read",
+      "sideEffects": [
+        "NONE"
+      ],
+      "longRunning": false,
+      "idempotency": {
+        "required": false,
+        "callerSupplied": "UNSUPPORTED",
+        "note": "A read is safe to repeat; no key applies."
+      },
+      "confirmation": "NOT_REQUIRED",
+      "implementation": {
+        "kind": "sdk",
+        "method": "searchMarkets"
+      },
+      "input": {
+        "type": "object",
+        "required": [
+          "search"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "search": {
+            "$ref": "#/$defs/searchText"
+          },
+          "limit": {
+            "$ref": "#/$defs/limit"
+          },
+          "category": {
+            "title": "Category",
+            "description": "Server-defined catalog category, matched exactly. Narrows before the search.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "x-waterx-open-set": [
+              "FOOTBALL",
+              "BASKETBALL"
+            ]
+          },
+          "status": {
+            "title": "Market status",
+            "description": "A closed set on this API version.",
+            "type": "string",
+            "enum": [
+              "PREGAME",
+              "IN_PLAY",
+              "CLOSED",
+              "RESOLVED"
+            ]
+          },
+          "tradeable": {
+            "title": "Tradeable only",
+            "description": "Restrict to markets currently accepting orders.",
+            "type": "boolean"
+          }
+        }
+      },
+      "examples": [
+        {
+          "title": "Resolve a fixture by name",
+          "input": {
+            "search": "arsenal chelsea"
+          }
+        },
+        {
+          "title": "Resolve within tradeable football only",
+          "input": {
+            "search": "arsenal",
+            "category": "FOOTBALL",
+            "tradeable": true
           }
         }
       ]
@@ -579,7 +668,7 @@
       "name": "account.status",
       "cli": "account status",
       "summary": "One reading of capacity and exposure for an account.",
-      "description": "Composes account.allowance and account.positions into the pre-trade picture: what may be spent, and what is already held. Effective risk limits are reported as unavailable rather than guessed — the risk profile is owner-authenticated (ADR-0003) and an agent credential cannot read it on this API version. A caller that needs a single authoritative number must still size against effectiveBuyCapacity.",
+      "description": "Composes account.risk-limits and account.positions into the pre-trade picture: what may be spent, what the mandate allows, what would refuse a write, and what is already held. Every number here comes from the server; none is inferred locally. capacity is null exactly when no mandate exists, because an allowance ledger only exists under one — that is denial, not an unlimited default. asOf is when this runtime assembled the two reads, not a server-side consistent snapshot.",
       "classification": "read",
       "sideEffects": [
         "NONE"
@@ -593,7 +682,7 @@
       "confirmation": "NOT_REQUIRED",
       "implementation": {
         "kind": "runtime",
-        "note": "Composes getAllowance() and getPositions(). Reports agent-readable risk limits as unavailable; never fabricates one."
+        "note": "Composes getEffectiveLimits() and getPositions(). Never fabricates a limit; reports absence as absence."
       },
       "input": {
         "type": "object",
@@ -654,6 +743,47 @@
       "examples": [
         {
           "title": "Read allowance",
+          "input": {
+            "accountId": "0x1111111111111111111111111111111111111111111111111111111111111111"
+          }
+        }
+      ]
+    },
+    {
+      "name": "account.risk-limits",
+      "cli": "account risk-limits",
+      "summary": "Read the mandate this agent trades under, and what would refuse a write now.",
+      "description": "The owner-configured limits, the allowance, the hour already consumed, the on-chain delegation and the reasons a write would be refused — one server read, one asOf. limits is null when no owner granted this agent a mandate, and absence is denial rather than an unlimited default. A null delegation permission means the chain read FAILED and not that it was denied; the two lead a strategy to opposite actions. An empty blockers list is not a promise of a fill: the market must still be tradeable, the quote still executable, and the chain still decides last. Nothing here is settable from an agent credential (spec §7.3).",
+      "classification": "read",
+      "sideEffects": [
+        "NONE"
+      ],
+      "longRunning": false,
+      "idempotency": {
+        "required": false,
+        "callerSupplied": "UNSUPPORTED",
+        "note": "A read is safe to repeat; no key applies."
+      },
+      "confirmation": "NOT_REQUIRED",
+      "implementation": {
+        "kind": "sdk",
+        "method": "getEffectiveLimits"
+      },
+      "input": {
+        "type": "object",
+        "required": [
+          "accountId"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "accountId": {
+            "$ref": "#/$defs/accountId"
+          }
+        }
+      },
+      "examples": [
+        {
+          "title": "Read the effective mandate",
           "input": {
             "accountId": "0x1111111111111111111111111111111111111111111111111111111111111111"
           }

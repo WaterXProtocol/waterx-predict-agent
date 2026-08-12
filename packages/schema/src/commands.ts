@@ -17,11 +17,10 @@
  * added when they exist — the document is versioned and adding a command is
  * backwards-compatible.
  *
- * `market search` and `market history` are absent for a different reason: the
- * API has no endpoint behind either (backlog B2, D-25). The CLI still answers
- * both, with a symbolic `CAPABILITY_UNAVAILABLE` — that is capability
- * negotiation, not a command, and listing them here would advertise a tool that
- * can only refuse.
+ * `market history` is absent for a different reason: the API has no endpoint
+ * behind it (D-25). The CLI still answers it, with a symbolic
+ * `CAPABILITY_UNAVAILABLE` — that is capability negotiation, not a command, and
+ * listing it here would advertise a tool that can only refuse.
  */
 import {
   COMMAND_SCHEMA_DEFS,
@@ -149,7 +148,7 @@ const marketList: AgentCommandSpec = {
   cli: 'market list',
   summary: 'List the tradeable market catalog.',
   description:
-    'Server-resolved market identity: this is how an agent obtains a marketId, and it must never construct one. Outcome prices in the result are INDICATIVE top-of-book and are not executable — call market.quote before acting on one. The status and tradeable filters are applied after the page is assembled, so a filtered page can be shorter than limit without the catalog being exhausted.',
+    'Server-resolved market identity: this is how an agent obtains a marketId, and it must never construct one. Outcome prices in the result are INDICATIVE top-of-book and are not executable — call market.quote before acting on one. The status and tradeable filters are applied after the page is assembled, so a filtered page can be shorter than limit without the catalog being exhausted. Passing search adds a resolution block that says whether the text named exactly one market; market.search is the same call with that answer put first.',
   implementation: { kind: 'sdk', method: 'getMarkets' },
   input: {
     type: 'object',
@@ -181,10 +180,56 @@ const marketList: AgentCommandSpec = {
         type: 'string',
         minLength: 1,
       },
+      search: { $ref: '#/$defs/searchText' },
     },
   },
   examples: [
     { title: 'Tradeable football markets', input: { category: 'FOOTBALL', tradeable: true, limit: 20 } },
+  ],
+};
+
+const marketSearch: AgentCommandSpec = {
+  ...readOnly,
+  name: 'market.search',
+  cli: 'market search',
+  summary: 'Resolve free text to one market id, or say it did not.',
+  description:
+    'Name-to-id resolution, decided BY THE SERVER against each market’s published aliases — the runtime never matches text against a page it fetched, because a locally-chosen id is an id nothing resolved. status is RESOLVED only when exactly one market matched, and marketId is null on anything else: AMBIGUOUS returns the candidates so the caller can narrow, and picking one for them is the hallucinated identity this contract exists to prevent. matchCount is counted over the whole filtered catalog before limit truncates the page, so a page of one is never mistaken for a unique answer. The candidate order is match specificity, then the round clock, then the id — a reproducible tie-break, not a judgement about which market is worth trading.',
+  implementation: { kind: 'sdk', method: 'searchMarkets' },
+  input: {
+    type: 'object',
+    required: ['search'],
+    additionalProperties: false,
+    properties: {
+      search: { $ref: '#/$defs/searchText' },
+      limit: { $ref: '#/$defs/limit' },
+      category: {
+        title: 'Category',
+        description: 'Server-defined catalog category, matched exactly. Narrows before the search.',
+        type: 'string',
+        minLength: 1,
+        maxLength: 128,
+        'x-waterx-open-set': ['FOOTBALL', 'BASKETBALL'],
+      },
+      status: {
+        title: 'Market status',
+        description: 'A closed set on this API version.',
+        type: 'string',
+        enum: ['PREGAME', 'IN_PLAY', 'CLOSED', 'RESOLVED'],
+      },
+      tradeable: {
+        title: 'Tradeable only',
+        description: 'Restrict to markets currently accepting orders.',
+        type: 'boolean',
+      },
+    },
+  },
+  examples: [
+    { title: 'Resolve a fixture by name', input: { search: 'arsenal chelsea' } },
+    {
+      title: 'Resolve within tradeable football only',
+      input: { search: 'arsenal', category: 'FOOTBALL', tradeable: true },
+    },
   ],
 };
 
@@ -263,6 +308,23 @@ const accountAllowance: AgentCommandSpec = {
     properties: { accountId: { $ref: '#/$defs/accountId' } },
   },
   examples: [{ title: 'Read allowance', input: { accountId: EXAMPLE_ACCOUNT_ID } }],
+};
+
+const accountRiskLimits: AgentCommandSpec = {
+  ...readOnly,
+  name: 'account.risk-limits',
+  cli: 'account risk-limits',
+  summary: 'Read the mandate this agent trades under, and what would refuse a write now.',
+  description:
+    'The owner-configured limits, the allowance, the hour already consumed, the on-chain delegation and the reasons a write would be refused — one server read, one asOf. limits is null when no owner granted this agent a mandate, and absence is denial rather than an unlimited default. A null delegation permission means the chain read FAILED and not that it was denied; the two lead a strategy to opposite actions. An empty blockers list is not a promise of a fill: the market must still be tradeable, the quote still executable, and the chain still decides last. Nothing here is settable from an agent credential (spec §7.3).',
+  implementation: { kind: 'sdk', method: 'getEffectiveLimits' },
+  input: {
+    type: 'object',
+    required: ['accountId'],
+    additionalProperties: false,
+    properties: { accountId: { $ref: '#/$defs/accountId' } },
+  },
+  examples: [{ title: 'Read the effective mandate', input: { accountId: EXAMPLE_ACCOUNT_ID } }],
 };
 
 const accountPositions: AgentCommandSpec = {
@@ -658,10 +720,10 @@ const accountStatus: AgentCommandSpec = {
   cli: 'account status',
   summary: 'One reading of capacity and exposure for an account.',
   description:
-    'Composes account.allowance and account.positions into the pre-trade picture: what may be spent, and what is already held. Effective risk limits are reported as unavailable rather than guessed — the risk profile is owner-authenticated (ADR-0003) and an agent credential cannot read it on this API version. A caller that needs a single authoritative number must still size against effectiveBuyCapacity.',
+    'Composes account.risk-limits and account.positions into the pre-trade picture: what may be spent, what the mandate allows, what would refuse a write, and what is already held. Every number here comes from the server; none is inferred locally. capacity is null exactly when no mandate exists, because an allowance ledger only exists under one — that is denial, not an unlimited default. asOf is when this runtime assembled the two reads, not a server-side consistent snapshot.',
   implementation: {
     kind: 'runtime',
-    note: 'Composes getAllowance() and getPositions(). Reports agent-readable risk limits as unavailable; never fabricates one.',
+    note: 'Composes getEffectiveLimits() and getPositions(). Never fabricates a limit; reports absence as absence.',
   },
   input: {
     type: 'object',
@@ -681,10 +743,12 @@ export const AGENT_COMMANDS: readonly AgentCommandSpec[] = [
   runtimeCommandSchema,
   runtimeDoctor,
   marketList,
+  marketSearch,
   marketGet,
   marketQuote,
   accountStatus,
   accountAllowance,
+  accountRiskLimits,
   accountPositions,
   accountExecutions,
   accountFills,

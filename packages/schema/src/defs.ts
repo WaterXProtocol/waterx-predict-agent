@@ -191,6 +191,23 @@ const limit: JsonSchema = {
   maximum: 200,
 };
 
+/**
+ * Free text for server-side market resolution.
+ *
+ * Bounded to match the server's own `@MaxLength(200)`, and non-empty because an
+ * empty search is a malformed question rather than a request for everything —
+ * the server rejects it outright and the local schema must not accept what the
+ * server would refuse.
+ */
+const searchText: JsonSchema = {
+  title: 'Search text',
+  description:
+    'Free text matched SERVER-SIDE against each market’s published aliases. Matching is deterministic and purely lexical: every token must be a prefix of an alias token. There is no fuzzy distance and no synonym table, so the same text against the same catalog always resolves the same way.',
+  type: 'string',
+  minLength: 1,
+  maxLength: 200,
+};
+
 const idempotencyKey: JsonSchema = {
   title: 'Idempotency key',
   description:
@@ -301,6 +318,7 @@ export const COMMAND_SCHEMA_DEFS: Readonly<Record<string, JsonSchema>> = {
   positionAgreement,
   maxSlippageBps,
   limit,
+  searchText,
   idempotencyKey,
   orderIntent,
 };

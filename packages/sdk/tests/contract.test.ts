@@ -25,6 +25,7 @@ describe('vendored wire contract', () => {
       submitExecution: 'agent-api/v1/predict/executions/:executionId/submit',
       getExecution: 'agent-api/v1/predict/executions/:executionId',
       allowance: 'agent-api/v1/predict/accounts/:accountId/allowance',
+      effectiveLimits: 'agent-api/v1/predict/accounts/:accountId/effective-limits',
       positions: 'agent-api/v1/predict/accounts/:accountId/positions',
       fills: 'agent-api/v1/predict/accounts/:accountId/fills',
       listExecutions: 'agent-api/v1/predict/accounts/:accountId/executions',

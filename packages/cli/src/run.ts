@@ -25,12 +25,13 @@ import {
   accountExecutions,
   accountFills,
   accountPositions,
+  accountRiskLimits,
   accountStatus,
 } from './commands/account.ts';
 import { commandSchema } from './commands/command-schema.ts';
 import { describeRuntime } from './commands/describe.ts';
 import { doctorFailure, runDoctor } from './commands/doctor.ts';
-import { marketGet, marketList, marketQuote } from './commands/market.ts';
+import { marketGet, marketList, marketQuote, marketSearch } from './commands/market.ts';
 import {
   orderExecute,
   orderExecuteMany,
@@ -86,10 +87,12 @@ const HANDLERS: Readonly<Record<string, CommandHandler>> = {
     Promise.resolve(describeRuntime(context.config, context.nodeVersion)),
   'runtime.command-schema': (context) => Promise.resolve(commandSchema(context.input)),
   'market.list': marketList,
+  'market.search': marketSearch,
   'market.get': marketGet,
   'market.quote': marketQuote,
   'account.status': accountStatus,
   'account.allowance': accountAllowance,
+  'account.risk-limits': accountRiskLimits,
   'account.positions': accountPositions,
   'account.executions': accountExecutions,
   'account.fills': accountFills,
@@ -148,8 +151,8 @@ function resolveCommand(path: readonly string[]): {
  * This is capability negotiation, not an error in the ordinary sense: the
  * runtime knows what was asked for, knows it cannot do it, and says why, what
  * tracks it, and what to do instead. The alternative — approximating
- * `market search` client-side — would resolve a market identity the server
- * never resolved.
+ * `market history` from repeated quotes, say — would have this runtime invent a
+ * fact the server never stated.
  */
 function refusal(capability: Capability): CliError {
   const code =

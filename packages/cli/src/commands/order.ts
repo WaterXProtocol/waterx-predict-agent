@@ -17,7 +17,12 @@
  *    a shell script cannot mistake it for done.
  *  - retry a write. One idempotency key covers one logical intent, and choosing
  *    to try again is the caller's decision, made with the execution id in hand.
- *  - invent a risk limit. The risk profile is owner-authenticated (ADR-0003).
+ *  - invent a risk limit. `preview` reports the mandate the server states, and
+ *    says which of "not read" and "no mandate" applies when there is none. It
+ *    still cannot raise one: risk-profile writes are owner-authenticated
+ *    (ADR-0003).
+ *  - enforce a limit locally. The blockers a preview reports are the server's
+ *    reading a moment ago; the server decides again at execution time.
  */
 import type {
   CreateQuoteRequestBody,
@@ -25,6 +30,7 @@ import type {
   ExecuteMarketOrderIntent,
   ExecuteMarketOrderOptions,
   PredictAgentMarket,
+  PredictEffectiveLimitsResponseBody,
   PredictMarketOutcome,
   PredictOutcomeId,
 } from '@waterx/predict-agent-sdk';
@@ -44,14 +50,30 @@ import {
   type WriteAuthorization,
 } from '../policy.ts';
 
-const RISK_LIMITS_UNAVAILABLE = {
+/**
+ * Why a preview carries no mandate.
+ *
+ * Two distinct cases, and collapsing them would be the bug: NOT_READ means this
+ * preview did not ask (a read-only policy previews without touching the account
+ * plane at all), while NO_RISK_PROFILE means it asked and no owner has granted
+ * one. The first is a gap in this reading; the second is a refusal waiting to
+ * happen.
+ */
+const RISK_LIMITS_NOT_READ = {
   available: false,
-  reason: 'OWNER_AUTHENTICATED',
+  reason: 'NOT_READ',
   detail:
-    'The effective risk limits live behind the owner-authenticated surface (ADR-0003). An agent credential cannot read them on this API version, so none is reported here and none is guessed.',
+    'This preview ran under a read-only policy and did not read the account plane, so no mandate is reported. None is guessed either.',
+  alternative: 'Run `account risk-limits --accountId <id>` for the mandate and the live blockers.',
+} as const;
+
+const RISK_LIMITS_NO_MANDATE = {
+  available: false,
+  reason: 'NO_RISK_PROFILE',
+  detail:
+    'No owner has granted this agent a risk profile on this account. Absence is denial, not an unlimited default — an execution would be refused.',
   alternative:
-    'Size against `capacity.effectiveBuyCapacity`, which the server computes as the smaller of the API allowance and the spendable balance.',
-  tracking: 'B1',
+    'The account owner must create the profile through the owner-authenticated surface (ADR-0003). An agent credential can never raise its own limits.',
 } as const;
 
 const WRITE_CAVEATS: readonly string[] = [
@@ -281,6 +303,36 @@ function previewPolicy(
 }
 
 /**
+ * Why there is no spendable figure — three different answers, kept apart.
+ *
+ * A SELL never had one. A read-only preview did not ask. A BUY that asked and
+ * got nothing has no mandate, and therefore no allowance ledger — which is the
+ * one of the three that will refuse an execution.
+ */
+function capacityAbsence(
+  side: 'BUY' | 'SELL',
+  facts: PredictEffectiveLimitsResponseBody | null,
+): { reason: string; detail: string } {
+  if (side === 'SELL') {
+    return {
+      reason: 'NOT_APPLICABLE_TO_SELL',
+      detail: 'A SELL closes shares and does not spend the wxUSD allowance.',
+    };
+  }
+  if (facts === null) {
+    return {
+      reason: 'NOT_READ',
+      detail: 'The allowance was not read for this preview.',
+    };
+  }
+  return {
+    reason: 'NO_RISK_PROFILE',
+    detail:
+      'No owner has granted this agent a risk profile on this account, so there is no allowance ledger to spend from. An execution would be refused.',
+  };
+}
+
+/**
  * Resolve, price and policy-check one order — and place nothing.
  *
  * The market read is what makes the identity SERVER-resolved rather than
@@ -291,13 +343,20 @@ export async function orderPreview(context: CommandContext): Promise<unknown> {
   const leg = normalizeLeg(context.input);
   const client = await context.client();
 
-  const wantsCapacity =
-    leg.side === 'BUY' && context.config.policy.mode !== 'read-only';
-  const [market, quote, allowance] = await Promise.all([
+  // One account read covers both halves of the policy picture — the allowance a
+  // BUY spends and the mandate either side trades under — so a preview that
+  // reports both still makes exactly one extra call. A read-only preview skips
+  // it: it is pricing an order it has already refused to place.
+  const wantsFacts = context.config.policy.mode !== 'read-only';
+  const [market, quote, facts] = await Promise.all([
     client.getMarket(leg.marketId, context.signal()),
     client.getQuote(toQuoteRequest(leg), context.signal()),
-    wantsCapacity ? client.getAllowance(leg.accountId, context.signal()) : Promise.resolve(null),
+    wantsFacts ? client.getEffectiveLimits(leg.accountId, context.signal()) : Promise.resolve(null),
   ]);
+
+  // A SELL closes shares and spends no wxUSD allowance, so capacity stays
+  // inapplicable for it even though the same read returned one.
+  const allowance = leg.side === 'BUY' ? (facts?.allowance ?? null) : null;
 
   const outcome = outcomeOf(market.market, leg.outcomeId);
   const token = approvalToken(leg);
@@ -364,11 +423,7 @@ export async function orderPreview(context: CommandContext): Promise<unknown> {
       allowance === null
         ? {
             available: false,
-            reason: leg.side === 'SELL' ? 'NOT_APPLICABLE_TO_SELL' : 'NOT_READ',
-            detail:
-              leg.side === 'SELL'
-                ? 'A SELL closes shares and does not spend the wxUSD allowance.'
-                : 'The allowance was not read for this preview.',
+            ...capacityAbsence(leg.side, facts),
           }
         : {
             available: true,
@@ -376,7 +431,21 @@ export async function orderPreview(context: CommandContext): Promise<unknown> {
             accountSpendableBalance: allowance.accountSpendableBalance,
             effectiveBuyCapacity: allowance.effectiveBuyCapacity,
           },
-    riskLimits: RISK_LIMITS_UNAVAILABLE,
+    riskLimits:
+      facts === null
+        ? RISK_LIMITS_NOT_READ
+        : facts.limits === null
+          ? RISK_LIMITS_NO_MANDATE
+          : { available: true, ...facts.limits },
+    // The live policy gate, reported but never enforced here: this command
+    // places nothing, and an empty `blockers` is not a promise of a fill.
+    ...(facts === null
+      ? {}
+      : {
+          blockers: facts.blockers,
+          delegation: facts.delegation,
+          usage: facts.usage,
+        }),
     policy: previewPolicy(
       context,
       [leg],

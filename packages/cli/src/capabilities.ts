@@ -7,11 +7,17 @@
  * appears with an explicit status and a symbolic reason. Nothing is omitted to
  * make the list look complete.
  *
- * `market search` and `market history` are the two that need explaining. Both
- * are in the plan's command surface and neither has a server endpoint behind it.
- * Text-matching a truncated page of `market list` client-side would let this CLI
- * hand back a market id the server never resolved for that query — the one thing
- * the runtime rules forbid absolutely (ADR-0001 §10) — so they refuse instead.
+ * `market history` is the one that needs explaining. It is in the plan's command
+ * surface and has no server endpoint behind it, and reconstructing a series from
+ * repeated quotes would make this CLI a second source of truth for prices
+ * nothing honoured — so it refuses instead.
+ *
+ * `market search` used to refuse for the same family of reason and no longer
+ * does: the server resolves the text itself now (`?search=`), so the id handed
+ * back is one the server resolved for that exact query. What has NOT changed is
+ * the rule behind the old refusal — this CLI still never matches text against a
+ * page it fetched (ADR-0001 §10). An unavailable capability becomes available by
+ * the server growing an endpoint, never by the client approximating one.
  *
  * This module imports nothing. A workspace test cross-checks it against the
  * command contract, and that test must not be able to drag the whole CLI into
@@ -81,14 +87,10 @@ export const CAPABILITIES: readonly Capability[] = [
   },
   {
     id: 'market search',
-    status: 'UNAVAILABLE',
-    summary: 'Find a market by free text.',
-    reason: 'NO_SERVER_ENDPOINT',
-    detail:
-      'The API has no text search: the catalog query filters on category, status, tradeable and updatedAfter only. Matching text against a truncated page locally would resolve a marketId this CLI chose rather than one the server resolved, so it is refused rather than approximated.',
-    alternative:
-      'Use `market list --category <category> --limit <n>` and select from the returned catalog.',
-    tracking: 'B2',
+    command: 'market.search',
+    status: 'AVAILABLE',
+    summary:
+      'Resolve free text to one market id, server-side. AMBIGUOUS is an answer, not a failure.',
   },
   {
     id: 'market history',
@@ -133,14 +135,10 @@ export const CAPABILITIES: readonly Capability[] = [
   },
   {
     id: 'account risk-limits',
-    status: 'UNAVAILABLE',
-    summary: 'Read the effective risk limits applied to this agent.',
-    reason: 'OWNER_AUTHENTICATED',
-    detail:
-      'The risk profile is written and read through the owner-authenticated surface (ADR-0003). An agent credential cannot read it on this API version, and this CLI will not synthesise a number that looks like a limit.',
-    alternative:
-      'Size against `effectiveBuyCapacity` from `account status`, which is a real server-computed figure.',
-    tracking: 'B1',
+    command: 'account.risk-limits',
+    status: 'AVAILABLE',
+    summary:
+      'The mandate, the hour already used, the delegation, and what would refuse a write. Readable, never writable.',
   },
   {
     id: 'order preview',

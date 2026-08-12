@@ -29,6 +29,8 @@ import {
   type ListPositionsResponseBody,
   PREDICT_AGENT_API_ROUTES,
   type PredictAllowanceResponseBody,
+  type PredictEffectiveLimitsResponseBody,
+  type PredictMarketResolution,
   type PredictQuote,
   type SubmitExecutionResponseBody,
 } from './contract.ts';
@@ -484,6 +486,31 @@ export class PredictAgentClient {
     });
   }
 
+  /**
+   * The mandate, the allowance, the window already used, the delegation behind
+   * it, and the reasons a write would be refused — all stamped with one `asOf`.
+   *
+   * Prefer this over `getAllowance` when sizing: assembling the same picture from
+   * separate calls gives separate instants, and the gap is where an order gets
+   * sized against headroom that is already gone.
+   *
+   * An empty `blockers` is NOT a promise of a fill. It says only that the limits
+   * published here do not currently refuse an order — the market must still be
+   * tradeable, the quote executable, and the chain decides last.
+   */
+  async getEffectiveLimits(
+    accountId: string,
+    signal?: AbortSignal,
+  ): Promise<PredictEffectiveLimitsResponseBody> {
+    return await this.transport.request<PredictEffectiveLimitsResponseBody>({
+      method: 'GET',
+      path: PREDICT_AGENT_API_ROUTES.effectiveLimits.replace(':accountId', accountId),
+      authenticated: true,
+      idempotent: true,
+      ...(signal !== undefined ? { signal } : {}),
+    });
+  }
+
   async getPositions(
     accountId: string,
     limit?: number,
@@ -553,6 +580,43 @@ export class PredictAgentClient {
       idempotent: true,
       ...(signal !== undefined ? { signal } : {}),
     });
+  }
+
+  /**
+   * Free text → a market identity, resolved BY THE SERVER.
+   *
+   * `getMarkets` with `search` set, given its own name and its own return type
+   * because the guarantee is different: this one always comes back with a
+   * `resolution`, and a caller can branch on it without checking whether the
+   * field is there.
+   *
+   * `resolution.marketId` is non-null ONLY when exactly one market matched.
+   * AMBIGUOUS is a real answer — the candidates are in `markets` — and choosing
+   * one of them here would be this SDK resolving an identity the server refused
+   * to resolve, which is precisely the failure the whole search endpoint exists
+   * to prevent. `matchCount` is counted over the full filtered catalog before
+   * `limit` truncates the page, so a one-row page is not a unique match.
+   */
+  async searchMarkets(
+    query: ListMarketsQuery & { search: string },
+    signal?: AbortSignal,
+  ): Promise<ListMarketsResponseBody & { resolution: PredictMarketResolution }> {
+    const response = await this.getMarkets(query, signal);
+    if (response.resolution !== undefined) {
+      return { ...response, resolution: response.resolution };
+    }
+    // A server that answered a search without a resolution is older than this
+    // client. Reporting NOT_FOUND is the only safe reading: it withholds an id
+    // rather than inferring one from a page that was never scored.
+    return {
+      ...response,
+      resolution: {
+        status: 'NOT_FOUND',
+        normalizedQuery: '',
+        marketId: null,
+        matchCount: response.markets.length,
+      },
+    };
   }
 
   /** One market by its on-chain id. A closed market resolves; an unknown one 404s. */

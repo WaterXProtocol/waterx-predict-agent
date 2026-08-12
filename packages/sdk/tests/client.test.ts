@@ -334,4 +334,65 @@ describe('reads', () => {
       'https://api.test/agent-api/v1/predict/accounts/0xacct/executions',
     );
   });
+
+  it('sends the search text and returns the server’s resolution untouched', async () => {
+    const resolution = {
+      status: 'RESOLVED',
+      normalizedQuery: 'arsenal chelsea',
+      marketId: '0xmarket',
+      matchCount: 1,
+    };
+    const { client, calls } = makeClient([
+      json(200, { markets: [{ marketId: '0xmarket' }], resolution }),
+    ]);
+
+    const response = await client.searchMarkets({ search: 'arsenal chelsea', tradeable: true });
+
+    expect(new URL(calls[0]!.url).searchParams.get('search')).toBe('arsenal chelsea');
+    expect(response.resolution).toEqual(resolution);
+  });
+
+  it('never fills in a marketId the server left null', async () => {
+    // AMBIGUOUS is an answer. Picking one candidate here would be the SDK
+    // resolving an identity the server refused to resolve.
+    const { client } = makeClient([
+      json(200, {
+        markets: [{ marketId: '0xa' }, { marketId: '0xb' }],
+        resolution: {
+          status: 'AMBIGUOUS',
+          normalizedQuery: 'arsenal',
+          marketId: null,
+          matchCount: 2,
+        },
+      }),
+    ]);
+
+    const response = await client.searchMarkets({ search: 'arsenal' });
+
+    expect(response.resolution.marketId).toBeNull();
+    expect(response.markets).toHaveLength(2);
+  });
+
+  it('reads a search answered without a resolution as NOT_FOUND, not as a match', async () => {
+    // A server older than this client. Inferring the id from a one-row page is
+    // the exact local resolution the search endpoint exists to remove.
+    const { client } = makeClient([json(200, { markets: [{ marketId: '0xonly' }] })]);
+
+    const response = await client.searchMarkets({ search: 'arsenal' });
+
+    expect(response.resolution.status).toBe('NOT_FOUND');
+    expect(response.resolution.marketId).toBeNull();
+    expect(response.resolution.matchCount).toBe(1);
+  });
+
+  it('reads the effective limits from the account-scoped route', async () => {
+    const { client, calls } = makeClient([json(200, { accountId: '0xacct', blockers: [] })]);
+
+    await client.getEffectiveLimits('0xacct');
+
+    expect(calls[0]?.url).toBe(
+      'https://api.test/agent-api/v1/predict/accounts/0xacct/effective-limits',
+    );
+    expect(calls[0]?.method).toBe('GET');
+  });
 });

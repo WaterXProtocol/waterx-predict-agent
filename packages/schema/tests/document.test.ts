@@ -48,17 +48,17 @@ describe('the published command document', () => {
 
   it('does not advertise a command the execution core cannot perform', () => {
     // A schema entry is what an adapter turns into a callable tool, so a name
-    // that appears here is a promise the CLI must be able to keep. These four
-    // have nothing behind them: `market.search` and `market.history` have no
-    // server endpoint, `order.cancel` cannot exist for a market order, and the
-    // strategy family lives in a Runner that is not built.
+    // that appears here is a promise the CLI must be able to keep. These three
+    // have nothing behind them: `market.history` has no server endpoint,
+    // `order.cancel` cannot exist for a market order, and the strategy family
+    // lives in a Runner that is not built.
+    //
+    // `market.search` was on this list and is not any more — the server grew a
+    // `?search=` that resolves the text itself. That is the ONLY way a name
+    // leaves this list: the endpoint appears. A command must never be added here
+    // because the client learned to approximate one.
     const names = new Set(AGENT_COMMANDS.map((command) => command.name));
-    for (const unimplemented of [
-      'market.search',
-      'market.history',
-      'order.cancel',
-      'strategy.create',
-    ]) {
+    for (const unimplemented of ['market.history', 'order.cancel', 'strategy.create']) {
       expect(names.has(unimplemented), unimplemented).toBe(false);
     }
   });

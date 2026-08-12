@@ -339,6 +339,95 @@ export interface PredictAllowanceResponseBody {
   effectiveBuyCapacity: DecimalString;
 }
 
+/* ── Effective account facts ─────────────────────────────────────────────── */
+
+/**
+ * The owner-configured limits an agent is actually trading under, as an
+ * AGENT-authenticated READ.
+ *
+ * Same numbers as the owner's `RiskProfileResponseBody`, minus nothing and plus
+ * nothing — but reachable with an agent token, which the owner route is not. An
+ * agent may see its mandate; it can never write one (spec §7.3), and no field
+ * here is settable from this side.
+ */
+export interface PredictEffectiveRiskLimits {
+  allowanceLimit: DecimalString;
+  maxOrderAmount: DecimalString | null;
+  maxSlippageBps: number | null;
+  maxOrdersPerHour: number | null;
+  maxNotionalPerHour: DecimalString | null;
+  maxInFlightExecutions: number | null;
+  isSuspended: boolean;
+  /** Increments on every owner write, so a decision traces to its exact policy. */
+  policyVersion: number;
+  updatedAt: Iso8601;
+}
+
+/**
+ * What this agent has already consumed against the windowed limits.
+ *
+ * The window is rolling and measured back from `asOf`, not a wall-clock bucket —
+ * the write path measures it the same way, and a bucket boundary would let an
+ * hourly budget be spent twice in two minutes by straddling it.
+ */
+export interface PredictAgentUsageWindow {
+  windowSeconds: number;
+  ordersInWindow: number;
+  /** Committed BUY notional in the window. A SELL deploys nothing. */
+  notionalInWindow: DecimalString;
+  inFlightExecutions: number;
+}
+
+/**
+ * Why the local risk gate would refuse a new order right now. A CLOSED set —
+ * unlike `tradeabilityReason`, this is meant to be branched on.
+ *
+ * These are WaterX policy blocks only. Delegation is reported separately because
+ * it is an on-chain authorization and answers with different authority.
+ */
+export type PredictTradingBlocker =
+  | 'NO_RISK_PROFILE'
+  | 'SUSPENDED'
+  | 'ORDERS_PER_HOUR_EXHAUSTED'
+  | 'NOTIONAL_PER_HOUR_EXHAUSTED'
+  | 'IN_FLIGHT_LIMIT_REACHED'
+  | 'NO_BUY_CAPACITY';
+
+/**
+ * Current on-chain delegation, read fresh.
+ *
+ * `null` on a permission means THE CHAIN READ FAILED — it does not mean denied.
+ * Collapsing the two would tell a healthy strategy it had been revoked and make
+ * it tear itself down over an RPC blip.
+ */
+export interface PredictDelegationFacts {
+  mayPlaceOrder: boolean | null;
+  mayRequestClose: boolean | null;
+  checkedAt: Iso8601;
+}
+
+/**
+ * Everything an agent needs to size its next order without guessing, in one
+ * read: the mandate, the allowance, the window it has already used, the
+ * delegation behind it, and the reasons a write would be refused.
+ *
+ * `blockers` being empty does NOT promise a fill. It says the limits published
+ * here do not currently refuse an order; the market must still be tradeable, the
+ * quote must still be executable, and the chain still decides last.
+ */
+export interface PredictEffectiveLimitsResponseBody {
+  accountId: string;
+  agentWallet: string;
+  /** Null when no owner has granted this agent a mandate. Absence is denial. */
+  limits: PredictEffectiveRiskLimits | null;
+  /** Null exactly when `limits` is null — no mandate means no allowance ledger. */
+  allowance: PredictAllowanceResponseBody | null;
+  usage: PredictAgentUsageWindow;
+  delegation: PredictDelegationFacts;
+  blockers: PredictTradingBlocker[];
+  asOf: Iso8601;
+}
+
 /* ── Owner controls ──────────────────────────────────────────────────────── */
 
 /**
@@ -549,9 +638,39 @@ export interface PredictAgentMarket {
   tradeabilityReason?: string;
   event: PredictMarketEvent;
   outcomes: PredictMarketOutcome[];
+  /**
+   * The normalized handles this market answers to under `?search=`.
+   *
+   * Derived from the market's own structured display — never hand-curated and
+   * never a synonym dictionary — so the set is reproducible from the catalog
+   * alone. Publishing it means an agent can see EXACTLY what the server will
+   * match on instead of guessing at a name and then guessing at an id, which is
+   * how a strategy ends up trading the wrong event.
+   */
+  aliases: string[];
   /** When the round stops accepting orders. Null when the end is not scheduled. */
   closesAt: Iso8601 | null;
   updatedAt: Iso8601;
+}
+
+/**
+ * How a `?search=` narrowed to a market, if it did.
+ *
+ * `AMBIGUOUS` is a real answer, not a failure: the caller asked for something
+ * that names more than one market, and picking one for them is precisely the
+ * hallucinated identity this API refuses to produce. The candidates are in
+ * `markets`, so an agent can disambiguate and ask again.
+ */
+export type PredictMarketResolutionStatus = 'RESOLVED' | 'AMBIGUOUS' | 'NOT_FOUND';
+
+export interface PredictMarketResolution {
+  status: PredictMarketResolutionStatus;
+  /** The search text after normalization — exactly what was matched against. */
+  normalizedQuery: string;
+  /** Set ONLY when `status` is `RESOLVED`. Null otherwise; never a best guess. */
+  marketId: string | null;
+  /** Markets that matched, counted BEFORE `limit` truncated the page. */
+  matchCount: number;
 }
 
 /**
@@ -569,10 +688,31 @@ export interface ListMarketsQuery {
   tradeable?: boolean;
   /** ISO-8601. Only markets whose definition changed after this instant. */
   updatedAfter?: Iso8601;
+  /**
+   * Free text, resolved SERVER-SIDE against `aliases`.
+   *
+   * Matching is deterministic and purely lexical: the text is normalized, split
+   * into tokens, and a market matches when EVERY token is a prefix of one of its
+   * alias tokens. There is no fuzzy distance, no synonym table and no learned
+   * ranking, so the same text against the same catalog always resolves the same
+   * way — which is the only property that makes "resolve, then trade" safe.
+   *
+   * Search runs over the whole filtered catalog before `limit` truncates the
+   * page, so `resolution.matchCount` is the true total.
+   */
+  search?: string;
 }
 
 export interface ListMarketsResponseBody {
   markets: PredictAgentMarket[];
+  /**
+   * Present ONLY when the request carried `search`.
+   *
+   * The list order is match specificity then the round clock then the market id
+   * — a tie-break rule that makes the page reproducible. It is NOT a ranking of
+   * which market is worth trading, and nothing in this API scores that.
+   */
+  resolution?: PredictMarketResolution;
 }
 
 export interface GetMarketResponseBody {
@@ -646,6 +786,7 @@ export const PREDICT_AGENT_API_ROUTES = {
   submitExecution: 'agent-api/v1/predict/executions/:executionId/submit',
   getExecution: 'agent-api/v1/predict/executions/:executionId',
   allowance: 'agent-api/v1/predict/accounts/:accountId/allowance',
+  effectiveLimits: 'agent-api/v1/predict/accounts/:accountId/effective-limits',
   positions: 'agent-api/v1/predict/accounts/:accountId/positions',
   fills: 'agent-api/v1/predict/accounts/:accountId/fills',
   listExecutions: 'agent-api/v1/predict/accounts/:accountId/executions',

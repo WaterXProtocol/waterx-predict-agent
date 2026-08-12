@@ -84,24 +84,38 @@ stack.
 
 ## Command set in v1
 
-Only what the execution core can perform today. `describe`, `doctor`,
-`order preview` and the `strategy` family are named in the plan but have no
-implementation, and a schema entry is exactly what an adapter would advertise as
-a callable tool. They are added when they exist; the document is versioned and
-adding a command is not a breaking change.
+Only what the execution core can perform today. A schema entry is exactly what an
+adapter turns into a callable tool, so `market.history`, `order.cancel` and the
+`strategy` family are **absent**: they are named in the plan and nothing runs
+them. They are added when they exist; the document is versioned and adding a
+command is not a breaking change.
 
-| Command | CLI | SDK method | Class |
-| --- | --- | --- | --- |
-| `market.list` | `market list` | `getMarkets` | read |
-| `market.get` | `market get` | `getMarket` | read |
-| `market.quote` | `market quote` | `getQuote` | read (mints a quote) |
-| `account.allowance` | `account allowance` | `getAllowance` | read |
-| `account.positions` | `account positions` | `getPositions` | read |
-| `account.executions` | `account executions` | `listExecutions` | read |
-| `account.fills` | `account fills` | `getFills` | read |
-| `order.get` | `order get` | `getExecution` | read |
-| `order.execute` | `order execute` | `executeMarketOrder` | **write** |
-| `order.execute-many` | `order execute-many` | `executeMany` | **write** |
+| Command | CLI | SDK method | Class | Side effects |
+| --- | --- | --- | --- | --- |
+| `runtime.describe` | `describe` | — runtime, local | read | NONE |
+| `runtime.command-schema` | `command-schema` | — runtime, local | read | NONE |
+| `runtime.doctor` | `doctor` | — runtime, local | read | AUTHENTICATES |
+| `market.list` | `market list` | `getMarkets` | read | NONE |
+| `market.search` | `market search` | `searchMarkets` | read | NONE |
+| `market.get` | `market get` | `getMarket` | read | NONE |
+| `market.quote` | `market quote` | `getQuote` | read | MINTS_QUOTE |
+| `account.status` | `account status` | — runtime, local | read | NONE |
+| `account.allowance` | `account allowance` | `getAllowance` | read | NONE |
+| `account.risk-limits` | `account risk-limits` | `getEffectiveLimits` | read | NONE |
+| `account.positions` | `account positions` | `getPositions` | read | NONE |
+| `account.executions` | `account executions` | `listExecutions` | read | NONE |
+| `account.fills` | `account fills` | `getFills` | read | NONE |
+| `order.preview` | `order preview` | — runtime, local | read | MINTS_QUOTE |
+| `order.get` | `order get` | `getExecution` | read | NONE |
+| `order.reconcile` | `order reconcile` | `waitForExecution` | read | NONE |
+| `order.execute` | `order execute` | `executeMarketOrder` | **write** | SIGNS_TRANSACTION, MOVES_FUNDS |
+| `order.execute-many` | `order execute-many` | `executeMany` | **write** | SIGNS_TRANSACTION, MOVES_FUNDS |
+
+A `runtime` implementation is answered locally by the CLI rather than by one SDK
+call — `order preview` and `account status` compose several. `market.search` and
+`account.risk-limits` were absent until the server grew the endpoints behind
+them; the client never approximates a missing capability, and
+`tests/document.test.ts` enforces that.
 
 ## Development
 
