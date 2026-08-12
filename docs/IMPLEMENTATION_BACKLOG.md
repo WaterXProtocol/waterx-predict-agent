@@ -6,10 +6,10 @@ implemented**. The plan describes the intended system; an ADR constrains how it
 gets built; neither is evidence that anything works.
 
 - Verified: 2026-08-12
-- SDK: `codex/waterx-predict-agent-runtime` @ `a3bb7ee` plus this commit
+- SDK: `codex/waterx-predict-agent-runtime` @ `8e91d5d` plus this commit
 - Backend: `codex/waterx-predict-agent-runtime` @ `201fc84` (untouched)
-- SDK verification: `pnpm typecheck` clean, `pnpm test` 129/129 in 8 files
-  (45 SDK, 69 schema, 15 workspace), `pnpm build` clean, `pnpm schema:generate`
+- SDK verification: `pnpm typecheck` clean, `pnpm test` 156/156 in 10 files
+  (72 SDK, 69 schema, 15 workspace), `pnpm build` clean, `pnpm schema:generate`
   reproduces the committed artifact byte-for-byte.
 
 The repository is now a pnpm workspace. `packages/sdk` is the SDK this file
@@ -35,26 +35,31 @@ seam for. The SDK has two, and both are correctly disclosed in
 
 `packages/sdk/src/contract.ts` and
 `bucket-backend-mono/apps/waterx/src/predict/agent-api/agent-api.contract.ts`
-were diffed in full at the commits above. They are identical apart from the
-SDK-specific vendoring header (lines 2–8). No drift.
+were diffed in full at the commits above. Below the file header (SDK lines 1–28,
+backend lines 1–22, which differ only in the vendoring notice) they are
+byte-identical. No drift. Neither file has changed
+since that diff: the SDK work above is client-side behavior over the same wire
+shapes, so no backend change was required and none was made.
 
 ## 1. Current SDK state — verified
 
 | Capability | Status | Evidence |
 | --- | --- | --- |
-| Personal-message auth + token handling | DONE | `packages/sdk/src/client.ts:207`, `packages/sdk/src/signer.ts` |
-| Executable quote | DONE | `packages/sdk/src/client.ts:232` |
-| Market catalog list + get | DONE | `packages/sdk/src/client.ts:502`, `packages/sdk/src/client.ts:517` |
-| Protected market order (create → sign → submit) | DONE | `packages/sdk/src/client.ts:250` |
-| Terminal wait + REST reconciliation | DONE | `packages/sdk/src/client.ts:419`, `packages/sdk/tests/client.test.ts` |
+| Personal-message auth + token handling | DONE | `packages/sdk/src/client.ts:241`, `packages/sdk/src/signer.ts` |
+| Bounded automatic re-authentication | DONE | `packages/sdk/src/session.ts`, `packages/sdk/src/transport.ts:89`, `packages/sdk/tests/reauthentication.test.ts` (14). Single-flight mint, compare-and-swap token replacement, one retry per request, `401 UNAUTHENTICATED` only, replay keeps exact bytes and key. |
+| Executable quote | DONE | `packages/sdk/src/client.ts:266` |
+| Market catalog list + get | DONE | `packages/sdk/src/client.ts:544`, `packages/sdk/src/client.ts:559` |
+| Protected market order (create → sign → submit) | DONE | `packages/sdk/src/client.ts:291` |
+| Terminal wait + REST reconciliation | DONE | `packages/sdk/src/client.ts:582` (public `waitForExecution`), `packages/sdk/tests/client.test.ts` |
+| Terminal facts: fill, fee availability, remaining allowance | DONE | `packages/sdk/src/execution-facts.ts`, `packages/sdk/tests/terminal-result.test.ts` (14). Timeout returns `timedOut: true` with the execution id instead of throwing; absent fee is a reason, never zero; allowance is `undefined` off a non-terminal read and for an agent with no risk profile. |
 | Stable idempotency across retries | DONE | `packages/sdk/tests/client.test.ts` |
 | Server-driven retry policy | DONE | `packages/sdk/src/transport.ts`, `packages/sdk/src/errors.ts` |
 | Exact decimal comparison | DONE | `packages/sdk/src/decimal.ts`, `packages/sdk/tests/wait-for-price.test.ts` |
-| `executeMany` independent legs + STOP/CONTINUE | DONE | `packages/sdk/src/client.ts:298` |
-| Allowance / positions / executions / fills reads | DONE | `packages/sdk/src/client.ts:432`–`:476` |
-| `waitForPriceAndExecute` in-process trigger | PARTIAL | `packages/sdk/src/client.ts:354`. Correct trigger, fresh re-quote, re-verify, one submission — but in-process only. Dies with the process; not durable. |
-| Execution stream | SEAM | `packages/sdk/src/client.ts:126`. Interface only; caller supplies a Socket.IO adapter. Default path polls. |
-| Quote stream | SEAM | `packages/sdk/src/client.ts:106`. Interface only; default polls `POST /quotes`. |
+| `executeMany` independent legs + STOP/CONTINUE | DONE | `packages/sdk/src/client.ts:340` |
+| Allowance / positions / executions / fills reads | DONE | `packages/sdk/src/client.ts:474`–`:531` |
+| `waitForPriceAndExecute` in-process trigger | PARTIAL | `packages/sdk/src/client.ts:396`. Correct trigger, fresh re-quote, re-verify, one submission — but in-process only. Dies with the process; not durable. |
+| Execution stream | SEAM | `packages/sdk/src/client.ts:141`. Interface only; caller supplies a Socket.IO adapter. Default path polls. |
+| Quote stream | SEAM | `packages/sdk/src/client.ts:121`. Interface only; default polls `POST /quotes`. |
 | Agent-readable effective risk limits | TODO | No client method. Backend exposes risk profile on the **owner** controller only (ADR-0003). |
 
 ## 2. Phase 0 — spec freeze and threat model
@@ -87,7 +92,7 @@ are open.
 | 1.6 | `market` / `account` / `order` commands | TODO | 1.2, 1.3 |
 | 1.7 | `order preview` as a first-class command | TODO | 1.2, 3.3. Must surface effective limits, worst price, warnings, and whether execute is currently permitted — without signing. |
 | 1.8 | Signer provider interface + keystore/keychain/KMS | TODO | ADR-0001 §7 |
-| 1.9 | Automatic re-auth preserving key and exact bytes | TODO | 1.8. SDK holds a token today but does not re-authenticate on expiry. |
+| 1.9 | Automatic re-auth preserving key and exact bytes | DONE | `packages/sdk/src/session.ts`, `packages/sdk/src/transport.ts:89`, `packages/sdk/src/errors.ts:isUnauthenticated`; `packages/sdk/tests/reauthentication.test.ts` (14) covers replay under a fresh token with identical bytes and key, a token dying between create and submit, five concurrent 401s minting one session, the bound (one re-auth, then the error), a fresh signed challenge per mint, pre-expiry rollover, `autoReauthenticate: false`, and the rejections it must **not** retry (`403 DELEGATION_REVOKED`, `401 SIGNATURE_INVALID`, `409 IDEMPOTENCY_KEY_REUSED`). At the SDK layer only — 1.8's signer provider still gates the CLI/Runner path, where the challenge is signed outside this process. |
 | 1.10 | Secret redaction across stdout, logs, errors, job store | TODO | 1.8 |
 | 1.11 | Testnet quickstart + real E2E | TODO | 1.1–1.9 |
 
@@ -102,6 +107,13 @@ the schema on purpose: a command entry is precisely what an adapter turns into a
 advertised, callable tool, so listing them would present planned capability as
 implemented. Adding a command to a versioned document is not a breaking change,
 so each lands with its implementation.
+
+On 1.9 and what it does **not** mean: the no-duplicate-execution guarantee is
+proven in-process, against a fetch double, for a write the SDK itself replays.
+It has not been exercised against a real server (1.11), and it says nothing about
+a crash between the create and the submit — that is 0.4's threat model and 2.5's
+durable store, because recovering from it needs the idempotency key to have
+outlived the process.
 
 **Phase 1 exit criteria**: an onboarded user gets a shell-capable agent to its
 first testnet trade in 15 minutes, and a token expiring mid-flow causes no

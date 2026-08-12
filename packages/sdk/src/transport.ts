@@ -10,9 +10,21 @@
  * server-side, and reads are trivially safe. A create with a FRESH key is not
  * idempotent and must never be retried here, because a timeout does not tell you
  * whether the order was placed.
+ *
+ * THE EXACT-BYTES RULE: the body is serialized ONCE per `request` and that string
+ * is what every attempt sends. Re-serializing per attempt would let a caller
+ * mutating its intent object turn a retry — or a replay after re-authentication —
+ * into a different order under the same idempotency key, which the server would
+ * legitimately reject or, worse, resolve to the wrong intent.
  */
-import { PredictAgentApiError, PredictAgentTransportError, isRetryable } from './errors.ts';
+import {
+  PredictAgentApiError,
+  PredictAgentTransportError,
+  isRetryable,
+  isUnauthenticated,
+} from './errors.ts';
 import { IDEMPOTENCY_KEY_HEADER, type PredictAgentErrorBody } from './contract.ts';
+import type { AuthSession } from './session.ts';
 
 export interface RetryOptions {
   /** Attempts INCLUDING the first. 1 disables retrying. */
@@ -34,8 +46,11 @@ export interface RequestOptions {
   path: string;
   body?: unknown;
   query?: Record<string, string | number | undefined>;
-  /** Bearer token. Omitted on the auth route, which has none yet. */
-  token?: string;
+  /**
+   * Send the session's bearer token, and let one expired token be replaced.
+   * False on the auth route, which is how a token is obtained in the first place.
+   */
+  authenticated?: boolean;
   idempotencyKey?: string;
   /**
    * True only when repeating these exact bytes is safe. Gates ALL retrying —
@@ -66,41 +81,68 @@ export class Transport {
   private readonly doFetch: typeof globalThis.fetch;
   private readonly maxAttempts: number;
   private readonly baseDelayMs: number;
+  private readonly session: AuthSession;
 
-  constructor(options: TransportOptions) {
+  constructor(options: TransportOptions, session: AuthSession) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, '');
     this.doFetch = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.maxAttempts = options.retry?.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
     this.baseDelayMs = options.retry?.baseDelayMs ?? DEFAULT_BASE_DELAY_MS;
+    this.session = session;
   }
 
   async request<T>(options: RequestOptions): Promise<T> {
     const attempts = options.idempotent === true ? this.maxAttempts : 1;
-    let lastError: unknown;
+    // Serialized once. See the file header: every attempt of this logical write
+    // sends these exact bytes under the caller's idempotency key.
+    const payload = options.body === undefined ? undefined : JSON.stringify(options.body);
+    let attempt = 1;
+    let reauthenticated = false;
 
-    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    for (;;) {
+      const token = options.authenticated === true ? await this.session.require() : undefined;
       try {
-        return await this.attempt<T>(options);
+        return await this.attempt<T>(options, payload, token);
       } catch (error: unknown) {
-        lastError = error;
+        // A rejected session is not a failed intent: the guard runs before the
+        // handler, so nothing was written, and the replay below carries the same
+        // key and the same bytes even if something had been. Bounded to ONE
+        // re-authentication per request so a server issuing dead tokens produces
+        // an error rather than a login loop.
+        if (
+          options.authenticated === true &&
+          !reauthenticated &&
+          this.session.automatic &&
+          isUnauthenticated(error)
+        ) {
+          reauthenticated = true;
+          const replacement = await this.session.refresh(token);
+          // undefined means this session may not re-authenticate; surface the
+          // server's own rejection rather than inventing a recovery.
+          if (replacement !== undefined) continue;
+        }
         // Stop immediately on anything the server called permanent, and on the
         // last attempt. Backoff is exponential from `baseDelayMs`.
-        if (attempt === attempts || !isRetryable(error)) throw error;
+        if (attempt >= attempts || !isRetryable(error)) throw error;
         await sleep(this.baseDelayMs * 2 ** (attempt - 1), options.signal);
+        attempt += 1;
       }
     }
-    throw lastError;
   }
 
-  private async attempt<T>(options: RequestOptions): Promise<T> {
+  private async attempt<T>(
+    options: RequestOptions,
+    payload: string | undefined,
+    token: string | undefined,
+  ): Promise<T> {
     const url = new URL(`${this.baseUrl}/${options.path.replace(/^\/+/, '')}`);
     for (const [key, value] of Object.entries(options.query ?? {})) {
       if (value !== undefined) url.searchParams.set(key, String(value));
     }
 
     const headers: Record<string, string> = { accept: 'application/json' };
-    if (options.body !== undefined) headers['content-type'] = 'application/json';
-    if (options.token !== undefined) headers.authorization = `Bearer ${options.token}`;
+    if (payload !== undefined) headers['content-type'] = 'application/json';
+    if (token !== undefined) headers.authorization = `Bearer ${token}`;
     if (options.idempotencyKey !== undefined) {
       headers[IDEMPOTENCY_KEY_HEADER] = options.idempotencyKey;
     }
@@ -110,7 +152,7 @@ export class Transport {
       response = await this.doFetch(url, {
         method: options.method,
         headers,
-        ...(options.body !== undefined ? { body: JSON.stringify(options.body) } : {}),
+        ...(payload !== undefined ? { body: payload } : {}),
         ...(options.signal !== undefined ? { signal: options.signal } : {}),
       });
     } catch (error: unknown) {

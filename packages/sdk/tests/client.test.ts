@@ -198,24 +198,8 @@ describe('executeMarketOrder', () => {
     });
 
     expect(result.status).toBe('FILLED');
-  });
-
-  it('times out the wait without claiming the order failed', async () => {
-    const { client } = makeClient([
-      json(201, CREATED),
-      json(202, SUBMITTED),
-      json(200, { executionId: 'exec-1', status: 'PENDING_FILL' }),
-    ]);
-
-    // The order is on-chain; a keeper may still fill it. EXECUTION_TIMEOUT means
-    // "stop waiting", never "it did not happen".
-    await expect(
-      client.executeMarketOrder(intent, {
-        waitFor: 'TERMINAL',
-        timeoutMs: -1,
-        pollIntervalMs: 0,
-      }),
-    ).rejects.toThrow(expect.objectContaining({ code: 'EXECUTION_TIMEOUT' }));
+    expect(result.terminal).toBe(true);
+    expect(result.timedOut).toBe(false);
   });
 });
 
@@ -267,7 +251,9 @@ describe('executeMany', () => {
 });
 
 describe('authentication', () => {
-  it('refuses to call a guarded route without a token', async () => {
+  it('refuses to call a guarded route before a session is opened', async () => {
+    // Automatic RE-authentication continues an established session; it never
+    // opens the first one behind the caller's back.
     const { fetch } = stubFetch([json(200, {})]);
     const client = new PredictAgentClient({ baseUrl: 'https://api.test', fetch, signer });
 

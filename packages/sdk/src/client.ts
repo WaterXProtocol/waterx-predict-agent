@@ -29,27 +29,38 @@ import {
   type ListPositionsResponseBody,
   PREDICT_AGENT_API_ROUTES,
   type PredictAllowanceResponseBody,
-  type PredictExecutionStatus,
   type PredictQuote,
   type SubmitExecutionResponseBody,
 } from './contract.ts';
 import { targetReached } from './decimal.ts';
 import { PredictAgentApiError } from './errors.ts';
+import {
+  type ExecutionOutcome,
+  isTerminalExecutionStatus,
+  toExecutionOutcome,
+} from './execution-facts.ts';
+import { AuthSession } from './session.ts';
 import { type AgentSigner, buildAuthMessage, signBase64 } from './signer.ts';
 import { Transport, type TransportOptions } from './transport.ts';
 
-/** Statuses from which nothing further will happen without a new request. */
-const TERMINAL: ReadonlySet<PredictExecutionStatus> = new Set([
-  'FILLED',
-  'REJECTED',
-  'CANCELLED',
-  'EXPIRED',
-]);
-
 export interface PredictAgentClientOptions extends TransportOptions {
   signer: AgentSigner;
-  /** Reuse an existing session token instead of authenticating. */
+  /**
+   * Reuse an existing session token instead of authenticating. Its lifetime is
+   * unknown to the client, so it is replaced only after the server rejects it.
+   */
   token?: string;
+  /**
+   * Re-authenticate automatically when the server rejects the session token, and
+   * roll a self-minted token over just before it expires. Default `true`.
+   *
+   * Bounded either way: one re-authentication per request, sharing a single mint
+   * across concurrent requests, and the replayed request keeps its exact bytes
+   * and its idempotency key — so a token dying mid-order cannot produce a second
+   * one. Set `false` to surface `UNAUTHENTICATED` to the caller instead; opening
+   * the first session is always explicit.
+   */
+  autoReauthenticate?: boolean;
   /** Override how prices are observed. Defaults to polling `POST /quotes`. */
   priceWatcher?: PriceWatcher;
   /**
@@ -71,22 +82,26 @@ export interface ExecuteMarketOrderIntent
   idempotencyKey?: string;
 }
 
-export interface ExecuteMarketOrderOptions {
+export interface WaitForExecutionOptions {
   /**
-   * Wait for a terminal status instead of returning at SUBMITTED. The order is
-   * already on-chain either way — this only decides when the promise settles.
+   * Bound on the wait. Exceeding it does NOT cancel the order: the result comes
+   * back with `timedOut: true` and a non-terminal status.
    */
-  waitFor?: 'SUBMITTED' | 'TERMINAL';
-  /** Bound on the terminal wait. Exceeding it does NOT cancel the order. */
   timeoutMs?: number;
   pollIntervalMs?: number;
   signal?: AbortSignal;
 }
 
-export interface ExecuteMarketOrderResult {
-  executionId: string;
-  status: PredictExecutionStatus;
-  transactionDigest: string | undefined;
+export interface ExecuteMarketOrderOptions extends WaitForExecutionOptions {
+  /**
+   * Wait for a terminal status instead of returning at SUBMITTED. The order is
+   * already on-chain either way — this only decides when the promise settles,
+   * and only a terminal read carries fill, fee and remaining-allowance facts.
+   */
+  waitFor?: 'SUBMITTED' | 'TERMINAL';
+}
+
+export interface ExecuteMarketOrderResult extends ExecutionOutcome {
   /** The price the chain enforced — never looser than requested. */
   enforcedWorstPrice: string;
   /** Echoed so a caller can persist it and resume the same intent later. */
@@ -185,13 +200,20 @@ export class PredictAgentClient {
   private readonly signer: AgentSigner;
   private readonly watcher: PriceWatcher;
   private readonly executionStream: ExecutionStream | undefined;
-  private token: string | undefined;
+  private readonly session: AuthSession;
 
   constructor(options: PredictAgentClientOptions) {
-    this.transport = new Transport(options);
-    this.executionStream = options.executionStream;
     this.signer = options.signer;
-    this.token = options.token;
+    // The session is constructed first because the transport asks it for a token
+    // on every authenticated attempt; `mint` closes over the transport lazily and
+    // runs only once a request needs a session.
+    this.session = new AuthSession({
+      ...(options.token !== undefined ? { token: options.token } : {}),
+      automatic: options.autoReauthenticate ?? true,
+      mint: async () => await this.mintSession(),
+    });
+    this.transport = new Transport(options, this.session);
+    this.executionStream = options.executionStream;
     // Defaults to polling the quote endpoint — the only price source an agent can
     // reach today. See PriceWatcher for why this is a seam.
     this.watcher = options.priceWatcher ?? {
@@ -200,11 +222,23 @@ export class PredictAgentClient {
   }
 
   /**
-   * Open a session by signing the server's challenge. The timestamp is minted
-   * here and embedded in the signed text, so the signature is bound to this
-   * moment and this wallet.
+   * Open a session by signing the server's challenge.
+   *
+   * Concurrent calls — including the automatic re-authentication a rejected token
+   * triggers — join ONE handshake rather than racing to overwrite each other's
+   * token.
    */
   async authenticate(): Promise<AgentAuthResponseBody> {
+    return await this.session.authenticate();
+  }
+
+  /**
+   * The handshake itself. The timestamp is minted per attempt and embedded in the
+   * signed text, so the signature is bound to this moment and this wallet — a
+   * re-authentication must never replay an earlier challenge, which the server
+   * rejects after five minutes anyway.
+   */
+  private async mintSession(): Promise<AgentAuthResponseBody> {
     const walletAddress = this.signer.toSuiAddress();
     const timestamp = Date.now();
     const message = buildAuthMessage(walletAddress, timestamp);
@@ -215,14 +249,14 @@ export class PredictAgentClient {
     const { signature } = await this.signer.signPersonalMessage(
       new TextEncoder().encode(message),
     );
-    const response = await this.transport.request<AgentAuthResponseBody>({
+    // Not `authenticated`: this is the route that mints the token, and letting it
+    // re-authenticate on a 401 would recurse.
+    return await this.transport.request<AgentAuthResponseBody>({
       method: 'POST',
       path: PREDICT_AGENT_API_ROUTES.auth,
       body: { walletAddress, signature, message, timestamp },
       idempotent: true,
     });
-    this.token = response.token;
-    return response;
   }
 
   /**
@@ -234,7 +268,7 @@ export class PredictAgentClient {
       method: 'POST',
       path: PREDICT_AGENT_API_ROUTES.quotes,
       body: request,
-      token: this.requireToken(),
+      authenticated: true,
       idempotent: true,
       ...(signal !== undefined ? { signal } : {}),
     });
@@ -245,7 +279,14 @@ export class PredictAgentClient {
    *
    * The create is retried under a STABLE key, so a timeout mid-create resolves to
    * the original execution instead of a second order. The submit is retried
-   * because the server makes a repeated signature submission a no-op.
+   * because the server makes a repeated signature submission a no-op. A session
+   * token expiring anywhere in here is recovered by the transport and changes
+   * neither the key nor the bytes.
+   *
+   * `waitFor: 'TERMINAL'` is what turns the result into settlement facts — fill,
+   * fee availability and remaining allowance only exist on a terminal read. A
+   * wait that runs out of time returns `timedOut: true` with the execution id
+   * intact; it is a decision to stop watching, never a failed order.
    */
   async executeMarketOrder(
     intent: ExecuteMarketOrderIntent,
@@ -258,7 +299,7 @@ export class PredictAgentClient {
       method: 'POST',
       path: PREDICT_AGENT_API_ROUTES.executions,
       body,
-      token: this.requireToken(),
+      authenticated: true,
       idempotencyKey,
       idempotent: true,
       ...(options.signal !== undefined ? { signal: options.signal } : {}),
@@ -272,20 +313,21 @@ export class PredictAgentClient {
         created.executionId,
       ),
       body: { signature },
-      token: this.requireToken(),
+      authenticated: true,
       idempotent: true,
       ...(options.signal !== undefined ? { signal: options.signal } : {}),
     });
 
-    const settled =
+    const outcome =
       options.waitFor === 'TERMINAL'
-        ? await this.waitForTerminal(created.executionId, options)
-        : submitted;
+        ? await this.waitForExecution(created.executionId, options)
+        : toExecutionOutcome(submitted, false);
 
     return {
-      executionId: created.executionId,
-      status: settled.status,
-      transactionDigest: settled.transactionDigest ?? submitted.transactionDigest,
+      ...outcome,
+      // The submit's digest is kept as a fallback: a later read may not carry one
+      // yet, and losing it would cost the caller the only on-chain handle it has.
+      transactionDigest: outcome.transactionDigest ?? submitted.transactionDigest,
       enforcedWorstPrice: created.enforcedWorstPrice,
       idempotencyKey,
     };
@@ -423,7 +465,7 @@ export class PredictAgentClient {
     return await this.transport.request<SubmitExecutionResponseBody>({
       method: 'GET',
       path: PREDICT_AGENT_API_ROUTES.getExecution.replace(':executionId', executionId),
-      token: this.requireToken(),
+      authenticated: true,
       idempotent: true,
       ...(signal !== undefined ? { signal } : {}),
     });
@@ -436,7 +478,7 @@ export class PredictAgentClient {
     return await this.transport.request<PredictAllowanceResponseBody>({
       method: 'GET',
       path: PREDICT_AGENT_API_ROUTES.allowance.replace(':accountId', accountId),
-      token: this.requireToken(),
+      authenticated: true,
       idempotent: true,
       ...(signal !== undefined ? { signal } : {}),
     });
@@ -451,7 +493,7 @@ export class PredictAgentClient {
       method: 'GET',
       path: PREDICT_AGENT_API_ROUTES.positions.replace(':accountId', accountId),
       query: { limit },
-      token: this.requireToken(),
+      authenticated: true,
       idempotent: true,
       ...(signal !== undefined ? { signal } : {}),
     });
@@ -466,7 +508,7 @@ export class PredictAgentClient {
       method: 'GET',
       path: PREDICT_AGENT_API_ROUTES.listExecutions.replace(':accountId', accountId),
       query: { limit },
-      token: this.requireToken(),
+      authenticated: true,
       idempotent: true,
       ...(signal !== undefined ? { signal } : {}),
     });
@@ -482,7 +524,7 @@ export class PredictAgentClient {
       method: 'GET',
       path: PREDICT_AGENT_API_ROUTES.fills.replace(':accountId', accountId),
       query: { limit },
-      token: this.requireToken(),
+      authenticated: true,
       idempotent: true,
       ...(signal !== undefined ? { signal } : {}),
     });
@@ -507,7 +549,7 @@ export class PredictAgentClient {
       method: 'GET',
       path: PREDICT_AGENT_API_ROUTES.markets,
       query: toMarketQuery(query),
-      token: this.requireToken(),
+      authenticated: true,
       idempotent: true,
       ...(signal !== undefined ? { signal } : {}),
     });
@@ -518,23 +560,29 @@ export class PredictAgentClient {
     return await this.transport.request<GetMarketResponseBody>({
       method: 'GET',
       path: PREDICT_AGENT_API_ROUTES.market.replace(':marketId', marketId),
-      token: this.requireToken(),
+      authenticated: true,
       idempotent: true,
       ...(signal !== undefined ? { signal } : {}),
     });
   }
 
   /**
-   * Wait until the execution stops moving.
+   * Wait until the execution stops moving, then report what it settled as.
    *
-   * A timeout throws EXECUTION_TIMEOUT but does NOT cancel anything — the order
-   * is on-chain and a keeper may still fill it. Callers must treat the timeout as
-   * "stop waiting", never as "it did not happen", and re-read the execution later.
+   * Also the reconciliation entry point: a wait that timed out earlier, or a
+   * process that restarted holding only an execution id, resumes by calling this.
+   *
+   * Running out of time is NOT an error here and does not cancel anything — the
+   * order is on-chain and a keeper may still fill it. The result comes back with
+   * `timedOut: true`, the last observed status, and the execution id, which is
+   * exactly what a caller needs to reconcile. Throwing instead would push callers
+   * into a catch block to recover facts that are not failures, and the ones who
+   * skip it would resubmit an order that is still live.
    */
-  private async waitForTerminal(
+  async waitForExecution(
     executionId: string,
-    options: ExecuteMarketOrderOptions,
-  ): Promise<SubmitExecutionResponseBody> {
+    options: WaitForExecutionOptions = {},
+  ): Promise<ExecutionOutcome> {
     const deadline = Date.now() + (options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
     const interval = options.pollIntervalMs ?? DEFAULT_POLL_MS;
 
@@ -546,15 +594,8 @@ export class PredictAgentClient {
     try {
       for (;;) {
         const current = await this.getExecution(executionId, options.signal);
-        if (TERMINAL.has(current.status)) return current;
-        if (Date.now() >= deadline) {
-          throw new PredictAgentApiError(504, {
-            code: 'EXECUTION_TIMEOUT',
-            message: `Execution ${executionId} was still ${current.status} when the wait expired; it may still fill`,
-            retryable: false,
-            executionId,
-          });
-        }
+        if (isTerminalExecutionStatus(current.status)) return toExecutionOutcome(current, false);
+        if (Date.now() >= deadline) return toExecutionOutcome(current, true);
         // Whichever comes first: a pushed hint, or the poll interval. The
         // interval is retained as a FLOOR on liveness even when a stream is
         // supplied — that is what makes a dead stream degrade instead of hang.
@@ -621,13 +662,6 @@ export class PredictAgentClient {
         }
       },
     };
-  }
-
-  private requireToken(): string {
-    if (this.token === undefined) {
-      throw new Error('Not authenticated — call authenticate() or pass a token');
-    }
-    return this.token;
   }
 }
 

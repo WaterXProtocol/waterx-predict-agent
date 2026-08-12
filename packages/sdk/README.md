@@ -51,7 +51,12 @@ const result = await client.executeMarketOrder(
   { waitFor: 'TERMINAL', timeoutMs: 60_000 },
 );
 
-console.log(result.status, result.enforcedWorstPrice);
+if (result.terminal && result.status === 'FILLED') {
+  console.log(result.fill?.filledShares, result.remainingAllowance);
+} else if (result.timedOut) {
+  // Still live on chain. Reconcile later by id — never resubmit.
+  await saveForReconciliation(result.executionId, result.idempotencyKey);
+}
 ```
 
 `executeMarketOrder` hides the API's three steps — create, sign the returned
@@ -73,10 +78,49 @@ await savePendingIntent(idempotencyKey, intent); // your durable store
 await client.executeMarketOrder({ ...intent, idempotencyKey });
 ```
 
-**A timeout is not a failure.** `EXECUTION_TIMEOUT` from `waitFor: 'TERMINAL'`
-means *stop waiting*. The order is on-chain and a keeper may still fill it. Re-read
-with `getExecution` — never assume it did not happen, and never resubmit with a
-fresh key.
+**A timeout is not a failure, and it does not throw.** A `waitFor: 'TERMINAL'`
+wait that runs out of time **returns** with `timedOut: true` and the last observed
+status. The order is on-chain and a keeper may still fill it — the SDK just stopped
+watching. Resume with `waitForExecution(executionId)` (or `getExecution`); never
+assume it did not happen, and never resubmit under a fresh key.
+
+```ts
+const result = await client.executeMarketOrder(intent, { waitFor: 'TERMINAL' });
+if (result.timedOut) {
+  const settled = await client.waitForExecution(result.executionId, { timeoutMs: 300_000 });
+}
+```
+
+**Settlement facts exist only on a terminal read.** `SUBMITTED` is a request a
+keeper fills asynchronously, so `fill` and `remainingAllowance` are `undefined`
+until the execution is terminal. Undefined is *unknown*, never zero — booking a
+`SUBMITTED` result as a trade books shares nobody bought.
+
+| Field | Meaning |
+| --- | --- |
+| `terminal` | The status can no longer change without a new request |
+| `timedOut` | The SDK stopped waiting; the order is untouched |
+| `fill` | Authoritative `filledAmount` / `filledShares` / `avgFillPrice`, once observed |
+| `fee` | See below |
+| `remainingAllowance` | Spendable API allowance *after* settlement, or `undefined` |
+
+`fee` is a discriminated union, not a nullable number, because the two absences
+are different facts and neither is zero:
+
+```ts
+if (result.fee.available) {
+  net = subtract(result.fill!.filledAmount, result.fee.actualFee);
+} else if (result.fee.reason === 'EMBEDDED_IN_PRICE') {
+  // Settled, and the broker's published price is already fee-adjusted:
+  // the cost is inside filledAmount, not missing from it.
+} else {
+  // NO_FILL_OBSERVED — nothing settled (yet, or ever, for a rejection).
+}
+```
+
+`remainingAllowance` is also `undefined` for an agent with no risk profile. It is
+omitted mid-flight on purpose: the reservation is held but not yet spent, so any
+figure reported then would be neither the before nor the after.
 
 **Retries follow the server, not a local table.** Every error carries
 `retryable`; this SDK retries only what the server marks transient, and only for
@@ -123,10 +167,11 @@ for (const entry of results) {
 
 | Method | Notes |
 | --- | --- |
-| `authenticate()` | Signs the server's challenge, stores the token |
+| `authenticate()` | Signs the server's challenge, opens the session |
 | `getQuote(request)` | ~3 s lifetime, never extended |
 | `executeMarketOrder(intent, options?)` | create → sign → submit; optional terminal wait |
 | `executeMany(intents, options?)` | Independent legs, bounded concurrency |
+| `waitForExecution(id, options?)` | Wait for terminal facts; also the reconciliation entry point |
 | `getExecution(id)` | Poll one execution |
 | `listExecutions(accountId, limit?)` | Your order history on that account |
 | `getPositions(accountId, limit?)` | Positions you opened, with cost basis |
@@ -139,6 +184,33 @@ because a direct-chain spend moves one without the other. Size against
 > The API allowance is a WaterX **API policy**, not a protocol guarantee. A
 > delegated key can bypass it by submitting directly to Sui. On-chain delegation
 > revocation and the contract's price guards are the authoritative controls.
+
+## Sessions and re-authentication
+
+Opening the first session is always explicit — `authenticate()`, or a `token` you
+pass in. After that the client keeps it alive on its own: when the server rejects
+the token with `401 UNAUTHENTICATED`, it signs a **fresh** challenge and replays
+the rejected request once. A token it minted itself is also rolled over just
+before it expires.
+
+The safety properties, since this fires in the middle of orders:
+
+- **The replay is the same logical write.** Identical bytes, identical
+  `Idempotency-Key`. A token dying between create and submit cannot become a
+  second order.
+- **One login, not one per request.** Concurrent rejections join a single
+  handshake, and a request whose token was already replaced by another in-flight
+  refresh reuses that one instead of minting again.
+- **Bounded.** At most one re-authentication per request; a server that keeps
+  rejecting produces an `UNAUTHENTICATED` error, never a login loop.
+- **Narrow.** Only `401 UNAUTHENTICATED` triggers it. `SIGNATURE_INVALID`,
+  `DELEGATION_REVOKED` and `IDEMPOTENCY_KEY_REUSED` are not token problems and a
+  new token would not fix them, so they surface unchanged.
+
+```ts
+// Opt out and handle expiry yourself.
+new PredictAgentClient({ baseUrl, signer, autoReauthenticate: false });
+```
 
 ## Synthetic limit orders
 
@@ -173,7 +245,9 @@ window, it keeps waiting instead of firing on a price that no longer qualifies.
 
 Exactly one order is ever submitted: an in-process latch plus one idempotency key
 minted before the loop starts. On expiry it throws `EXECUTION_TIMEOUT` having
-submitted **nothing**.
+submitted **nothing** — the one timeout that still throws, precisely because there
+is no execution to reconcile. Once an order exists, a timeout is returned as
+`timedOut`, never raised.
 
 ### Price source
 

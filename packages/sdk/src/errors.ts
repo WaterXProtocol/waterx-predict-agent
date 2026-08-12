@@ -62,3 +62,21 @@ export function isRetryable(error: unknown): boolean {
   if (error instanceof PredictAgentApiError) return error.retryable;
   return error instanceof PredictAgentTransportError;
 }
+
+/**
+ * Whether the server rejected the SESSION — an expired or invalid bearer token —
+ * as opposed to rejecting the intent.
+ *
+ * Deliberately narrow: 401 with `UNAUTHENTICATED` only. The server maps a 403
+ * from outside the module onto the same code, but a forbidden request is not
+ * fixed by a new token, and `SIGNATURE_INVALID` is also a 401 while being a fact
+ * about the ORDER signature. Re-authenticating on either would hide a permanent
+ * failure behind a login loop.
+ */
+export function isUnauthenticated(error: unknown): boolean {
+  return (
+    error instanceof PredictAgentApiError &&
+    error.httpStatus === 401 &&
+    error.code === 'UNAUTHENTICATED'
+  );
+}

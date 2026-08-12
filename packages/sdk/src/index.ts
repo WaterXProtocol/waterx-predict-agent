@@ -11,6 +11,7 @@ export {
   PredictAgentClient,
   type ExecutionStream,
   type PriceWatcher,
+  type WaitForExecutionOptions,
   type WaitForPriceIntent,
   type WaitForPriceOptions,
   type ExecuteManyOptions,
@@ -21,10 +22,18 @@ export {
   type PredictAgentClientOptions,
 } from './client.ts';
 export {
+  type ExecutionFeeFacts,
+  type ExecutionOutcome,
+  isTerminalExecutionStatus,
+  toExecutionOutcome,
+  toFeeFacts,
+} from './execution-facts.ts';
+export {
   PredictAgentApiError,
   PredictAgentTransportError,
   isPredictAgentApiError,
   isRetryable,
+  isUnauthenticated,
 } from './errors.ts';
 export { buildAuthMessage, type AgentSigner, type SignatureWithBytes } from './signer.ts';
 export type { RetryOptions, TransportOptions } from './transport.ts';
