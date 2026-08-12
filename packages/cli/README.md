@@ -6,11 +6,13 @@ WaterX Predict without linking against TypeScript. Every invocation writes
 caller that cannot parse JSON can still branch, and a caller that can never has
 to scrape prose.
 
-**This build is read-only, and read-only is enforced rather than promised.** The
-signer refuses `signTransaction` before a signer process is started, so no code
-path here can produce a transaction signature. Nothing in this package places,
-cancels or reconciles an order. The write plane is a separate work package,
-tracked as backlog 1.9.
+**This build trades, and what it may sign is decided by an enforced execution
+policy rather than by convention.** The default policy is `interactive`: every
+write needs one explicit approval naming the exact order. `read-only` is
+enforced in the signer — `signTransaction` refuses before a signer process is
+started, so no code path can produce a transaction signature — and
+`delegated-auto` writes unattended only inside a scope an operator wrote down.
+See [Execution policy](#execution-policy).
 
 The package is `private: true` and publishes nothing yet (backlog 3.6). Run it
 from the workspace.
@@ -36,11 +38,21 @@ waterx-predict doctor --accountId 0x<64 hex>
 waterx-predict market list --limit 10 --tradeable
 waterx-predict market get --marketId 0x<64 hex>
 waterx-predict account status --accountId 0x<64 hex>
+
+# 5. Preview a trade. This signs nothing and places nothing.
+waterx-predict order preview --input '{
+  "accountId": "0x…", "marketId": "0x…", "outcomeId": "YES",
+  "side": "BUY", "size": { "buyAmount": "25.00" }, "maxSlippageBps": 100
+}'
+
+# 6. Execute it, carrying the approval the preview published and a fresh quote.
+waterx-predict order execute --approve apv1_… --input '{ …, "referenceQuoteId": "…" }'
 ```
 
 Steps 1 and 2 are in that order on purpose: discovery precedes setup, because a
 runtime you must configure before you may ask what it needs is a runtime you are
-guessing at.
+guessing at. Steps 5 and 6 are in that order because a write here is never the
+incidental result of a single call.
 
 ## The envelope
 
@@ -117,10 +129,14 @@ it without reconciling is how an agent places the same order twice.
 | `describe`, `command-schema`, `doctor` | available; the first two need no network |
 | `market list`, `market get`, `market quote` | available |
 | `account status`, `account allowance`, `account positions`, `account executions`, `account fills` | available |
+| `order preview` | available; places nothing, signs nothing |
+| `order execute`, `order execute-many` | available; subject to the execution policy |
+| `order get`, `order reconcile` | available; reads only |
 | `market search` | **refused** — `NO_SERVER_ENDPOINT` (B2) |
 | `market history` | **refused** — `NO_SERVER_ENDPOINT` (D-25) |
 | `account risk-limits` | **refused** — `OWNER_AUTHENTICATED` (ADR-0003, B1) |
-| `order preview`, `order execute`, `order execute-many`, `order get`, `strategy`, `runner` | not implemented in this build |
+| `order cancel` | **refused** — `NO_SERVER_ENDPOINT`; a market order is filled or refused, never resting |
+| `strategy`, `runner` | not implemented in this build |
 
 A refusal exits 7 with `error.code` `CAPABILITY_UNAVAILABLE` and a symbolic
 `reason`, and it makes **no network call at all**. `market search` is the
@@ -128,6 +144,122 @@ clearest case: the API filters on category, status, tradeable and updatedAfter
 only, so matching free text against a truncated page locally would hand back a
 `marketId` this CLI chose rather than one the server resolved. Market identity
 is resolved by the server or not at all.
+
+## Execution policy
+
+What this runtime may sign, and on whose say-so. Three modes:
+
+| Mode | Writes | How it is enforced |
+| --- | --- | --- |
+| `read-only` | none | `signTransaction` refuses **before a signer process is spawned**. Not a promise to behave — the build cannot produce a transaction signature. |
+| `interactive` *(default)* | one approval per order | `order preview` publishes an approval token; `order execute` refuses without it. |
+| `delegated-auto` | inside a stated scope | Every order is checked against ceilings the operator wrote down. Anything the scope does not name is refused. |
+
+Set it in the config file (`policy.mode`), or with `WATERX_PREDICT_POLICY`, or
+per invocation with `--policy`. **`--policy` may only narrow.** Widening is a
+change to the configuration, made deliberately and in one place, so
+`--policy read-only` on a delegated-auto machine is a useful safety belt and
+`--policy delegated-auto` on an interactive one is a `CONFIG_INVALID` error.
+
+Two independent things stand between a policy decision and a signature. The
+policy check refuses the order; the **signing gate** then hands the signer
+exactly as many permits as it authorized orders, and the signer consumes one per
+transaction. A code path that reached the signer without being authorized would
+not merely skip a check — it would run out of permits and refuse.
+
+### The approval token
+
+```sh
+waterx-predict order preview --input '{…}'   # → data.policy.approvalToken: "apv1_…"
+waterx-predict order execute --approve apv1_… --input '{…}'
+```
+
+The token is a digest of the **normalized intent** — account, market, outcome,
+side, size unit and amount, position, slippage budget and worst acceptable
+price. Change any of them and it stops matching, so an approval obtained for a
+small buy cannot be carried onto a large one. The reference quote id is
+deliberately *not* part of it: a quote lives seconds, and binding an approval to
+one would make every approval stale before it could be used.
+
+**It is not authentication.** Any caller that can run `order preview` can
+compute it. Its job is to make a write impossible as the incidental side effect
+of a single call: a host has to carry a value from the preview to the execution,
+and a human-in-the-loop host puts the human at exactly that seam. Every place
+this CLI reports a token says so, because a policy believed to be stronger than
+it is, is worse than none.
+
+### A delegated-auto scope
+
+```jsonc
+{
+  "policy": {
+    "mode": "delegated-auto",
+    "scope": {
+      "accounts": ["0x…"],          // required; "any account" is not a scope
+      "markets": ["0x…"],           // optional allowlist
+      "sides": ["BUY"],
+      "maxBuyAmount": "50",         // required when BUY is allowed
+      "maxCumulativeBuyAmount": "200",
+      "maxSellShares": "100",       // required when SELL is allowed
+      "maxSlippageBps": 200,
+      "maxLegs": 5,
+      "notAfter": "2026-09-01T00:00:00Z"
+    }
+  }
+}
+```
+
+Every ceiling that applies to an allowed side is **mandatory**: an optional
+ceiling is one somebody forgets, and a forgotten ceiling in an auto-approving
+policy is an unbounded one, so an incomplete scope is refused at load time.
+`delegated-auto` with no scope at all is a configuration error, not a blank
+cheque, and every result under it carries a `meta.warnings` line naming the
+policy and its end instant.
+
+Scope checks run **locally first**, so an out-of-scope order costs no request at
+all. A BUY is then additionally checked against the server's own
+`effectiveBuyCapacity`: local policy can narrow what the exchange allows and can
+never widen it. The owner's risk profile is enforced by the server regardless —
+this CLI constrains what it will *ask for*, and never claims a delegation the
+server granted (ADR-0003).
+
+## The write plane
+
+- **`order preview`** resolves the market on the server, mints a quote, computes
+  the price-protection bound, reports capacity, and reports what the policy would
+  decide — and **places and signs nothing**. It answers under `read-only` too,
+  where it reports the refusal instead of performing it.
+- **`order execute`** normalizes the intent, authorizes it, grants exactly one
+  permit, then creates → signs → submits under **one idempotency key**. Pass
+  `--input '{"idempotencyKey": "…"}'` to make a retry replayable across a
+  restart; omit it and the SDK mints one.
+- **`order get`** reads one execution. **`order reconcile`** waits for one to
+  stop moving. Neither places, cancels or signs anything, so repeating them
+  cannot cost anything.
+- **`order execute-many`** runs independent legs with independent results.
+
+**A timed-out wait is not a failure.** `order execute --input '{"waitFor":
+"TERMINAL", "timeoutMs": 30000}'` that runs out returns `ok: true` with the
+execution id, `execution.timedOut: true`, a `reconciliation` block, and **exit
+11 (`AMBIGUOUS`)**. The order is on-chain and may still fill. Reconcile with
+`order reconcile --executionId …`; never resubmit under a fresh idempotency key,
+which places a second order.
+
+**`execute-many` is never atomic**, and the result says so in a field
+(`atomic: false`). Each leg carries its own quote, idempotency key, execution and
+outcome, and each is reported `SUCCEEDED`, `FAILED` or `SKIPPED`. The whole batch
+is authorized once, before any leg runs — so an out-of-scope leg refuses the
+batch rather than trading the ones before it. `failurePolicy: "STOP"` prevents
+legs that have not **launched** from launching; it cannot cancel or roll back one
+already submitted. The exit code is the first failing leg's own class, so retry
+logic does not have to branch on how the order was submitted — except that a leg
+whose outcome is *unknown* outranks any known refusal, and the batch exits 11.
+Retrying a batch on a refusal code while one leg is still filling is exactly the
+mistake that ordering prevents.
+
+**Effective risk limits are not readable by an agent credential** on this API
+version. `preview` reports them as unavailable with a reason and points at
+`capacity.effectiveBuyCapacity` instead. None is guessed (ADR-0003, backlog B1).
 
 ## Input
 
@@ -152,7 +284,12 @@ waterx-predict market quote --input '{
 **Money is a string.** Amounts, prices and sizes are decimal strings end to end,
 because a JSON number cannot hold them exactly. **BUY commits a budget** via
 `size.buyAmount`; **SELL closes shares** via `size.sellShares`. The two are never
-interchangeable, and an ambiguous size is refused before anything is sent.
+interchangeable. An intent that could be read two ways — the wrong unit for the
+side, both units at once, neither, a SELL naming no position, a BUY naming one —
+is refused with **exit 2 (`INVALID_INPUT`)** and makes **no network call and no
+signer call**. Guessing the unit here trades the wrong thing. (Exit 11
+`AMBIGUOUS` is a different situation entirely: an unknown *outcome* after an
+order may already exist. An ambiguous *intent* never gets that far.)
 
 Any default this CLI supplies is reported back in `meta.defaultsApplied`, never
 applied silently.
@@ -168,6 +305,7 @@ Precedence, lowest first: config file, environment, flags.
 | Agent wallet | `WATERX_PREDICT_AGENT_WALLET` | `agentWallet` |
 | Default account | `WATERX_PREDICT_ACCOUNT_ID` | `defaultAccountId` |
 | Signer command | `WATERX_PREDICT_SIGNER_COMMAND` | `signerCommand` |
+| Execution policy | `WATERX_PREDICT_POLICY` | `policy` *(the scope is file-only)* |
 | Timeout (ms) | `WATERX_PREDICT_TIMEOUT_MS` | `timeoutMs` |
 | Session token | `WATERX_PREDICT_TOKEN` | — *(never in a file)* |
 
@@ -186,9 +324,11 @@ command: the CLI writes one JSON line to the child's stdin and reads one JSON
 document from its stdout.
 
 ```jsonc
-// stdin, one line
+// stdin, one line — the login challenge
 { "version": 1, "type": "PERSONAL_MESSAGE", "agentWallet": "0x…", "messageBase64": "…" }
-// stdout
+// stdin, one line — a sponsored order
+{ "version": 1, "type": "TRANSACTION", "agentWallet": "0x…", "transactionBytesBase64": "…" }
+// stdout, for either
 { "signature": "<base64>" }
 ```
 
@@ -198,10 +338,17 @@ envelope. A non-zero exit, non-JSON stdout, a missing `signature` or a timeout i
 `SIGNER_FAILED` (exit 4) — never a fabricated signature and never a silent
 success.
 
-`type` is `PERSONAL_MESSAGE` because the login challenge *is* a personal
-message. It moves no funds and is not interchangeable with a transaction
-signature: Sui's intent prefixes differ, so this signer cannot be tricked into
-authorizing a transfer by being handed transaction bytes as a "message".
+The two `type`s are never interchangeable. `PERSONAL_MESSAGE` is the login
+challenge, which moves no funds; `TRANSACTION` is sponsored order bytes, which
+does. Sui's intent prefixes differ, so this signer cannot be tricked into
+authorizing a transfer by being handed transaction bytes as a "message" — and a
+signer that wants to refuse one kind can see which kind it was asked for.
+
+A `TRANSACTION` request costs a permit from the signing gate, and **the permit
+is spent before the child is started**. A gate checked afterwards would already
+have produced the signature it existed to prevent. Under `read-only`,
+`signTransaction` throws without spawning anything at all, so no code path in
+this build can produce a transaction signature.
 
 Keystore, keychain and KMS providers are not implemented (backlog 1.8).
 
@@ -215,7 +362,16 @@ key file. This is covered by `tests/secrets.test.ts`.
 
 ## Limitations
 
-- Read-only. Nothing here trades.
+- A market order cannot be cancelled. There is no cancel endpoint, because a
+  market order is filled or refused, never resting. `order cancel` says so
+  rather than pretending to try.
+- `execute-many` is never atomic. Legs succeed, fail or are skipped
+  independently, and a partial batch is a normal outcome, not an error.
+- A wait that times out is not a failure: it exits `AMBIGUOUS` (11) and the
+  order may still fill. Reconcile it — never resubmit it.
+- Risk limits are owner-authenticated. An agent credential may read effective
+  limits but cannot raise them, and this build cannot yet read them at all
+  (ADR-0003, backlog B1) — so `riskLimits.available` is `false`.
 - Paging is limit-only; there is no cursor, so a history longer than the cap
   cannot be fully reconstructed (backlog B6).
 - Quotes are size-blind: `availableSize` and `expectedFillSize` come back null

@@ -7,7 +7,7 @@ entire repository.
 
 This repository is the pnpm workspace for the WaterX Predict agent runtime. Its
 centre is the Node.js TypeScript SDK for the Agent Trading API; alongside it sit
-the versioned agent command contract, the read-only `waterx-predict` CLI, and
+the versioned agent command contract, the `waterx-predict` CLI, and
 reserved boundaries for the local Runner and optional adapters (ADR-0001 §4). It does not own the REST
 service, quote production, on-chain contracts, delegation, monitoring dashboards,
 or an agent's trading strategy.
@@ -106,7 +106,7 @@ orchestrates.
 | --- | --- | --- |
 | `packages/sdk` | `@waterx/predict-agent-sdk` | Published surface, implemented |
 | `packages/schema` | `@waterx/predict-agent-schema` | Published surface, implemented |
-| `packages/cli` | `@waterx/predict-agent-cli` | Implemented, **read-only**; `private`, so nothing is published |
+| `packages/cli` | `@waterx/predict-agent-cli` | Implemented, reads **and writes** behind an enforced execution policy; `private`, so nothing is published |
 | `packages/runner` | `@waterx/predict-agent-runner` | Reserved boundary, **not implemented** |
 | `packages/mcp` | `@waterx/predict-agent-mcp` | Reserved boundary, **not implemented** |
 
@@ -152,8 +152,13 @@ Inside `packages/cli`:
   dragging the CLI in.
 - `src/config.ts`, `src/redact.ts`, `src/signer.ts` — configuration precedence
   and the secret rules: a credential-shaped config key is refused, a registered
-  secret is replaced with `[redacted]` on both streams, and `signTransaction`
-  throws before a signer process is started.
+  secret is replaced with `[redacted]` on both streams, and under `read-only`
+  `signTransaction` throws before a signer process is started.
+- `src/policy.ts` — the execution policy and the signing gate. `--policy` may
+  only narrow. A write is authorized locally *before* any network read, so an
+  out-of-scope order costs nothing; the authorization grants a counted permit,
+  and the permit is spent before the signer child runs. An approval token binds
+  one exact intent and is **not** authentication.
 - `src/input.ts`, `src/parse.ts` — argv to a validated command input. Nothing is
   coerced: a flag value that does not match its declared type is an error.
 - `src/commands/` — one thin handler per command. Server responses pass through

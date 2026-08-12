@@ -3,10 +3,17 @@
 A pnpm workspace for operating the WaterX Predict Agent Trading API from an
 autonomous agent: quotes, price-protected market orders, positions and allowance.
 
-**Today, the usable surfaces are the SDK and a read-only CLI.** Everything else
-here is either the contract those surfaces are described by, or a reserved
-boundary with no implementation behind it. `docs/IMPLEMENTATION_BACKLOG.md` is
-the only file that tracks what actually works.
+**Today, the usable surfaces are the SDK and the CLI, which now trades.**
+Everything else here is either the contract those surfaces are described by, or a
+reserved boundary with no implementation behind it.
+`docs/IMPLEMENTATION_BACKLOG.md` is the only file that tracks what actually works.
+
+Because the CLI writes, what it may sign is decided by an enforced execution
+policy rather than by convention: `interactive` (the default) needs one explicit
+approval naming the exact order, `read-only` refuses `signTransaction` before a
+signer process is started, and `delegated-auto` writes unattended only inside a
+scope an operator wrote down. See
+[Execution policy](packages/cli/README.md#execution-policy).
 
 ## Packages
 
@@ -14,8 +21,8 @@ the only file that tracks what actually works.
 | --- | --- | --- |
 | [`packages/sdk`](packages/sdk) | `@waterx/predict-agent-sdk` — the execution core. Authentication, quotes, protected market orders, reads. | Implemented |
 | [`packages/schema`](packages/schema) | `@waterx/predict-agent-schema` — the versioned, runtime-validated command contract. | Implemented |
-| [`packages/cli`](packages/cli) | The `waterx-predict` CLI: the universal agent surface. Discovery, doctor, market and account reads, in one JSON envelope with stable exit codes. | Implemented, **read-only** and unpublished |
-| [`packages/runner`](packages/runner) | The self-hosted local Runner: durable jobs, approval policy, signer boundary. | Reserved, **not implemented** |
+| [`packages/cli`](packages/cli) | The `waterx-predict` CLI: the universal agent surface. Discovery, doctor, market and account reads, and the market-order write plane, in one JSON envelope with stable exit codes. | Implemented and unpublished |
+| [`packages/runner`](packages/runner) | The self-hosted local Runner: durable jobs, conditional orders, scheduling. | Reserved, **not implemented** |
 | [`packages/mcp`](packages/mcp) | Optional MCP adapter. | Reserved, **not implemented** |
 
 `schemas/v1/agent-commands.json` is generated from `packages/schema` and
@@ -59,7 +66,8 @@ Node.js 20+ and ESM. macOS and Linux; Windows is not verified (ADR-0002).
 - [`packages/sdk/README.md`](packages/sdk/README.md) — quickstart, the things
   that will bite you, current limitations.
 - [`packages/cli/README.md`](packages/cli/README.md) — the envelope, the exit
-  codes, the signer protocol, and what the CLI refuses to do.
+  codes, the execution policy, the write plane, the signer protocol, and what
+  the CLI refuses to do.
 - [`docs/IMPLEMENTATION_BACKLOG.md`](docs/IMPLEMENTATION_BACKLOG.md) — the only
   implementation-status tracker.
 - [`docs/adr/`](docs/adr) — binding architecture decisions.
