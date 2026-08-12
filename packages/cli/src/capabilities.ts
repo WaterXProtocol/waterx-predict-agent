@@ -1,0 +1,211 @@
+/**
+ * What this build can do, and — the part that matters — what it cannot.
+ *
+ * Discovery that lists only what works is indistinguishable from discovery that
+ * forgot something. A host reading this has to be able to tell "refused here,
+ * for this reason" from "not mentioned", so every capability the plan names
+ * appears with an explicit status and a symbolic reason. Nothing is omitted to
+ * make the list look complete.
+ *
+ * `market search` and `market history` are the two that need explaining. Both
+ * are in the plan's command surface and neither has a server endpoint behind it.
+ * Text-matching a truncated page of `market list` client-side would let this CLI
+ * hand back a market id the server never resolved for that query — the one thing
+ * the runtime rules forbid absolutely (ADR-0001 §10) — so they refuse instead.
+ *
+ * This module imports nothing. A workspace test cross-checks it against the
+ * command contract, and that test must not be able to drag the whole CLI into
+ * the workspace suite to do it.
+ */
+
+export type CapabilityStatus =
+  /** Implemented, tested, and callable now. */
+  | 'AVAILABLE'
+  /** Specified, and the server offers nothing to build it on. */
+  | 'UNAVAILABLE'
+  /** Planned, and not built in this version. */
+  | 'NOT_IMPLEMENTED';
+
+export interface Capability {
+  /** The CLI invocation, e.g. `market list`. */
+  readonly id: string;
+  /** The contract command name, when the capability is one. */
+  readonly command?: string;
+  readonly status: CapabilityStatus;
+  readonly summary: string;
+  /** Symbolic, stable, branchable. Absent only when the status is AVAILABLE. */
+  readonly reason?: string;
+  readonly detail?: string;
+  /** What to do instead. Absent when there is nothing honest to suggest. */
+  readonly alternative?: string;
+  /** The backlog or decision id that tracks closing the gap. */
+  readonly tracking?: string;
+}
+
+export const CAPABILITIES: readonly Capability[] = [
+  {
+    id: 'describe',
+    command: 'runtime.describe',
+    status: 'AVAILABLE',
+    summary: 'Report this runtime, its configuration and this inventory. Needs no network.',
+  },
+  {
+    id: 'command-schema',
+    command: 'runtime.command-schema',
+    status: 'AVAILABLE',
+    summary: 'Emit the versioned command contract, or one command from it.',
+  },
+  {
+    id: 'doctor',
+    command: 'runtime.doctor',
+    status: 'AVAILABLE',
+    summary: 'Check configuration, signer, reachability and authentication.',
+  },
+  {
+    id: 'market list',
+    command: 'market.list',
+    status: 'AVAILABLE',
+    summary: 'List the catalog. The only way to obtain a server-resolved marketId.',
+  },
+  {
+    id: 'market get',
+    command: 'market.get',
+    status: 'AVAILABLE',
+    summary: 'Read one market by id.',
+  },
+  {
+    id: 'market quote',
+    command: 'market.quote',
+    status: 'AVAILABLE',
+    summary: 'Mint a short-lived executable quote. Size-blind on this API version.',
+  },
+  {
+    id: 'market search',
+    status: 'UNAVAILABLE',
+    summary: 'Find a market by free text.',
+    reason: 'NO_SERVER_ENDPOINT',
+    detail:
+      'The API has no text search: the catalog query filters on category, status, tradeable and updatedAfter only. Matching text against a truncated page locally would resolve a marketId this CLI chose rather than one the server resolved, so it is refused rather than approximated.',
+    alternative:
+      'Use `market list --category <category> --limit <n>` and select from the returned catalog.',
+    tracking: 'B2',
+  },
+  {
+    id: 'market history',
+    status: 'UNAVAILABLE',
+    summary: 'Read historical prices for a market.',
+    reason: 'NO_SERVER_ENDPOINT',
+    detail:
+      'No price-history endpoint exists on this API version, and whether one belongs in the agent API is still undecided (D-25). Reconstructing a series from repeated quotes would be this CLI inventing history, at prices nothing honoured.',
+    alternative:
+      'Poll `market quote` and record the series yourself, understanding that it is your observation and not the exchange’s record.',
+    tracking: 'D-25',
+  },
+  {
+    id: 'account status',
+    command: 'account.status',
+    status: 'AVAILABLE',
+    summary: 'Spendable capacity and open exposure in one read.',
+  },
+  {
+    id: 'account allowance',
+    command: 'account.allowance',
+    status: 'AVAILABLE',
+    summary: 'Remaining API allowance and spendable balance.',
+  },
+  {
+    id: 'account positions',
+    command: 'account.positions',
+    status: 'AVAILABLE',
+    summary: 'Open positions, with cost basis and unrealized PnL.',
+  },
+  {
+    id: 'account executions',
+    command: 'account.executions',
+    status: 'AVAILABLE',
+    summary: 'Order history, including rows that have not reached a terminal status.',
+  },
+  {
+    id: 'account fills',
+    command: 'account.fills',
+    status: 'AVAILABLE',
+    summary: 'Confirmed fills, with the quote each was priced against.',
+  },
+  {
+    id: 'account risk-limits',
+    status: 'UNAVAILABLE',
+    summary: 'Read the effective risk limits applied to this agent.',
+    reason: 'OWNER_AUTHENTICATED',
+    detail:
+      'The risk profile is written and read through the owner-authenticated surface (ADR-0003). An agent credential cannot read it on this API version, and this CLI will not synthesise a number that looks like a limit.',
+    alternative:
+      'Size against `effectiveBuyCapacity` from `account status`, which is a real server-computed figure.',
+    tracking: 'B1',
+  },
+  {
+    id: 'order preview',
+    status: 'NOT_IMPLEMENTED',
+    summary: 'Dry-run an order without placing it.',
+    reason: 'NOT_BUILT',
+    detail: 'Named in the plan; not built in this version, and absent from the command contract.',
+    tracking: '1.7',
+  },
+  {
+    id: 'order execute',
+    status: 'NOT_IMPLEMENTED',
+    summary: 'Place a protected market order.',
+    reason: 'READ_ONLY_BUILD',
+    detail:
+      'The SDK implements this and the command contract defines it, but this CLI signs no transactions: its signer refuses `signTransaction` locally. The write plane is a separate work package.',
+    tracking: '1.9',
+  },
+  {
+    id: 'order execute-many',
+    status: 'NOT_IMPLEMENTED',
+    summary: 'Place several independent orders.',
+    reason: 'READ_ONLY_BUILD',
+    detail: 'See `order execute`. Legs are never atomic; that semantic is unchanged when it ships.',
+    tracking: '1.9',
+  },
+  {
+    id: 'order get',
+    status: 'NOT_IMPLEMENTED',
+    summary: 'Read one execution, and reconcile an ambiguous outcome.',
+    reason: 'NOT_BUILT',
+    detail:
+      'The SDK implements this and the command contract defines it. It ships with the write plane it exists to reconcile, rather than as a read that can only ever return other people’s orders.',
+    tracking: '1.9',
+  },
+  {
+    id: 'strategy',
+    status: 'NOT_IMPLEMENTED',
+    summary: 'Create and manage durable conditional jobs.',
+    reason: 'NOT_BUILT',
+    detail:
+      'Conditional orders are client-side and live in the Runner, which does not exist yet. Nothing server-side stores a target order.',
+    tracking: '2.x',
+  },
+  {
+    id: 'runner',
+    status: 'NOT_IMPLEMENTED',
+    summary: 'Run and inspect the local job runner.',
+    reason: 'NOT_BUILT',
+    detail:
+      'The first Runner is self-hosted and local, and the device must stay awake and online for a job to progress. It is not built.',
+    tracking: '2.x',
+  },
+];
+
+const BY_ID: ReadonlyMap<string, Capability> = new Map(
+  CAPABILITIES.map((capability) => [capability.id, capability]),
+);
+
+export const getCapability = (id: string): Capability | undefined => BY_ID.get(id);
+
+/**
+ * Capabilities that are named but not runnable. Looked up by the dispatcher so
+ * a refusal comes from the same inventory `describe` published, and cannot drift
+ * away from it.
+ */
+export const listRefusals = (): readonly Capability[] =>
+  CAPABILITIES.filter((capability) => capability.status !== 'AVAILABLE');

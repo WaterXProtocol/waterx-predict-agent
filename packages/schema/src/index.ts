@@ -16,6 +16,7 @@ export {
   type AgentCommandConfirmation,
   type AgentCommandExample,
   type AgentCommandIdempotency,
+  type AgentCommandImplementation,
   type AgentCommandSideEffect,
   type AgentCommandSpec,
 } from './commands.ts';

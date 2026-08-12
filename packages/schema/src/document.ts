@@ -33,7 +33,7 @@ export interface CommandDocumentEntry {
   readonly longRunning: boolean;
   readonly idempotency: AgentCommandSpec['idempotency'];
   readonly confirmation: AgentCommandSpec['confirmation'];
-  readonly sdkMethod: string;
+  readonly implementation: AgentCommandSpec['implementation'];
   readonly input: JsonSchema;
   readonly examples: readonly AgentCommandExampleEntry[];
 }
@@ -71,7 +71,7 @@ function toEntry(command: AgentCommandSpec): CommandDocumentEntry {
     longRunning: command.longRunning,
     idempotency: command.idempotency,
     confirmation: command.confirmation,
-    sdkMethod: command.sdkMethod,
+    implementation: command.implementation,
     input: command.input,
     examples: command.examples.map((example) => ({ title: example.title, input: example.input })),
   };

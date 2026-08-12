@@ -6,16 +6,17 @@ implemented**. The plan describes the intended system; an ADR constrains how it
 gets built; neither is evidence that anything works.
 
 - Verified: 2026-08-12
-- SDK: `codex/waterx-predict-agent-runtime` @ `8e91d5d` plus this commit
+- SDK: `codex/waterx-predict-agent-runtime` @ `73a9b7a` plus this commit
 - Backend: `codex/waterx-predict-agent-runtime` @ `201fc84` (untouched)
-- SDK verification: `pnpm typecheck` clean, `pnpm test` 156/156 in 10 files
-  (72 SDK, 69 schema, 15 workspace), `pnpm build` clean, `pnpm schema:generate`
-  reproduces the committed artifact byte-for-byte.
+- SDK verification: `pnpm typecheck` clean, `pnpm test` 258/258 in 18 files
+  (72 SDK, 71 schema, 95 CLI, 20 workspace), `pnpm build` clean,
+  `pnpm schema:generate` reproduces the committed artifact byte-for-byte.
 
-The repository is now a pnpm workspace. `packages/sdk` is the SDK this file
-tracked before the split; `packages/cli`, `packages/runner` and `packages/mcp`
-are reserved boundaries with **no implementation** and must not be read as
-progress on the items that name them.
+The repository is a pnpm workspace. `packages/sdk` is the SDK this file tracked
+before the split; `packages/cli` now holds a **read-only** CLI — discovery,
+`doctor`, and the market and account read plane, with no write path in it at all;
+`packages/runner` and `packages/mcp` are reserved boundaries with **no
+implementation** and must not be read as progress on the items that name them.
 
 ## Status vocabulary
 
@@ -37,9 +38,9 @@ seam for. The SDK has two, and both are correctly disclosed in
 `bucket-backend-mono/apps/waterx/src/predict/agent-api/agent-api.contract.ts`
 were diffed in full at the commits above. Below the file header (SDK lines 1–28,
 backend lines 1–22, which differ only in the vendoring notice) they are
-byte-identical. No drift. Neither file has changed
-since that diff: the SDK work above is client-side behavior over the same wire
-shapes, so no backend change was required and none was made.
+byte-identical. No drift. Re-diffed in full at the commits in the header and
+still identical: the CLI work above is a new surface over the same client and the
+same wire shapes, so no backend change was required and none was made.
 
 ## 1. Current SDK state — verified
 
@@ -71,7 +72,7 @@ shapes, so no backend change was required and none was made.
 | 0.3 | Checked implementation backlog | DONE | This file. |
 | 0.4 | Runner trust boundary + crash/replay threat model | TODO | Must cover: crash between idempotency-key persist and create; crash between create and submit; duplicate Runner instances on one job store; signer unavailable mid-job; clock skew vs `expiresAt`. |
 | 0.5 | Job state machine specification | TODO | Including `PAUSED` (ADR-0004) and `UNKNOWN_PENDING`, and which transitions require a durable write **before** the side effect. |
-| 0.6 | CLI command + schema prototype | PARTIAL | Schema half is done (1.2): commands, inputs and `sdkMethod` mapping are fixed and validated. The CLI half and the two-host discovery spike required by the plan's exit criteria are not started — nothing has yet issued the same intent through two hosts. |
+| 0.6 | CLI command + schema prototype | PARTIAL | Schema half is done (1.2): commands, inputs and the `implementation` mapping are fixed and validated. The CLI half of the read plane now exists (1.3–1.6). The two-host discovery spike required by the plan's exit criteria is still not done — one intent has not yet been issued through the CLI *and* an adapter, because no adapter exists (3.2). |
 | 0.7 | Quote WS protocol + achievable SLO | BLOCKED | Backend. Upstream feed is ~2 s polling; SLO must precede any real-time claim. |
 | 0.8 | Testnet provisioning + owner onboarding runbook | TODO | Depends on ADR-0003's two-actor flow. |
 
@@ -86,27 +87,30 @@ are open.
 | --- | --- | --- | --- |
 | 1.1 | pnpm workspace split: `sdk` / `cli` / `runner` / `mcp` | DONE | `pnpm-workspace.yaml`, `packages/*/package.json`, `tests/workspace.test.ts`. SDK moved to `packages/sdk` with its published entry points unchanged; `schema` added; `cli`/`runner`/`mcp` are private, source-free reserved boundaries. Dependency direction and published-package hygiene are enforced by test, not convention. |
 | 1.2 | Versioned runtime command schema (single source of truth) | DONE | `packages/schema/src`, emitted to `schemas/v1/agent-commands.json`; ADR-0006. Ten commands, runtime-validated by `validateCommandInput` with no coercion; `packages/schema/tests` (69) cover the validator subset, unsupported-keyword rejection, every published example, BUY/SELL unit and position agreement, decimal/price/address patterns, and byte-for-byte artifact drift. |
-| 1.3 | Consistent JSON envelope, symbolic error codes, exit codes | TODO | 1.2 |
-| 1.4 | `describe` | TODO | 1.2, 3.3 |
-| 1.5 | `doctor` | TODO | 1.2, signer provider. Signs a challenge with no funds effect only. |
-| 1.6 | `market` / `account` / `order` commands | TODO | 1.2, 1.3 |
+| 1.3 | Consistent JSON envelope, symbolic error codes, exit codes | DONE | `packages/cli/src/{envelope,exit-codes,errors}.ts`; `packages/cli/tests/envelope.test.ts` (13). Exactly one parseable document on stdout on every path including an unresolvable command; usage prose on stderr only; the exit code derived from the server's own symbolic code rather than the HTTP status; `retryable` copied from the server, never re-derived. The code table is published by `describe` so a host need not hard-code it. |
+| 1.4 | `describe` | DONE | `packages/cli/src/commands/describe.ts`; `packages/cli/tests/discovery.test.ts` (13). Answers with no configuration, no signer and no network. `serverCapabilities.source` is `STATIC` — this build's own claim, not something the server advertised (3.3/B7 is still blocked), and it is labelled as such rather than presented as negotiated. |
+| 1.5 | `doctor` | DONE | `packages/cli/src/commands/doctor.ts`; `packages/cli/tests/doctor.test.ts` (7). Config, signer, reachability, authentication, catalog read, allowance read; the write-plane check always SKIPs, truthfully. A check that could not run is SKIP, never PASS, and the command exits with the **first failing check's own code** so a rejected token exits 4 rather than 70. Signs the login challenge as a personal message only. |
+| 1.6 | `market` / `account` / `order` commands | PARTIAL | Read plane DONE: `market list/get/quote` and `account status/allowance/positions/executions/fills` (`packages/cli/src/commands/`, `packages/cli/tests/read-plane.test.ts` (15), `input.test.ts` (16)). `market search` and `market history` are refused by capability negotiation with a symbolic reason and **zero network calls** — approximating them client-side would resolve a marketId the server never resolved. **The `order` half is not built**: this CLI signs no transactions (1.9's write plane). |
 | 1.7 | `order preview` as a first-class command | TODO | 1.2, 3.3. Must surface effective limits, worst price, warnings, and whether execute is currently permitted — without signing. |
-| 1.8 | Signer provider interface + keystore/keychain/KMS | TODO | ADR-0001 §7 |
+| 1.8 | Signer provider interface + keystore/keychain/KMS | PARTIAL | ADR-0001 §7. The **external-command** provider exists and is the CLI's only one: `packages/cli/src/signer.ts`, `packages/cli/tests/signer.test.ts` (18). No key enters the process; a non-zero exit, non-JSON stdout, a missing `signature` or a timeout is `SIGNER_FAILED`, never a fabricated signature; `signTransaction` throws before a child process is spawned, which is how read-only is enforced rather than promised. **Keystore, keychain and KMS providers are not built.** |
 | 1.9 | Automatic re-auth preserving key and exact bytes | DONE | `packages/sdk/src/session.ts`, `packages/sdk/src/transport.ts:89`, `packages/sdk/src/errors.ts:isUnauthenticated`; `packages/sdk/tests/reauthentication.test.ts` (14) covers replay under a fresh token with identical bytes and key, a token dying between create and submit, five concurrent 401s minting one session, the bound (one re-auth, then the error), a fresh signed challenge per mint, pre-expiry rollover, `autoReauthenticate: false`, and the rejections it must **not** retry (`403 DELEGATION_REVOKED`, `401 SIGNATURE_INVALID`, `409 IDEMPOTENCY_KEY_REUSED`). At the SDK layer only — 1.8's signer provider still gates the CLI/Runner path, where the challenge is signed outside this process. |
-| 1.10 | Secret redaction across stdout, logs, errors, job store | TODO | 1.8 |
+| 1.10 | Secret redaction across stdout, logs, errors, job store | PARTIAL | CLI streams DONE: `packages/cli/src/redact.ts`, `packages/cli/tests/secrets.test.ts` (7). Registered secrets are replaced on the serialized stdout document *and* on every stderr line, including when the server echoes a token back inside its own error message; a credential-shaped config key is refused naming the key and never the value; the signer is reported by executable base name only. **No job store exists to redact** (2.5). |
 | 1.11 | Testnet quickstart + real E2E | TODO | 1.1–1.9 |
 
 On 1.2 and what it does **not** mean: `schemas/v1/agent-commands.json` describes
-ten commands, but describing a command is not running one. There is no CLI and no
-adapter, so 1.6 stays TODO — the contract is the input side of it, and the JSON
-envelope, exit codes and argument parsing in 1.3 are still open.
+fourteen commands, but describing a command is not running one. The CLI runs ten
+of them; `order get`, `order execute` and `order execute-many` are in the
+contract because the **SDK** implements them, and the CLI refuses all three.
 
-The v1 command set deliberately covers only what the execution core can perform
-today. `describe` (1.4), `doctor` (1.5) and `order preview` (1.7) are absent from
-the schema on purpose: a command entry is precisely what an adapter turns into an
-advertised, callable tool, so listing them would present planned capability as
-implemented. Adding a command to a versioned document is not a breaking change,
-so each lands with its implementation.
+The v1 command set covers only what a surface can actually perform. `describe`,
+`doctor` and `command-schema` were added to the contract with their
+implementation (ADR-0006), under an `implementation` union whose `runtime` arm
+marks a command the runtime answers locally rather than through an SDK method.
+`order preview` (1.7) is still absent on purpose: a command entry is precisely
+what an adapter turns into an advertised, callable tool, so listing it would
+present planned capability as implemented. `market search` and `market history`
+are absent for the same reason and are refused by name at the CLI, so an agent
+asking for them gets a symbolic reason instead of silence.
 
 On 1.9 and what it does **not** mean: the no-duplicate-execution guarantee is
 proven in-process, against a fetch double, for a write the SDK itself replays.
@@ -150,7 +154,7 @@ reconciles independently.
 | 3.3 | Server capability advertisement consumed by `describe` | BLOCKED (backend) |
 | 3.4 | Quote-to-fill deviation, WS latency, reject-reason dashboards | BLOCKED (backend) |
 | 3.5 | Thin-market large-size and high-subscription load tests | TODO |
-| 3.6 | npm provenance, SBOM, upgrade/rollback docs, beta support policy | TODO |
+| 3.6 | npm provenance, SBOM, upgrade/rollback docs, beta support policy | TODO — also gates publishing `@waterx/predict-agent-cli`, which is `private` today |
 
 ## 6. Backend dependencies
 

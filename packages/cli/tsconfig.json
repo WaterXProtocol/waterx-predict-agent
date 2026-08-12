@@ -1,0 +1,26 @@
+{
+  "extends": "./tsconfig.build.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": false,
+    "resolveJsonModule": true,
+    "types": ["node", "vitest/globals"],
+    // Nothing is emitted here, so `rootDir` only has to be wide enough to
+    // contain the sibling sources the `paths` below pull in.
+    "rootDir": "../..",
+    // Typecheck against the sibling SOURCE, not its build output. Otherwise a
+    // clean checkout has to run `pnpm build` before `pnpm typecheck` can say
+    // anything, and a stale `dist` would let a broken change typecheck.
+    // `tsconfig.build.json` deliberately omits these, so the emitted JavaScript
+    // resolves through node_modules like any other consumer's would.
+    "paths": {
+      "@waterx/predict-agent-sdk": ["../sdk/src/index.ts"],
+      "@waterx/predict-agent-schema": ["../schema/src/index.ts"]
+    }
+  },
+  "include": ["src", "tests"],
+  "exclude": ["node_modules", "dist"]
+}

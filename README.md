@@ -3,10 +3,10 @@
 A pnpm workspace for operating the WaterX Predict Agent Trading API from an
 autonomous agent: quotes, price-protected market orders, positions and allowance.
 
-**Today, the usable surface is the SDK.** Everything else here is either the
-contract that surface is described by, or a reserved boundary with no
-implementation behind it. `docs/IMPLEMENTATION_BACKLOG.md` is the only file that
-tracks what actually works.
+**Today, the usable surfaces are the SDK and a read-only CLI.** Everything else
+here is either the contract those surfaces are described by, or a reserved
+boundary with no implementation behind it. `docs/IMPLEMENTATION_BACKLOG.md` is
+the only file that tracks what actually works.
 
 ## Packages
 
@@ -14,7 +14,7 @@ tracks what actually works.
 | --- | --- | --- |
 | [`packages/sdk`](packages/sdk) | `@waterx/predict-agent-sdk` — the execution core. Authentication, quotes, protected market orders, reads. | Implemented |
 | [`packages/schema`](packages/schema) | `@waterx/predict-agent-schema` — the versioned, runtime-validated command contract. | Implemented |
-| [`packages/cli`](packages/cli) | The `waterx-predict` CLI. | Reserved, **not implemented** |
+| [`packages/cli`](packages/cli) | The `waterx-predict` CLI: the universal agent surface. Discovery, doctor, market and account reads, in one JSON envelope with stable exit codes. | Implemented, **read-only** and unpublished |
 | [`packages/runner`](packages/runner) | The self-hosted local Runner: durable jobs, approval policy, signer boundary. | Reserved, **not implemented** |
 | [`packages/mcp`](packages/mcp) | Optional MCP adapter. | Reserved, **not implemented** |
 
@@ -38,6 +38,8 @@ every surface.
 ## Getting started
 
 For using the client, see [`packages/sdk/README.md`](packages/sdk/README.md).
+For driving it from a shell or a model host, see
+[`packages/cli/README.md`](packages/cli/README.md).
 
 ```sh
 pnpm install
@@ -45,6 +47,9 @@ pnpm typecheck   # root cross-package suite, then every package
 pnpm test
 pnpm build
 pnpm schema:generate   # rewrite schemas/v1/agent-commands.json from source
+
+# What the CLI is, with no configuration and no network.
+node packages/cli/dist/src/main.js describe
 ```
 
 Node.js 20+ and ESM. macOS and Linux; Windows is not verified (ADR-0002).
@@ -53,6 +58,8 @@ Node.js 20+ and ESM. macOS and Linux; Windows is not verified (ADR-0002).
 
 - [`packages/sdk/README.md`](packages/sdk/README.md) — quickstart, the things
   that will bite you, current limitations.
+- [`packages/cli/README.md`](packages/cli/README.md) — the envelope, the exit
+  codes, the signer protocol, and what the CLI refuses to do.
 - [`docs/IMPLEMENTATION_BACKLOG.md`](docs/IMPLEMENTATION_BACKLOG.md) — the only
   implementation-status tracker.
 - [`docs/adr/`](docs/adr) — binding architecture decisions.

@@ -9,6 +9,7 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
+import { CAPABILITIES } from '../packages/cli/src/capabilities.ts';
 import { AGENT_COMMANDS } from '../packages/schema/src/index.ts';
 import { PredictAgentClient } from '../packages/sdk/src/index.ts';
 
@@ -26,8 +27,16 @@ const PACKAGE_DIRS = readdirSync(`${ROOT}packages`).filter((entry) =>
 /** Packages that ship to a registry. Everything else must be `private`. */
 const PUBLISHED = new Set(['sdk', 'schema']);
 
+/**
+ * Implemented, but deliberately unreleased: real code, real tests, `private`
+ * until the release work in the backlog is done. The distinction from RESERVED
+ * matters — this one has to look like a package, and must still not be
+ * publishable by accident.
+ */
+const INTERNAL = new Set(['cli']);
+
 /** Reserved boundaries with no implementation. They must not look like one. */
-const RESERVED = new Set(['cli', 'runner', 'mcp']);
+const RESERVED = new Set(['runner', 'mcp']);
 
 interface PackageManifest {
   readonly name?: string;
@@ -50,7 +59,7 @@ const manifest = (dir: string): PackageManifest =>
 
 describe('workspace layout', () => {
   it('accounts for every package directory', () => {
-    expect(new Set(PACKAGE_DIRS)).toEqual(new Set([...PUBLISHED, ...RESERVED]));
+    expect(new Set(PACKAGE_DIRS)).toEqual(new Set([...PUBLISHED, ...INTERNAL, ...RESERVED]));
   });
 
   it('is covered by the pnpm workspace glob', () => {
@@ -100,11 +109,22 @@ describe('dependency direction', () => {
     }
   });
 
-  it('never lets a published package import a reserved one, in source', () => {
-    const reservedNames = [...RESERVED].map((dir) => manifest(dir).name ?? dir);
+  it('points the CLI at both published packages and nothing else', () => {
+    // The CLI is a surface over the core, not a peer of it. Its only workspace
+    // edges are the two packages it compiles the same intent through.
+    expect(workspaceEdges('cli').sort()).toEqual([
+      '@waterx/predict-agent-schema',
+      '@waterx/predict-agent-sdk',
+    ]);
+  });
+
+  it('never lets a published package import an unpublished one, in source', () => {
+    // A published package importing `@waterx/predict-agent-cli` would name a
+    // dependency that does not exist on any registry.
+    const unpublishedNames = [...RESERVED, ...INTERNAL].map((dir) => manifest(dir).name ?? dir);
     for (const dir of PUBLISHED) {
       for (const file of sourceFiles(`packages/${dir}/src`)) {
-        for (const name of reservedNames) {
+        for (const name of unpublishedNames) {
           expect(read(file), `${file} imports ${name}`).not.toContain(`from '${name}'`);
         }
       }
@@ -151,6 +171,38 @@ describe('published package hygiene', () => {
   });
 });
 
+describe('the CLI package', () => {
+  it('is implemented but stays unpublishable', () => {
+    // `private` is the release gate. The CLI is real code with real tests, but
+    // an accidental `npm publish` would ship a binary the backlog has not
+    // finished (release is 3.6), under a name nobody has claimed.
+    const pkg = manifest('cli');
+    expect(pkg.private).toBe(true);
+    expect(pkg.type).toBe('module');
+    expect(pkg.engines?.node).toBe('>=20');
+    for (const script of ['build', 'typecheck', 'test']) {
+      expect(pkg.scripts?.[script], script).toBeTypeOf('string');
+    }
+  });
+
+  it('exposes one binary, from built output rather than source', () => {
+    // A `bin` pointing at a `.ts` file works on the author's machine and
+    // nowhere else.
+    expect(manifest('cli').bin).toEqual({ 'waterx-predict': 'dist/src/main.js' });
+  });
+
+  it('never writes to stdout outside the one writer that owns it', () => {
+    // stdout carries exactly one JSON document per invocation (plan §6.3). A
+    // stray `console.log` anywhere in the CLI silently corrupts every caller's
+    // parse, so the ban is structural rather than a review habit.
+    for (const file of sourceFiles('packages/cli/src')) {
+      if (file.endsWith('/output.ts')) continue;
+      const source = read(file);
+      expect(source, `${file} writes to stdout`).not.toMatch(/console\.log|process\.stdout/u);
+    }
+  });
+});
+
 describe('reserved boundaries', () => {
   it('publishes nothing and claims nothing', () => {
     // A reserved directory exists so a dependency cannot leak into the SDK
@@ -179,19 +231,42 @@ describe('reserved boundaries', () => {
 describe('the command contract compiles to the SDK', () => {
   it('names a method that actually exists on the client', () => {
     // The contract's promise is that every surface issuing the same intent makes
-    // the same call (ADR-0001 §1). A `sdkMethod` naming a method that was
+    // the same call (ADR-0001 §1). An `implementation` naming a method that was
     // renamed or never existed breaks that silently, at the adapter.
     const client = PredictAgentClient.prototype as unknown as Record<string, unknown>;
     for (const command of AGENT_COMMANDS) {
-      expect(typeof client[command.sdkMethod], `${command.name} -> ${command.sdkMethod}`).toBe(
-        'function',
-      );
+      if (command.implementation.kind !== 'sdk') continue;
+      const { method } = command.implementation;
+      expect(typeof client[method], `${command.name} -> ${method}`).toBe('function');
     }
   });
 
   it('maps each command to a distinct method', () => {
-    const methods = AGENT_COMMANDS.map((command) => command.sdkMethod);
+    const methods = AGENT_COMMANDS.flatMap((command) =>
+      command.implementation.kind === 'sdk' ? [command.implementation.method] : [],
+    );
     expect(new Set(methods).size).toBe(methods.length);
+  });
+
+  it('backs every command the CLI advertises as available', () => {
+    // The inventory in `describe` is what a host reads to decide what it may
+    // call. A capability advertised there with no command behind it is exactly
+    // the fabricated support this repository's rules forbid.
+    const contractNames = new Set(AGENT_COMMANDS.map((command) => command.name));
+    const advertised = CAPABILITIES.filter(
+      (capability) => capability.status === 'AVAILABLE' && capability.command !== undefined,
+    );
+    expect(advertised.length).toBeGreaterThan(0);
+    for (const capability of advertised) {
+      expect(contractNames.has(capability.command ?? ''), capability.id).toBe(true);
+    }
+    // …and the converse: a command in the contract that the CLI cannot run
+    // would be advertised by an adapter and then refused.
+    const availableCommands = new Set(advertised.map((capability) => capability.command));
+    for (const name of contractNames) {
+      const isWrite = name.startsWith('order.');
+      expect(availableCommands.has(name) || isWrite, name).toBe(true);
+    }
   });
 });
 

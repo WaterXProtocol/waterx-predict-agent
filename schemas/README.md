@@ -19,8 +19,11 @@ rule is stated once and cannot disagree between commands. `commands` is an
 ordered list, each entry carrying:
 
 - `input` — a JSON Schema (draft 2020-12) for the command's arguments.
-- `sdkMethod` — the `PredictAgentClient` method the command compiles to. Every
-  surface issuing the same command must make this same call.
+- `implementation` — what the command compiles down to, as a tagged union.
+  `{"kind":"sdk","method":"…"}` names the `PredictAgentClient` method every
+  surface issuing that command must call; `{"kind":"runtime","note":"…"}` marks
+  a command the runtime answers locally (`runtime.describe`, `runtime.doctor`
+  and `runtime.command-schema`), which is why it has no SDK method to name.
 - `classification`, `sideEffects`, `confirmation`, `idempotency` — what an
   approval layer needs before running it. `classification: "write"` means the
   command can move funds.

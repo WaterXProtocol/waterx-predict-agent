@@ -268,6 +268,126 @@
   },
   "commands": [
     {
+      "name": "runtime.describe",
+      "cli": "describe",
+      "summary": "Report what this runtime can actually do, and what it cannot.",
+      "description": "The discovery entry point, and the only command that answers before configuration or network exist — a host has to be able to ask what it is holding. The capability inventory names unavailable capabilities explicitly with a symbolic reason rather than omitting them, so a caller can tell \"not supported here\" from \"not mentioned\". Server capabilities are reported from this build's static knowledge because the API advertises no capability document.",
+      "classification": "read",
+      "sideEffects": [
+        "NONE"
+      ],
+      "longRunning": false,
+      "idempotency": {
+        "required": false,
+        "callerSupplied": "UNSUPPORTED",
+        "note": "A read is safe to repeat; no key applies."
+      },
+      "confirmation": "NOT_REQUIRED",
+      "implementation": {
+        "kind": "runtime",
+        "note": "Local only: build metadata, resolved configuration, and the capability inventory. Issues no request."
+      },
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "examples": [
+        {
+          "title": "Describe the runtime",
+          "input": {}
+        }
+      ]
+    },
+    {
+      "name": "runtime.command-schema",
+      "cli": "command-schema",
+      "summary": "Emit this command document, or one command from it.",
+      "description": "The machine-readable half of discovery: the same versioned document an adapter turns into tool definitions. Omit command for the whole document. A name that is not in this version is an error rather than an empty result, because silently returning nothing would let a host advertise a tool that does not exist.",
+      "classification": "read",
+      "sideEffects": [
+        "NONE"
+      ],
+      "longRunning": false,
+      "idempotency": {
+        "required": false,
+        "callerSupplied": "UNSUPPORTED",
+        "note": "A read is safe to repeat; no key applies."
+      },
+      "confirmation": "NOT_REQUIRED",
+      "implementation": {
+        "kind": "runtime",
+        "note": "Local only: serializes the compiled command document. Issues no request."
+      },
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "command": {
+            "title": "Command name",
+            "description": "A dotted name from this document, e.g. `order.execute`.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        }
+      },
+      "examples": [
+        {
+          "title": "Whole document",
+          "input": {}
+        },
+        {
+          "title": "One command",
+          "input": {
+            "command": "order.execute"
+          }
+        }
+      ]
+    },
+    {
+      "name": "runtime.doctor",
+      "cli": "doctor",
+      "summary": "Check configuration, signer, reachability and authentication.",
+      "description": "Diagnostics, not a trade. The authentication check signs the login challenge as a PERSONAL MESSAGE, which moves no funds and is not a transaction signature; no other check signs anything. Checks that cannot run without configuration are reported as skipped rather than passed. Pass accountId to include the allowance check when no default account is configured.",
+      "classification": "read",
+      "sideEffects": [
+        "AUTHENTICATES"
+      ],
+      "longRunning": false,
+      "idempotency": {
+        "required": false,
+        "callerSupplied": "UNSUPPORTED",
+        "note": "A read is safe to repeat; no key applies."
+      },
+      "confirmation": "NOT_REQUIRED",
+      "implementation": {
+        "kind": "runtime",
+        "note": "Composes local checks with authenticate() and, when an account is known, getAllowance()."
+      },
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "accountId": {
+            "$ref": "#/$defs/accountId"
+          }
+        }
+      },
+      "examples": [
+        {
+          "title": "Check the runtime",
+          "input": {}
+        },
+        {
+          "title": "Include the allowance check",
+          "input": {
+            "accountId": "0x1111111111111111111111111111111111111111111111111111111111111111"
+          }
+        }
+      ]
+    },
+    {
       "name": "market.list",
       "cli": "market list",
       "summary": "List the tradeable market catalog.",
@@ -283,7 +403,10 @@
         "note": "A read is safe to repeat; no key applies."
       },
       "confirmation": "NOT_REQUIRED",
-      "sdkMethod": "getMarkets",
+      "implementation": {
+        "kind": "sdk",
+        "method": "getMarkets"
+      },
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -353,7 +476,10 @@
         "note": "A read is safe to repeat; no key applies."
       },
       "confirmation": "NOT_REQUIRED",
-      "sdkMethod": "getMarket",
+      "implementation": {
+        "kind": "sdk",
+        "method": "getMarket"
+      },
       "input": {
         "type": "object",
         "required": [
@@ -391,7 +517,10 @@
         "note": "A read is safe to repeat; no key applies."
       },
       "confirmation": "NOT_REQUIRED",
-      "sdkMethod": "getQuote",
+      "implementation": {
+        "kind": "sdk",
+        "method": "getQuote"
+      },
       "input": {
         "type": "object",
         "required": [
@@ -447,6 +576,50 @@
       ]
     },
     {
+      "name": "account.status",
+      "cli": "account status",
+      "summary": "One reading of capacity and exposure for an account.",
+      "description": "Composes account.allowance and account.positions into the pre-trade picture: what may be spent, and what is already held. Effective risk limits are reported as unavailable rather than guessed — the risk profile is owner-authenticated (ADR-0003) and an agent credential cannot read it on this API version. A caller that needs a single authoritative number must still size against effectiveBuyCapacity.",
+      "classification": "read",
+      "sideEffects": [
+        "NONE"
+      ],
+      "longRunning": false,
+      "idempotency": {
+        "required": false,
+        "callerSupplied": "UNSUPPORTED",
+        "note": "A read is safe to repeat; no key applies."
+      },
+      "confirmation": "NOT_REQUIRED",
+      "implementation": {
+        "kind": "runtime",
+        "note": "Composes getAllowance() and getPositions(). Reports agent-readable risk limits as unavailable; never fabricates one."
+      },
+      "input": {
+        "type": "object",
+        "required": [
+          "accountId"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "accountId": {
+            "$ref": "#/$defs/accountId"
+          },
+          "limit": {
+            "$ref": "#/$defs/limit"
+          }
+        }
+      },
+      "examples": [
+        {
+          "title": "Read account status",
+          "input": {
+            "accountId": "0x1111111111111111111111111111111111111111111111111111111111111111"
+          }
+        }
+      ]
+    },
+    {
       "name": "account.allowance",
       "cli": "account allowance",
       "summary": "Read the remaining API allowance and spendable balance.",
@@ -462,7 +635,10 @@
         "note": "A read is safe to repeat; no key applies."
       },
       "confirmation": "NOT_REQUIRED",
-      "sdkMethod": "getAllowance",
+      "implementation": {
+        "kind": "sdk",
+        "method": "getAllowance"
+      },
       "input": {
         "type": "object",
         "required": [
@@ -500,7 +676,10 @@
         "note": "A read is safe to repeat; no key applies."
       },
       "confirmation": "NOT_REQUIRED",
-      "sdkMethod": "getPositions",
+      "implementation": {
+        "kind": "sdk",
+        "method": "getPositions"
+      },
       "input": {
         "type": "object",
         "required": [
@@ -543,7 +722,10 @@
         "note": "A read is safe to repeat; no key applies."
       },
       "confirmation": "NOT_REQUIRED",
-      "sdkMethod": "listExecutions",
+      "implementation": {
+        "kind": "sdk",
+        "method": "listExecutions"
+      },
       "input": {
         "type": "object",
         "required": [
@@ -586,7 +768,10 @@
         "note": "A read is safe to repeat; no key applies."
       },
       "confirmation": "NOT_REQUIRED",
-      "sdkMethod": "getFills",
+      "implementation": {
+        "kind": "sdk",
+        "method": "getFills"
+      },
       "input": {
         "type": "object",
         "required": [
@@ -629,7 +814,10 @@
         "note": "A read is safe to repeat; no key applies."
       },
       "confirmation": "NOT_REQUIRED",
-      "sdkMethod": "getExecution",
+      "implementation": {
+        "kind": "sdk",
+        "method": "getExecution"
+      },
       "input": {
         "type": "object",
         "required": [
@@ -672,7 +860,10 @@
         "note": "Supply idempotencyKey to make the intent replayable across a process restart. Omitted, the runtime mints one that covers in-process retries only. A retry must reuse the same key and the same bytes."
       },
       "confirmation": "REQUIRED_UNLESS_DELEGATED",
-      "sdkMethod": "executeMarketOrder",
+      "implementation": {
+        "kind": "sdk",
+        "method": "executeMarketOrder"
+      },
       "input": {
         "type": "object",
         "required": [
@@ -817,7 +1008,10 @@
         "note": "One key per leg, not one per call. A leg without an explicit key gets a runtime-minted one covering in-process retries only."
       },
       "confirmation": "REQUIRED_UNLESS_DELEGATED",
-      "sdkMethod": "executeMany",
+      "implementation": {
+        "kind": "sdk",
+        "method": "executeMany"
+      },
       "input": {
         "type": "object",
         "required": [

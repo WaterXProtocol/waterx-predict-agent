@@ -7,8 +7,8 @@ entire repository.
 
 This repository is the pnpm workspace for the WaterX Predict agent runtime. Its
 centre is the Node.js TypeScript SDK for the Agent Trading API; alongside it sit
-the versioned agent command contract and reserved boundaries for the CLI, the
-local Runner and optional adapters (ADR-0001 §4). It does not own the REST
+the versioned agent command contract, the read-only `waterx-predict` CLI, and
+reserved boundaries for the local Runner and optional adapters (ADR-0001 §4). It does not own the REST
 service, quote production, on-chain contracts, delegation, monitoring dashboards,
 or an agent's trading strategy.
 
@@ -106,7 +106,7 @@ orchestrates.
 | --- | --- | --- |
 | `packages/sdk` | `@waterx/predict-agent-sdk` | Published surface, implemented |
 | `packages/schema` | `@waterx/predict-agent-schema` | Published surface, implemented |
-| `packages/cli` | `@waterx/predict-agent-cli` | Reserved boundary, **not implemented** |
+| `packages/cli` | `@waterx/predict-agent-cli` | Implemented, **read-only**; `private`, so nothing is published |
 | `packages/runner` | `@waterx/predict-agent-runner` | Reserved boundary, **not implemented** |
 | `packages/mcp` | `@waterx/predict-agent-mcp` | Reserved boundary, **not implemented** |
 
@@ -137,6 +137,29 @@ Inside `packages/schema`:
 - `src/commands.ts` — the command registry: one entry per agent-issuable command.
 - `src/document.ts`, `src/generate.ts` — emit `schemas/v1/agent-commands.json`.
 - `src/validate.ts` — `validateCommandInput`, the runtime gate every surface uses.
+
+Inside `packages/cli`:
+
+- `src/run.ts` — the dispatcher. It writes stdout **exactly once, and always**:
+  any failure still produces a parseable envelope, and only `ok`, `error` and the
+  exit code change. `src/main.ts` is the bin entry and sets `process.exitCode`
+  rather than calling `process.exit()`, which can truncate an unflushed write.
+- `src/envelope.ts`, `src/exit-codes.ts` — the one output shape and the stable
+  code table. An existing exit code never changes meaning.
+- `src/capabilities.ts` — the inventory of what this build can and cannot do.
+  A refusal is looked up here, so it cannot drift from what `describe` published.
+  This module imports nothing, so the workspace suite can read it without
+  dragging the CLI in.
+- `src/config.ts`, `src/redact.ts`, `src/signer.ts` — configuration precedence
+  and the secret rules: a credential-shaped config key is refused, a registered
+  secret is replaced with `[redacted]` on both streams, and `signTransaction`
+  throws before a signer process is started.
+- `src/input.ts`, `src/parse.ts` — argv to a validated command input. Nothing is
+  coerced: a flag value that does not match its declared type is an error.
+- `src/commands/` — one thin handler per command. Server responses pass through
+  unchanged, with caveats attached alongside rather than merged in.
+- `tests/harness.ts` — every test invokes the CLI end to end through it; none
+  opens a socket, spawns a process or reads a real file.
 
 Elsewhere:
 

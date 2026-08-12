@@ -8,7 +8,8 @@ The design constraint matters more than the timing: an adapter is a **thin
 translation** over `@waterx/predict-agent-schema` and
 `@waterx/predict-agent-sdk`. It advertises the commands in
 `schemas/v1/agent-commands.json`, validates with the same validator, and calls
-the same `sdkMethod`. It does not define commands of its own, relax a rule, or
+the SDK method each command's `implementation` names. It does not define
+commands of its own, relax a rule, or
 add a shortcut — the moment it does, the same instruction means two different
 things depending on which host an agent is running in.
 

@@ -73,6 +73,27 @@ describe('the command registry', () => {
     }
   });
 
+  it('keeps runtime-implemented commands away from anything that moves funds', () => {
+    // A `runtime` command has no single SDK method behind it, so nothing checks
+    // its behaviour against one call. That freedom is only safe while it stays
+    // read-shaped: a second, unaudited way to trade is exactly what it must not
+    // become (see AgentCommandImplementation).
+    for (const command of AGENT_COMMANDS) {
+      if (command.implementation.kind !== 'runtime') continue;
+      expect(command.classification, command.name).toBe('read');
+      expect(command.sideEffects, command.name).not.toContain('MOVES_FUNDS');
+      expect(command.sideEffects, command.name).not.toContain('SIGNS_TRANSACTION');
+      expect(command.implementation.note.length, command.name).toBeGreaterThan(0);
+    }
+  });
+
+  it('names a distinct SDK method for every sdk-implemented command', () => {
+    const methods = AGENT_COMMANDS.flatMap((command) =>
+      command.implementation.kind === 'sdk' ? [command.implementation.method] : [],
+    );
+    expect(new Set(methods).size).toBe(methods.length);
+  });
+
   it('reaches every shared definition from a command input', () => {
     // An unreachable definition is a rule nobody applies. It reads like a
     // guarantee in the published document while enforcing nothing.
@@ -345,6 +366,9 @@ describe('read commands', () => {
 describe('getCommand', () => {
   it('returns undefined for an unknown name', () => {
     expect(getCommand('order.nope')).toBeUndefined();
-    expect(getCommand('order.execute')?.sdkMethod).toBe('executeMarketOrder');
+    expect(getCommand('order.execute')?.implementation).toEqual({
+      kind: 'sdk',
+      method: 'executeMarketOrder',
+    });
   });
 });

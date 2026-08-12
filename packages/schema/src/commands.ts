@@ -7,15 +7,21 @@
  *     vendored from the backend and authoritative for request/response shapes;
  *   - this AGENT COMMAND contract, the higher-level intent an agent host states.
  *
- * This file is the second one. It compiles down to the first via `sdkMethod`,
- * which is what keeps two hosts issuing the same intent from producing two
- * different requests (ADR-0001 §3).
+ * This file is the second one. It compiles down to the first via
+ * `implementation`, which is what keeps two hosts issuing the same intent from
+ * producing two different requests (ADR-0001 §3).
  *
  * SCOPE OF v1: only commands the execution core can actually perform today.
- * `describe`, `doctor`, `order preview` and the `strategy` family are named in
- * the plan but have no implementation, and a schema entry is exactly what an
- * adapter would turn into an advertised tool. They are added when they exist —
- * the document is versioned and adding a command is backwards-compatible.
+ * `order preview` and the `strategy` family are named in the plan but have no
+ * implementation, and a schema entry is exactly what an adapter would turn into
+ * an advertised tool. They are added when they exist — the document is versioned
+ * and adding a command is backwards-compatible.
+ *
+ * `market search` and `market history` are absent for a different reason: the
+ * API has no endpoint behind either (backlog B2, D-25). The CLI still answers
+ * both, with a symbolic `CAPABILITY_UNAVAILABLE` — that is capability
+ * negotiation, not a command, and listing them here would advertise a tool that
+ * can only refuse.
  */
 import {
   COMMAND_SCHEMA_DEFS,
@@ -34,6 +40,13 @@ export type AgentCommandClassification = 'read' | 'write';
 export type AgentCommandSideEffect =
   /** Nothing on the server changes. */
   | 'NONE'
+  /**
+   * Deliberately signs the authentication challenge as a PERSONAL MESSAGE, which
+   * has no funds effect and is not a transaction signature. Every authenticated
+   * command may do this incidentally when its session has expired; this marker is
+   * for the ones whose entire purpose is to exercise it.
+   */
+  | 'AUTHENTICATES'
   /** Creates a short-lived executable quote. No funds move and nothing is signed. */
   | 'MINTS_QUOTE'
   /** The agent wallet signs sponsored transaction bytes. */
@@ -59,6 +72,24 @@ export interface AgentCommandExample {
   readonly input: Readonly<Record<string, unknown>>;
 }
 
+/**
+ * What a surface must actually call to honour the command.
+ *
+ * `sdk` is the normal case and the reason this contract exists: two hosts issuing
+ * the same intent make the same `PredictAgentClient` call (ADR-0001 §1).
+ *
+ * `runtime` covers the commands that have no single SDK method because they are
+ * about the runtime rather than the API — discovery, diagnostics, and reads the
+ * runtime composes from more than one call. They still belong here: an adapter
+ * that could not advertise `describe` would leave every host to invent its own
+ * discovery, which is exactly the divergence this document prevents. A `runtime`
+ * command must never be a second way to trade — it may compose SDK reads and
+ * report local facts, and nothing else.
+ */
+export type AgentCommandImplementation =
+  | { readonly kind: 'sdk'; readonly method: string }
+  | { readonly kind: 'runtime'; readonly note: string };
+
 export interface AgentCommandSpec {
   /** Stable dotted identifier, e.g. `order.execute`. Adapters key on this. */
   readonly name: string;
@@ -72,8 +103,8 @@ export interface AgentCommandSpec {
   readonly longRunning: boolean;
   readonly idempotency: AgentCommandIdempotency;
   readonly confirmation: AgentCommandConfirmation;
-  /** The `PredictAgentClient` method this compiles to (ADR-0001 §1). */
-  readonly sdkMethod: string;
+  /** What honouring this command actually calls (ADR-0001 §1). */
+  readonly implementation: AgentCommandImplementation;
   readonly input: JsonSchema;
   readonly examples: readonly AgentCommandExample[];
 }
@@ -119,7 +150,7 @@ const marketList: AgentCommandSpec = {
   summary: 'List the tradeable market catalog.',
   description:
     'Server-resolved market identity: this is how an agent obtains a marketId, and it must never construct one. Outcome prices in the result are INDICATIVE top-of-book and are not executable — call market.quote before acting on one. The status and tradeable filters are applied after the page is assembled, so a filtered page can be shorter than limit without the catalog being exhausted.',
-  sdkMethod: 'getMarkets',
+  implementation: { kind: 'sdk', method: 'getMarkets' },
   input: {
     type: 'object',
     additionalProperties: false,
@@ -164,7 +195,7 @@ const marketGet: AgentCommandSpec = {
   summary: 'Read one market by its server-resolved id.',
   description:
     'Confirms a market resolved from market.list before an order. A closed market still resolves; an unknown id is an error rather than an empty result.',
-  sdkMethod: 'getMarket',
+  implementation: { kind: 'sdk', method: 'getMarket' },
   input: {
     type: 'object',
     required: ['marketId'],
@@ -182,7 +213,7 @@ const marketQuote: AgentCommandSpec = {
   description:
     'The only price an order may be built on. A quote lives seconds and is never extended, so fetch it immediately before order.execute rather than caching it. Quotes are size-blind today: availableSize, expectedFillSize and feeAmount come back null and qualityFlags carries TOP_OF_BOOK_ONLY, so a large order can be correctly priced and still fail to fill.',
   sideEffects: ['MINTS_QUOTE'],
-  sdkMethod: 'getQuote',
+  implementation: { kind: 'sdk', method: 'getQuote' },
   input: {
     type: 'object',
     required: ['marketId', 'outcomeId', 'side', 'size'],
@@ -224,7 +255,7 @@ const accountAllowance: AgentCommandSpec = {
   summary: 'Read the remaining API allowance and spendable balance.',
   description:
     'apiAllowance and accountSpendableBalance are separate facts — a direct-chain spend moves one without the other — so size against effectiveBuyCapacity, the smaller of the two. The API allowance is a WaterX policy, not an on-chain security boundary.',
-  sdkMethod: 'getAllowance',
+  implementation: { kind: 'sdk', method: 'getAllowance' },
   input: {
     type: 'object',
     required: ['accountId'],
@@ -241,7 +272,7 @@ const accountPositions: AgentCommandSpec = {
   summary: 'List positions this agent opened, with cost basis and unrealized PnL.',
   description:
     'A SELL needs the positionId from here. Scope is API-attributed activity: a direct-chain trade by the same delegated key is not included.',
-  sdkMethod: 'getPositions',
+  implementation: { kind: 'sdk', method: 'getPositions' },
   input: accountScopedList('Positions on one account, newest first.'),
   examples: [{ title: 'List positions', input: { accountId: EXAMPLE_ACCOUNT_ID, limit: 50 } }],
 };
@@ -253,7 +284,7 @@ const accountExecutions: AgentCommandSpec = {
   summary: 'List this agent’s executions on one account.',
   description:
     'Order history including non-terminal rows. SUBMITTED and PENDING_FILL are not fills — read the terminal status before reporting a trade as done. Paging is limit-only today; there is no cursor, so a complete history cannot be reconstructed past the cap.',
-  sdkMethod: 'listExecutions',
+  implementation: { kind: 'sdk', method: 'listExecutions' },
   input: accountScopedList('Executions on one account, newest first.'),
   examples: [{ title: 'List executions', input: { accountId: EXAMPLE_ACCOUNT_ID, limit: 50 } }],
 };
@@ -265,7 +296,7 @@ const accountFills: AgentCommandSpec = {
   summary: 'List confirmed fills, with the quote each was priced against.',
   description:
     'Authoritative fill facts: filled amount, shares, average price and the keeper transaction that settled it — which is a different transaction from the agent’s submission. actualFee is null rather than zero, because the published price is already fee-adjusted and no separate fee is observable.',
-  sdkMethod: 'getFills',
+  implementation: { kind: 'sdk', method: 'getFills' },
   input: accountScopedList('Fills on one account, newest first.'),
   examples: [{ title: 'List fills', input: { accountId: EXAMPLE_ACCOUNT_ID, limit: 50 } }],
 };
@@ -277,7 +308,7 @@ const orderGet: AgentCommandSpec = {
   summary: 'Read one execution by id.',
   description:
     'The reconciliation path. After a timeout the execution id is still valid and the order may still fill, so this is how a caller resolves an ambiguous outcome — never by resubmitting with a new idempotency key.',
-  sdkMethod: 'getExecution',
+  implementation: { kind: 'sdk', method: 'getExecution' },
   input: {
     type: 'object',
     required: ['executionId'],
@@ -328,7 +359,7 @@ const orderExecute: AgentCommandSpec = {
     note: 'Supply idempotencyKey to make the intent replayable across a process restart. Omitted, the runtime mints one that covers in-process retries only. A retry must reuse the same key and the same bytes.',
   },
   confirmation: 'REQUIRED_UNLESS_DELEGATED',
-  sdkMethod: 'executeMarketOrder',
+  implementation: { kind: 'sdk', method: 'executeMarketOrder' },
   input: {
     type: 'object',
     required: [...ORDER_INTENT_REQUIRED],
@@ -382,7 +413,7 @@ const orderExecuteMany: AgentCommandSpec = {
     note: 'One key per leg, not one per call. A leg without an explicit key gets a runtime-minted one covering in-process retries only.',
   },
   confirmation: 'REQUIRED_UNLESS_DELEGATED',
-  sdkMethod: 'executeMany',
+  implementation: { kind: 'sdk', method: 'executeMany' },
   input: {
     type: 'object',
     required: ['orders'],
@@ -445,11 +476,111 @@ const orderExecuteMany: AgentCommandSpec = {
   ],
 };
 
+/* ── Runtime commands ────────────────────────────────────────────────────────
+ * No single SDK method backs these: they describe the runtime, diagnose it, or
+ * compose more than one read. They are in the contract so every surface answers
+ * discovery the same way — see AgentCommandImplementation. */
+
+const runtimeDescribe: AgentCommandSpec = {
+  ...readOnly,
+  name: 'runtime.describe',
+  cli: 'describe',
+  summary: 'Report what this runtime can actually do, and what it cannot.',
+  description:
+    'The discovery entry point, and the only command that answers before configuration or network exist — a host has to be able to ask what it is holding. The capability inventory names unavailable capabilities explicitly with a symbolic reason rather than omitting them, so a caller can tell "not supported here" from "not mentioned". Server capabilities are reported from this build\'s static knowledge because the API advertises no capability document.',
+  implementation: {
+    kind: 'runtime',
+    note: 'Local only: build metadata, resolved configuration, and the capability inventory. Issues no request.',
+  },
+  input: { type: 'object', additionalProperties: false, properties: {} },
+  examples: [{ title: 'Describe the runtime', input: {} }],
+};
+
+const runtimeCommandSchema: AgentCommandSpec = {
+  ...readOnly,
+  name: 'runtime.command-schema',
+  cli: 'command-schema',
+  summary: 'Emit this command document, or one command from it.',
+  description:
+    'The machine-readable half of discovery: the same versioned document an adapter turns into tool definitions. Omit command for the whole document. A name that is not in this version is an error rather than an empty result, because silently returning nothing would let a host advertise a tool that does not exist.',
+  implementation: {
+    kind: 'runtime',
+    note: 'Local only: serializes the compiled command document. Issues no request.',
+  },
+  input: {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      command: {
+        title: 'Command name',
+        description: 'A dotted name from this document, e.g. `order.execute`.',
+        type: 'string',
+        minLength: 1,
+        maxLength: 128,
+      },
+    },
+  },
+  examples: [
+    { title: 'Whole document', input: {} },
+    { title: 'One command', input: { command: 'order.execute' } },
+  ],
+};
+
+const runtimeDoctor: AgentCommandSpec = {
+  ...readOnly,
+  name: 'runtime.doctor',
+  cli: 'doctor',
+  summary: 'Check configuration, signer, reachability and authentication.',
+  description:
+    'Diagnostics, not a trade. The authentication check signs the login challenge as a PERSONAL MESSAGE, which moves no funds and is not a transaction signature; no other check signs anything. Checks that cannot run without configuration are reported as skipped rather than passed. Pass accountId to include the allowance check when no default account is configured.',
+  sideEffects: ['AUTHENTICATES'],
+  implementation: {
+    kind: 'runtime',
+    note: 'Composes local checks with authenticate() and, when an account is known, getAllowance().',
+  },
+  input: {
+    type: 'object',
+    additionalProperties: false,
+    properties: { accountId: { $ref: '#/$defs/accountId' } },
+  },
+  examples: [
+    { title: 'Check the runtime', input: {} },
+    { title: 'Include the allowance check', input: { accountId: EXAMPLE_ACCOUNT_ID } },
+  ],
+};
+
+const accountStatus: AgentCommandSpec = {
+  ...readOnly,
+  name: 'account.status',
+  cli: 'account status',
+  summary: 'One reading of capacity and exposure for an account.',
+  description:
+    'Composes account.allowance and account.positions into the pre-trade picture: what may be spent, and what is already held. Effective risk limits are reported as unavailable rather than guessed — the risk profile is owner-authenticated (ADR-0003) and an agent credential cannot read it on this API version. A caller that needs a single authoritative number must still size against effectiveBuyCapacity.',
+  implementation: {
+    kind: 'runtime',
+    note: 'Composes getAllowance() and getPositions(). Reports agent-readable risk limits as unavailable; never fabricates one.',
+  },
+  input: {
+    type: 'object',
+    required: ['accountId'],
+    additionalProperties: false,
+    properties: {
+      accountId: { $ref: '#/$defs/accountId' },
+      limit: { $ref: '#/$defs/limit' },
+    },
+  },
+  examples: [{ title: 'Read account status', input: { accountId: EXAMPLE_ACCOUNT_ID } }],
+};
+
 /** Every command in this schema version, in a stable order. */
 export const AGENT_COMMANDS: readonly AgentCommandSpec[] = [
+  runtimeDescribe,
+  runtimeCommandSchema,
+  runtimeDoctor,
   marketList,
   marketGet,
   marketQuote,
+  accountStatus,
   accountAllowance,
   accountPositions,
   accountExecutions,
