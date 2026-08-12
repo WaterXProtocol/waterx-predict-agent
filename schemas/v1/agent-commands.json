@@ -1,0 +1,907 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:waterx:predict:agent-commands:v1",
+  "title": "WaterX Predict agent command contract",
+  "description": "The commands a WaterX Predict agent host may issue, and the exact input each one accepts. Every surface — CLI, MCP or any other function adapter — validates against this document and compiles to the same SDK call, so the same intent cannot mean two different things depending on the host. Money, prices and sizes are decimal STRINGS. A JSON number cannot hold them exactly.",
+  "schemaVersion": "1",
+  "$defs": {
+    "positiveDecimalAmount": {
+      "title": "Positive decimal amount",
+      "description": "A decimal string greater than zero with at most 6 decimal places, e.g. \"50\". Never a JSON number.",
+      "type": "string",
+      "pattern": "^(?!0+(\\.0+)?$)[0-9]+(\\.[0-9]{1,6})?$"
+    },
+    "probabilityPrice": {
+      "title": "Probability price",
+      "description": "A decimal string in the inclusive range 0–1, e.g. \"0.82\". Never a JSON number.",
+      "type": "string",
+      "pattern": "^(0+(\\.[0-9]{1,6})?|0*1(\\.0{1,6})?)$"
+    },
+    "accountId": {
+      "title": "Account id",
+      "description": "The WaterX Predict account the order settles against, as a full 0x-prefixed Sui address.",
+      "type": "string",
+      "pattern": "^0x[0-9a-fA-F]{64}$"
+    },
+    "marketId": {
+      "title": "Market id",
+      "description": "A server-resolved market identifier. Obtain it from market.list or market.get; an agent must never construct or guess one (ADR-0001 §10).",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "outcomeId": {
+      "title": "Outcome id",
+      "description": "The binary leg. A closed set on this API version.",
+      "type": "string",
+      "enum": [
+        "YES",
+        "NO"
+      ]
+    },
+    "side": {
+      "title": "Side",
+      "description": "BUY commits a wxUSD budget. SELL closes shares of an existing position.",
+      "type": "string",
+      "enum": [
+        "BUY",
+        "SELL"
+      ]
+    },
+    "buySize": {
+      "title": "BUY size (buyAmount)",
+      "description": "A BUY commits a wxUSD budget.",
+      "type": "object",
+      "required": [
+        "buyAmount"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "buyAmount": {
+          "$ref": "#/$defs/positiveDecimalAmount"
+        }
+      }
+    },
+    "sellSize": {
+      "title": "SELL size (sellShares)",
+      "description": "A SELL states a share quantity to close.",
+      "type": "object",
+      "required": [
+        "sellShares"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "sellShares": {
+          "$ref": "#/$defs/positiveDecimalAmount"
+        }
+      }
+    },
+    "orderSize": {
+      "title": "Order size",
+      "type": "object",
+      "description": "Exactly one field, decided by side: buyAmount for a BUY, sellShares for a SELL. Supplying both or neither is an error, not a preference.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/buySize"
+        },
+        {
+          "$ref": "#/$defs/sellSize"
+        }
+      ]
+    },
+    "sideSizeAgreement": {
+      "title": "Side and size unit agree",
+      "description": "A BUY states buyAmount; a SELL states sellShares (ADR-0001 §11).",
+      "oneOf": [
+        {
+          "title": "BUY with buyAmount",
+          "type": "object",
+          "required": [
+            "side",
+            "size"
+          ],
+          "properties": {
+            "side": {
+              "const": "BUY"
+            },
+            "size": {
+              "$ref": "#/$defs/buySize"
+            }
+          }
+        },
+        {
+          "title": "SELL with sellShares",
+          "type": "object",
+          "required": [
+            "side",
+            "size"
+          ],
+          "properties": {
+            "side": {
+              "const": "SELL"
+            },
+            "size": {
+              "$ref": "#/$defs/sellSize"
+            }
+          }
+        }
+      ]
+    },
+    "positionAgreement": {
+      "title": "Position id matches the side",
+      "description": "A SELL identifies the on-chain position being closed. A BUY must not name one.",
+      "oneOf": [
+        {
+          "title": "BUY closes no position",
+          "type": "object",
+          "required": [
+            "side"
+          ],
+          "properties": {
+            "side": {
+              "const": "BUY"
+            },
+            "positionId": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "title": "SELL names the position it closes",
+          "type": "object",
+          "required": [
+            "side",
+            "positionId"
+          ],
+          "properties": {
+            "side": {
+              "const": "SELL"
+            },
+            "positionId": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      ]
+    },
+    "maxSlippageBps": {
+      "title": "Maximum slippage (bps)",
+      "description": "Mandatory price protection. 10000 is rejected rather than clamped — it would remove all protection while still looking protected.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9999
+    },
+    "limit": {
+      "title": "Page size",
+      "description": "Rows to return. The server caps this at 200 and has no cursor yet.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 200
+    },
+    "idempotencyKey": {
+      "title": "Idempotency key",
+      "description": "One key per logical order intent, reused for every retry of that intent. Supply it to make the intent replayable across a process restart; omitted, the runtime mints one that only covers in-process retries.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "orderIntent": {
+      "title": "Order intent",
+      "description": "One price-protected market order. Each intent is independent: it has its own quote, idempotency key, execution and result, and no batch is atomic.",
+      "type": "object",
+      "required": [
+        "accountId",
+        "marketId",
+        "outcomeId",
+        "side",
+        "size",
+        "referenceQuoteId",
+        "maxSlippageBps"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "accountId": {
+          "$ref": "#/$defs/accountId"
+        },
+        "marketId": {
+          "$ref": "#/$defs/marketId"
+        },
+        "outcomeId": {
+          "$ref": "#/$defs/outcomeId"
+        },
+        "side": {
+          "$ref": "#/$defs/side"
+        },
+        "size": {
+          "$ref": "#/$defs/orderSize"
+        },
+        "positionId": {
+          "title": "Position id",
+          "description": "Required for a SELL: the on-chain position being closed. Absent for a BUY.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "referenceQuoteId": {
+          "title": "Reference quote id",
+          "description": "The executable quote this order is priced against, from market.quote. A quote lives seconds and is never extended, so obtain it immediately before the order — a catalog price is indicative and cannot be used here.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "maxSlippageBps": {
+          "$ref": "#/$defs/maxSlippageBps"
+        },
+        "worstAcceptablePrice": {
+          "$ref": "#/$defs/probabilityPrice",
+          "title": "Worst acceptable price",
+          "description": "A probability price in the inclusive range 0–1, as a decimal string. An absolute bound, applied only when it is stricter than the slippage budget. The price the chain enforces may be stricter still after granularity rounding, never looser."
+        },
+        "clientOrderId": {
+          "title": "Client order id",
+          "description": "A business label. NOT a substitute for the idempotency key.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "strategyId": {
+          "title": "Strategy id",
+          "description": "Attribution label carried onto executions and fills.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "idempotencyKey": {
+          "$ref": "#/$defs/idempotencyKey"
+        }
+      },
+      "allOf": [
+        {
+          "$ref": "#/$defs/sideSizeAgreement"
+        },
+        {
+          "$ref": "#/$defs/positionAgreement"
+        }
+      ]
+    }
+  },
+  "commands": [
+    {
+      "name": "market.list",
+      "cli": "market list",
+      "summary": "List the tradeable market catalog.",
+      "description": "Server-resolved market identity: this is how an agent obtains a marketId, and it must never construct one. Outcome prices in the result are INDICATIVE top-of-book and are not executable — call market.quote before acting on one. The status and tradeable filters are applied after the page is assembled, so a filtered page can be shorter than limit without the catalog being exhausted.",
+      "classification": "read",
+      "sideEffects": [
+        "NONE"
+      ],
+      "longRunning": false,
+      "idempotency": {
+        "required": false,
+        "callerSupplied": "UNSUPPORTED",
+        "note": "A read is safe to repeat; no key applies."
+      },
+      "confirmation": "NOT_REQUIRED",
+      "sdkMethod": "getMarkets",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "$ref": "#/$defs/limit"
+          },
+          "category": {
+            "title": "Category",
+            "description": "Server-defined catalog category, matched exactly.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "x-waterx-open-set": [
+              "FOOTBALL",
+              "BASKETBALL"
+            ]
+          },
+          "status": {
+            "title": "Market status",
+            "description": "A closed set on this API version.",
+            "type": "string",
+            "enum": [
+              "PREGAME",
+              "IN_PLAY",
+              "CLOSED",
+              "RESOLVED"
+            ]
+          },
+          "tradeable": {
+            "title": "Tradeable only",
+            "description": "Restrict to markets currently accepting orders.",
+            "type": "boolean"
+          },
+          "updatedAfter": {
+            "title": "Updated after",
+            "description": "ISO-8601 UTC instant. Only markets whose definition changed after it.",
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "examples": [
+        {
+          "title": "Tradeable football markets",
+          "input": {
+            "category": "FOOTBALL",
+            "tradeable": true,
+            "limit": 20
+          }
+        }
+      ]
+    },
+    {
+      "name": "market.get",
+      "cli": "market get",
+      "summary": "Read one market by its server-resolved id.",
+      "description": "Confirms a market resolved from market.list before an order. A closed market still resolves; an unknown id is an error rather than an empty result.",
+      "classification": "read",
+      "sideEffects": [
+        "NONE"
+      ],
+      "longRunning": false,
+      "idempotency": {
+        "required": false,
+        "callerSupplied": "UNSUPPORTED",
+        "note": "A read is safe to repeat; no key applies."
+      },
+      "confirmation": "NOT_REQUIRED",
+      "sdkMethod": "getMarket",
+      "input": {
+        "type": "object",
+        "required": [
+          "marketId"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "marketId": {
+            "$ref": "#/$defs/marketId"
+          }
+        }
+      },
+      "examples": [
+        {
+          "title": "Read one market",
+          "input": {
+            "marketId": "0x2222222222222222222222222222222222222222222222222222222222222222"
+          }
+        }
+      ]
+    },
+    {
+      "name": "market.quote",
+      "cli": "market quote",
+      "summary": "Mint a short-lived executable quote.",
+      "description": "The only price an order may be built on. A quote lives seconds and is never extended, so fetch it immediately before order.execute rather than caching it. Quotes are size-blind today: availableSize, expectedFillSize and feeAmount come back null and qualityFlags carries TOP_OF_BOOK_ONLY, so a large order can be correctly priced and still fail to fill.",
+      "classification": "read",
+      "sideEffects": [
+        "MINTS_QUOTE"
+      ],
+      "longRunning": false,
+      "idempotency": {
+        "required": false,
+        "callerSupplied": "UNSUPPORTED",
+        "note": "A read is safe to repeat; no key applies."
+      },
+      "confirmation": "NOT_REQUIRED",
+      "sdkMethod": "getQuote",
+      "input": {
+        "type": "object",
+        "required": [
+          "marketId",
+          "outcomeId",
+          "side",
+          "size"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "marketId": {
+            "$ref": "#/$defs/marketId"
+          },
+          "outcomeId": {
+            "$ref": "#/$defs/outcomeId"
+          },
+          "side": {
+            "$ref": "#/$defs/side"
+          },
+          "size": {
+            "$ref": "#/$defs/orderSize"
+          }
+        },
+        "allOf": [
+          {
+            "$ref": "#/$defs/sideSizeAgreement"
+          }
+        ]
+      },
+      "examples": [
+        {
+          "title": "Price a 50 wxUSD buy",
+          "input": {
+            "marketId": "0x2222222222222222222222222222222222222222222222222222222222222222",
+            "outcomeId": "YES",
+            "side": "BUY",
+            "size": {
+              "buyAmount": "50"
+            }
+          }
+        },
+        {
+          "title": "Price closing 100 shares",
+          "input": {
+            "marketId": "0x2222222222222222222222222222222222222222222222222222222222222222",
+            "outcomeId": "YES",
+            "side": "SELL",
+            "size": {
+              "sellShares": "100"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "account.allowance",
+      "cli": "account allowance",
+      "summary": "Read the remaining API allowance and spendable balance.",
+      "description": "apiAllowance and accountSpendableBalance are separate facts — a direct-chain spend moves one without the other — so size against effectiveBuyCapacity, the smaller of the two. The API allowance is a WaterX policy, not an on-chain security boundary.",
+      "classification": "read",
+      "sideEffects": [
+        "NONE"
+      ],
+      "longRunning": false,
+      "idempotency": {
+        "required": false,
+        "callerSupplied": "UNSUPPORTED",
+        "note": "A read is safe to repeat; no key applies."
+      },
+      "confirmation": "NOT_REQUIRED",
+      "sdkMethod": "getAllowance",
+      "input": {
+        "type": "object",
+        "required": [
+          "accountId"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "accountId": {
+            "$ref": "#/$defs/accountId"
+          }
+        }
+      },
+      "examples": [
+        {
+          "title": "Read allowance",
+          "input": {
+            "accountId": "0x1111111111111111111111111111111111111111111111111111111111111111"
+          }
+        }
+      ]
+    },
+    {
+      "name": "account.positions",
+      "cli": "account positions",
+      "summary": "List positions this agent opened, with cost basis and unrealized PnL.",
+      "description": "A SELL needs the positionId from here. Scope is API-attributed activity: a direct-chain trade by the same delegated key is not included.",
+      "classification": "read",
+      "sideEffects": [
+        "NONE"
+      ],
+      "longRunning": false,
+      "idempotency": {
+        "required": false,
+        "callerSupplied": "UNSUPPORTED",
+        "note": "A read is safe to repeat; no key applies."
+      },
+      "confirmation": "NOT_REQUIRED",
+      "sdkMethod": "getPositions",
+      "input": {
+        "type": "object",
+        "required": [
+          "accountId"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "accountId": {
+            "$ref": "#/$defs/accountId"
+          },
+          "limit": {
+            "$ref": "#/$defs/limit"
+          }
+        },
+        "description": "Positions on one account, newest first."
+      },
+      "examples": [
+        {
+          "title": "List positions",
+          "input": {
+            "accountId": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "limit": 50
+          }
+        }
+      ]
+    },
+    {
+      "name": "account.executions",
+      "cli": "account executions",
+      "summary": "List this agent’s executions on one account.",
+      "description": "Order history including non-terminal rows. SUBMITTED and PENDING_FILL are not fills — read the terminal status before reporting a trade as done. Paging is limit-only today; there is no cursor, so a complete history cannot be reconstructed past the cap.",
+      "classification": "read",
+      "sideEffects": [
+        "NONE"
+      ],
+      "longRunning": false,
+      "idempotency": {
+        "required": false,
+        "callerSupplied": "UNSUPPORTED",
+        "note": "A read is safe to repeat; no key applies."
+      },
+      "confirmation": "NOT_REQUIRED",
+      "sdkMethod": "listExecutions",
+      "input": {
+        "type": "object",
+        "required": [
+          "accountId"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "accountId": {
+            "$ref": "#/$defs/accountId"
+          },
+          "limit": {
+            "$ref": "#/$defs/limit"
+          }
+        },
+        "description": "Executions on one account, newest first."
+      },
+      "examples": [
+        {
+          "title": "List executions",
+          "input": {
+            "accountId": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "limit": 50
+          }
+        }
+      ]
+    },
+    {
+      "name": "account.fills",
+      "cli": "account fills",
+      "summary": "List confirmed fills, with the quote each was priced against.",
+      "description": "Authoritative fill facts: filled amount, shares, average price and the keeper transaction that settled it — which is a different transaction from the agent’s submission. actualFee is null rather than zero, because the published price is already fee-adjusted and no separate fee is observable.",
+      "classification": "read",
+      "sideEffects": [
+        "NONE"
+      ],
+      "longRunning": false,
+      "idempotency": {
+        "required": false,
+        "callerSupplied": "UNSUPPORTED",
+        "note": "A read is safe to repeat; no key applies."
+      },
+      "confirmation": "NOT_REQUIRED",
+      "sdkMethod": "getFills",
+      "input": {
+        "type": "object",
+        "required": [
+          "accountId"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "accountId": {
+            "$ref": "#/$defs/accountId"
+          },
+          "limit": {
+            "$ref": "#/$defs/limit"
+          }
+        },
+        "description": "Fills on one account, newest first."
+      },
+      "examples": [
+        {
+          "title": "List fills",
+          "input": {
+            "accountId": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "limit": 50
+          }
+        }
+      ]
+    },
+    {
+      "name": "order.get",
+      "cli": "order get",
+      "summary": "Read one execution by id.",
+      "description": "The reconciliation path. After a timeout the execution id is still valid and the order may still fill, so this is how a caller resolves an ambiguous outcome — never by resubmitting with a new idempotency key.",
+      "classification": "read",
+      "sideEffects": [
+        "NONE"
+      ],
+      "longRunning": false,
+      "idempotency": {
+        "required": false,
+        "callerSupplied": "UNSUPPORTED",
+        "note": "A read is safe to repeat; no key applies."
+      },
+      "confirmation": "NOT_REQUIRED",
+      "sdkMethod": "getExecution",
+      "input": {
+        "type": "object",
+        "required": [
+          "executionId"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "executionId": {
+            "title": "Execution id",
+            "description": "Returned by order.execute, and preserved even when a wait times out.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        }
+      },
+      "examples": [
+        {
+          "title": "Reconcile one execution",
+          "input": {
+            "executionId": "exec_example_000000000"
+          }
+        }
+      ]
+    },
+    {
+      "name": "order.execute",
+      "cli": "order execute",
+      "summary": "Place one price-protected market order.",
+      "description": "Create, sign and submit, as one command. maxSlippageBps is mandatory and the server re-quotes at execution time, so the price is protected but the fill is not guaranteed. A BUY states buyAmount and a SELL states sellShares plus the positionId being closed; the units are not interchangeable and an ambiguous intent stops here rather than trading. One idempotency key covers the whole logical intent including retries.",
+      "classification": "write",
+      "sideEffects": [
+        "SIGNS_TRANSACTION",
+        "MOVES_FUNDS"
+      ],
+      "longRunning": true,
+      "idempotency": {
+        "required": true,
+        "callerSupplied": "OPTIONAL",
+        "note": "Supply idempotencyKey to make the intent replayable across a process restart. Omitted, the runtime mints one that covers in-process retries only. A retry must reuse the same key and the same bytes."
+      },
+      "confirmation": "REQUIRED_UNLESS_DELEGATED",
+      "sdkMethod": "executeMarketOrder",
+      "input": {
+        "type": "object",
+        "required": [
+          "accountId",
+          "marketId",
+          "outcomeId",
+          "side",
+          "size",
+          "referenceQuoteId",
+          "maxSlippageBps"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "accountId": {
+            "$ref": "#/$defs/accountId"
+          },
+          "marketId": {
+            "$ref": "#/$defs/marketId"
+          },
+          "outcomeId": {
+            "$ref": "#/$defs/outcomeId"
+          },
+          "side": {
+            "$ref": "#/$defs/side"
+          },
+          "size": {
+            "$ref": "#/$defs/orderSize"
+          },
+          "positionId": {
+            "title": "Position id",
+            "description": "Required for a SELL: the on-chain position being closed. Absent for a BUY.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "referenceQuoteId": {
+            "title": "Reference quote id",
+            "description": "The executable quote this order is priced against, from market.quote. A quote lives seconds and is never extended, so obtain it immediately before the order — a catalog price is indicative and cannot be used here.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "maxSlippageBps": {
+            "$ref": "#/$defs/maxSlippageBps"
+          },
+          "worstAcceptablePrice": {
+            "$ref": "#/$defs/probabilityPrice",
+            "title": "Worst acceptable price",
+            "description": "A probability price in the inclusive range 0–1, as a decimal string. An absolute bound, applied only when it is stricter than the slippage budget. The price the chain enforces may be stricter still after granularity rounding, never looser."
+          },
+          "clientOrderId": {
+            "title": "Client order id",
+            "description": "A business label. NOT a substitute for the idempotency key.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "strategyId": {
+            "title": "Strategy id",
+            "description": "Attribution label carried onto executions and fills.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "$ref": "#/$defs/idempotencyKey"
+          },
+          "waitFor": {
+            "title": "Settle at",
+            "description": "SUBMITTED returns once the order is on-chain; TERMINAL waits for the authoritative fill facts. The order is placed either way — this only decides when the call returns.",
+            "type": "string",
+            "enum": [
+              "SUBMITTED",
+              "TERMINAL"
+            ]
+          },
+          "timeoutMs": {
+            "title": "Terminal wait timeout (ms)",
+            "description": "Bounds a TERMINAL wait. Exceeding it does NOT cancel the order and is not a failure: the execution id remains valid and must be reconciled with order.get.",
+            "type": "integer",
+            "minimum": 1000,
+            "maximum": 600000
+          }
+        },
+        "allOf": [
+          {
+            "$ref": "#/$defs/sideSizeAgreement"
+          },
+          {
+            "$ref": "#/$defs/positionAgreement"
+          }
+        ]
+      },
+      "examples": [
+        {
+          "title": "Buy 50 wxUSD of YES with 1% slippage protection",
+          "input": {
+            "accountId": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "marketId": "0x2222222222222222222222222222222222222222222222222222222222222222",
+            "outcomeId": "YES",
+            "side": "BUY",
+            "size": {
+              "buyAmount": "50"
+            },
+            "referenceQuoteId": "quo_example_0000000000",
+            "maxSlippageBps": 100,
+            "waitFor": "TERMINAL"
+          }
+        },
+        {
+          "title": "Close 100 shares of a position",
+          "input": {
+            "accountId": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "marketId": "0x2222222222222222222222222222222222222222222222222222222222222222",
+            "outcomeId": "YES",
+            "side": "SELL",
+            "size": {
+              "sellShares": "100"
+            },
+            "positionId": "0x3333333333333333333333333333333333333333333333333333333333333333",
+            "referenceQuoteId": "quo_example_0000000000",
+            "maxSlippageBps": 50,
+            "worstAcceptablePrice": "0.82"
+          }
+        }
+      ]
+    },
+    {
+      "name": "order.execute-many",
+      "cli": "order execute-many",
+      "summary": "Place several independent orders.",
+      "description": "Client-side orchestration, not a backend batch and not atomic. Every leg has its own quote, idempotency key, execution and result, and partial success is the expected outcome. failurePolicy STOP prevents legs that have not launched from launching; it cannot cancel or roll back one already submitted or filled. Results report succeeded, failed and skipped legs distinctly.",
+      "classification": "write",
+      "sideEffects": [
+        "SIGNS_TRANSACTION",
+        "MOVES_FUNDS"
+      ],
+      "longRunning": true,
+      "idempotency": {
+        "required": true,
+        "callerSupplied": "OPTIONAL",
+        "note": "One key per leg, not one per call. A leg without an explicit key gets a runtime-minted one covering in-process retries only."
+      },
+      "confirmation": "REQUIRED_UNLESS_DELEGATED",
+      "sdkMethod": "executeMany",
+      "input": {
+        "type": "object",
+        "required": [
+          "orders"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "orders": {
+            "title": "Legs",
+            "description": "Independent order intents. No ordering or atomicity is implied.",
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 20,
+            "items": {
+              "$ref": "#/$defs/orderIntent"
+            }
+          },
+          "concurrency": {
+            "title": "Concurrency",
+            "description": "How many legs may be in flight at once. A quote lives seconds, so legs are quoted close to their own execution rather than all up front.",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10
+          },
+          "failurePolicy": {
+            "title": "Failure policy",
+            "description": "STOP stops launching further legs after a failure. CONTINUE attempts every leg. Neither can undo a leg already submitted.",
+            "type": "string",
+            "enum": [
+              "STOP",
+              "CONTINUE"
+            ]
+          },
+          "waitFor": {
+            "title": "Settle at",
+            "description": "SUBMITTED returns once the order is on-chain; TERMINAL waits for the authoritative fill facts. The order is placed either way — this only decides when the call returns.",
+            "type": "string",
+            "enum": [
+              "SUBMITTED",
+              "TERMINAL"
+            ]
+          },
+          "timeoutMs": {
+            "title": "Terminal wait timeout (ms)",
+            "description": "Bounds a TERMINAL wait. Exceeding it does NOT cancel the order and is not a failure: the execution id remains valid and must be reconciled with order.get.",
+            "type": "integer",
+            "minimum": 1000,
+            "maximum": 600000
+          }
+        }
+      },
+      "examples": [
+        {
+          "title": "Two independent buys, stop on the first failure",
+          "input": {
+            "orders": [
+              {
+                "accountId": "0x1111111111111111111111111111111111111111111111111111111111111111",
+                "marketId": "0x2222222222222222222222222222222222222222222222222222222222222222",
+                "outcomeId": "YES",
+                "side": "BUY",
+                "size": {
+                  "buyAmount": "25"
+                },
+                "referenceQuoteId": "quo_example_0000000000",
+                "maxSlippageBps": 100
+              },
+              {
+                "accountId": "0x1111111111111111111111111111111111111111111111111111111111111111",
+                "marketId": "0x2222222222222222222222222222222222222222222222222222222222222222",
+                "outcomeId": "NO",
+                "side": "BUY",
+                "size": {
+                  "buyAmount": "25"
+                },
+                "referenceQuoteId": "quo_example_0000000000",
+                "maxSlippageBps": 100
+              }
+            ],
+            "concurrency": 2,
+            "failurePolicy": "STOP"
+          }
+        }
+      ]
+    }
+  ]
+}

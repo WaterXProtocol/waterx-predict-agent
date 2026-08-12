@@ -5,10 +5,16 @@ entire repository.
 
 ## Mission and scope
 
-This repository contains the Node.js TypeScript SDK for the WaterX Predict Agent
-Trading API. It is an SDK-only repository: it does not own the REST service,
-quote production, on-chain contracts, delegation, monitoring dashboards, or an
-agent's trading strategy.
+This repository is the pnpm workspace for the WaterX Predict agent runtime. Its
+centre is the Node.js TypeScript SDK for the Agent Trading API; alongside it sit
+the versioned agent command contract and reserved boundaries for the CLI, the
+local Runner and optional adapters (ADR-0001 §4). It does not own the REST
+service, quote production, on-chain contracts, delegation, monitoring dashboards,
+or an agent's trading strategy.
+
+The SDK is the execution core. Every other surface in this workspace validates
+against the command contract and compiles down to the same SDK call; none of them
+implements its own quoting, retry, signing, policy or job state.
 
 Keep the product boundary clear:
 
@@ -23,10 +29,12 @@ Keep the product boundary clear:
 - Delegation is an external authorization boundary. The SDK authenticates the
   agent wallet and reports server decisions; it does not implement, emulate, or
   weaken delegation.
-- Do not add Python, MCP/Skill packaging, backend condition storage, dashboards,
-  or server code here unless a task explicitly changes this repository's scope.
+- Do not add Python, backend condition storage, dashboards, or server code here
+  unless a task explicitly changes this repository's scope. An MCP adapter has a
+  reserved package boundary (`packages/mcp`) and is a thin translation over the
+  command contract when it is built — never a second command surface.
 
-The package has not been published yet. Prefer a coherent, clean public API over
+No package here has been published yet. Prefer a coherent, clean public API over
 compatibility scaffolding when a redesign is warranted. A breaking change is
 still an atomic change: update the wire contract, client, exports, tests, and
 README together; do not leave two competing semantics in the package.
@@ -90,6 +98,26 @@ determine which checkout the task targets. Never overwrite one side blindly.
 
 ## Repository map
 
+The workspace is `packages/*`, declared in `pnpm-workspace.yaml`. Shared compiler
+options live in `tsconfig.base.json`; the root `package.json` is private and only
+orchestrates.
+
+| Package | Name | State |
+| --- | --- | --- |
+| `packages/sdk` | `@waterx/predict-agent-sdk` | Published surface, implemented |
+| `packages/schema` | `@waterx/predict-agent-schema` | Published surface, implemented |
+| `packages/cli` | `@waterx/predict-agent-cli` | Reserved boundary, **not implemented** |
+| `packages/runner` | `@waterx/predict-agent-runner` | Reserved boundary, **not implemented** |
+| `packages/mcp` | `@waterx/predict-agent-mcp` | Reserved boundary, **not implemented** |
+
+Dependency direction is one-way and enforced by `tests/workspace.test.ts`: the
+SDK depends on nothing else here, the schema depends on nothing else here, and
+CLI/Runner/adapters depend on both. That is the whole point of the split — daemon,
+storage, CLI-parsing and adapter dependencies must never reach the published SDK
+library.
+
+Inside `packages/sdk`:
+
 - `src/contract.ts` — vendored, import-free public wire contract.
 - `src/client.ts` — agent-facing client and orchestration helpers.
 - `src/transport.ts` — URL construction, auth headers, error decoding, and safe
@@ -102,14 +130,48 @@ determine which checkout the task targets. Never overwrite one side blindly.
 - `README.md` — developer-facing quickstart, limitations, and operational
   semantics.
 
+Inside `packages/schema`:
+
+- `src/json-schema.ts` — the enforceable JSON Schema subset and its validator.
+- `src/defs.ts` — shared field rules, mirrored from the backend DTOs.
+- `src/commands.ts` — the command registry: one entry per agent-issuable command.
+- `src/document.ts`, `src/generate.ts` — emit `schemas/v1/agent-commands.json`.
+- `src/validate.ts` — `validateCommandInput`, the runtime gate every surface uses.
+
+Elsewhere:
+
+- `schemas/` — **generated**, committed artifacts. Never hand-edit; run
+  `pnpm schema:generate`.
+- `tests/` — cross-package invariants only (boundaries, dependency direction,
+  published-package hygiene, command-to-SDK-method drift).
+
 Keep those responsibilities separated. Route construction and retry policy do
 not belong in individual helpers, wire types do not import client code, and
 protocol transaction construction does not belong in this SDK.
 
+## Command-contract discipline
+
+`packages/schema` is the single source of truth for what an agent may ask for
+(ADR-0001 §5, ADR-0006). Two contracts exist and they are not the same thing: the
+**wire** contract says what an HTTP request looks like and is owned by the
+backend; the **command** contract says what an intent looks like and is owned
+here.
+
+- Author command inputs as plain JSON Schema in `packages/schema/src`, then
+  regenerate. The committed artifact is compared byte-for-byte by a test.
+- A keyword outside the validator's subset is a hard error. Widening the subset
+  is a deliberate edit plus a test, never an accident in a schema definition.
+- `enum` is closed and enforced; `x-waterx-open-set` is an annotation and must
+  never be enforced.
+- Validation never coerces. It returns the input unchanged or a list of
+  violations.
+- Do not add a command entry for a capability the execution core cannot perform.
+  A schema entry is what an adapter turns into an advertised, callable tool.
+
 ## Wire-contract discipline
 
-`src/contract.ts` is a vendored copy of the backend contract with an SDK-specific
-header. Its contract body must match the authoritative backend file. The file
+`packages/sdk/src/contract.ts` is a vendored copy of the backend contract with an
+SDK-specific header. Its contract body must match the authoritative backend file. The file
 must remain self-contained and have zero imports so it can be published without
 pulling in NestJS, the Sui SDK, or backend domain code.
 
@@ -117,8 +179,8 @@ When changing the contract:
 
 1. Establish the intended API behavior in the authoritative backend contract.
 2. Update backend DTOs/controllers/services and their contract/route tests.
-3. Sync the complete contract body into `src/contract.ts`, retaining only the
-   SDK-specific vendoring header difference.
+3. Sync the complete contract body into `packages/sdk/src/contract.ts`, retaining
+   only the SDK-specific vendoring header difference.
 4. Update client methods, package exports, tests, and README in the same change.
 5. Inspect a full diff between the two contract files. The local route-map test
    is useful but does not prove that every type is synchronized.
@@ -272,8 +334,10 @@ While editing:
   reasoning. Do not narrate obvious syntax.
 - Keep `README.md` truthful. A developer following its quickstart should see the
   real API, required safeguards, and current limitations.
-- Ensure every intended public value is exported through `src/index.ts` and is
-  present in the built package.
+- Ensure every intended public value is exported through the owning package's
+  `src/index.ts` and is present in its built `dist`.
+- When a change alters what an agent may ask for, update `packages/schema` and
+  regenerate `schemas/` in the same change.
 
 Because the package is pre-release, remove obsolete API shapes rather than
 keeping confusing aliases by default. Do not claim a capability is implemented
@@ -308,7 +372,7 @@ substitute confidence for evidence.
 
 ## Required verification
 
-For every code change, run from this repository:
+For every code change, run from the workspace root:
 
 ```bash
 pnpm typecheck
@@ -316,7 +380,10 @@ pnpm test
 pnpm build
 ```
 
-Run focused tests during development, then all three commands before handoff.
+Each fans out across the workspace: the root suite covers cross-package
+invariants, then `pnpm -r` runs every package's own. Run a focused suite during
+development with `pnpm --filter <package> run test`, then all three root commands
+before handoff.
 Documentation-only changes do not require inventing code changes, but still
 inspect links, commands, paths, and claims against the current repository.
 

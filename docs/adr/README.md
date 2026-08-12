@@ -16,6 +16,7 @@ wins and the plan should be corrected.
 | [0003](0003-risk-profile-ownership.md) | Risk-profile ownership and agent-readable limits | Accepted | D-13 |
 | [0004](0004-market-lifecycle-and-job-pausing.md) | Market lifecycle effects on a durable job | Accepted | D-18 |
 | [0005](0005-strategy-expiry.md) | Mandatory strategy expiry | Accepted | D-22 |
+| [0006](0006-agent-command-schema-mechanism.md) | How the agent command schema is authored and enforced | Accepted | ADR-0001 §5 |
 
 ## Status vocabulary
 

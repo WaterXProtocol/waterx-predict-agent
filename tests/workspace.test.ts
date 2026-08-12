@@ -9,6 +9,9 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
+import { AGENT_COMMANDS } from '../packages/schema/src/index.ts';
+import { PredictAgentClient } from '../packages/sdk/src/index.ts';
+
 /** Repository root, with a trailing slash. */
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 
@@ -21,7 +24,7 @@ const PACKAGE_DIRS = readdirSync(`${ROOT}packages`).filter((entry) =>
 );
 
 /** Packages that ship to a registry. Everything else must be `private`. */
-const PUBLISHED = new Set(['sdk']);
+const PUBLISHED = new Set(['sdk', 'schema']);
 
 /** Reserved boundaries with no implementation. They must not look like one. */
 const RESERVED = new Set(['cli', 'runner', 'mcp']);
@@ -85,6 +88,12 @@ describe('dependency direction', () => {
     expect(workspaceEdges('sdk')).toEqual([]);
   });
 
+  it('keeps the schema independent of the SDK', () => {
+    // The command contract has to be readable by a surface that cannot import a
+    // Node client — that is why it is published as plain JSON at all.
+    expect(workspaceEdges('schema')).toEqual([]);
+  });
+
   it('keeps the published packages free of runtime dependencies', () => {
     for (const dir of PUBLISHED) {
       expect(manifest(dir).dependencies, dir).toBeUndefined();
@@ -100,6 +109,27 @@ describe('dependency direction', () => {
         }
       }
     }
+  });
+
+  it('never lets the schema reach into another package by relative path', () => {
+    for (const file of sourceFiles('packages/schema/src')) {
+      expect(read(file), file).not.toMatch(/from '\.\.\/\.\.\//u);
+    }
+  });
+});
+
+describe('published package hygiene', () => {
+  it('keeps the SDK import surface exactly where it was before the split', () => {
+    // Moving the sources must not move the published entry points. A consumer's
+    // `import { PredictAgentClient } from '@waterx/predict-agent-sdk'` has to
+    // resolve to the same file it did before.
+    const pkg = manifest('sdk');
+    expect(pkg.name).toBe('@waterx/predict-agent-sdk');
+    expect(pkg.main).toBe('dist/src/index.js');
+    expect(pkg.types).toBe('dist/src/index.d.ts');
+    expect(pkg.exports).toEqual({
+      '.': { types: './dist/src/index.d.ts', import: './dist/src/index.js' },
+    });
   });
 
   it('declares a coherent, ESM, Node 20+ surface for each published package', () => {
@@ -143,6 +173,25 @@ describe('reserved boundaries', () => {
     for (const dir of RESERVED) {
       expect(read(`packages/${dir}/README.md`).toLowerCase(), dir).toContain('not implemented');
     }
+  });
+});
+
+describe('the command contract compiles to the SDK', () => {
+  it('names a method that actually exists on the client', () => {
+    // The contract's promise is that every surface issuing the same intent makes
+    // the same call (ADR-0001 §1). A `sdkMethod` naming a method that was
+    // renamed or never existed breaks that silently, at the adapter.
+    const client = PredictAgentClient.prototype as unknown as Record<string, unknown>;
+    for (const command of AGENT_COMMANDS) {
+      expect(typeof client[command.sdkMethod], `${command.name} -> ${command.sdkMethod}`).toBe(
+        'function',
+      );
+    }
+  });
+
+  it('maps each command to a distinct method', () => {
+    const methods = AGENT_COMMANDS.map((command) => command.sdkMethod);
+    expect(new Set(methods).size).toBe(methods.length);
   });
 });
 
