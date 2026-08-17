@@ -323,6 +323,56 @@ export class PredictAgentClient {
   }
 
   /**
+   * Create an execution and get back the bytes to sign. Half of a market order.
+   *
+   * Exposed separately from {@link PredictAgentClient.executeMarketOrder} for one
+   * caller: a durable Runner, which must write the execution id to disk between
+   * the create and the submit so a crash in between is resolvable by reading the
+   * execution back rather than by sending a second one. A caller that does not
+   * need that boundary should use `executeMarketOrder` and never see it.
+   *
+   * `idempotencyKey` is required here rather than defaulted. A key this method
+   * minted would live only as long as the call, which is precisely the guarantee
+   * a caller reaching for the two-step form is trying not to have.
+   */
+  async createExecution(
+    request: CreateExecutionRequestBody,
+    options: { idempotencyKey: string; signal?: AbortSignal },
+  ): Promise<CreateExecutionResponseBody> {
+    return await this.transport.request<CreateExecutionResponseBody>({
+      method: 'POST',
+      path: PREDICT_AGENT_API_ROUTES.executions,
+      body: request,
+      authenticated: true,
+      idempotencyKey: options.idempotencyKey,
+      idempotent: true,
+      ...(options.signal !== undefined ? { signal: options.signal } : {}),
+    });
+  }
+
+  /**
+   * Submit the signature for an execution this client already created.
+   *
+   * Retried on the caller's behalf because the server makes a repeated signature
+   * submission a no-op; the execution id, not a fresh key, is what makes that
+   * safe.
+   */
+  async submitExecution(
+    executionId: string,
+    signature: string,
+    signal?: AbortSignal,
+  ): Promise<SubmitExecutionResponseBody> {
+    return await this.transport.request<SubmitExecutionResponseBody>({
+      method: 'POST',
+      path: PREDICT_AGENT_API_ROUTES.submitExecution.replace(':executionId', executionId),
+      body: { signature },
+      authenticated: true,
+      idempotent: true,
+      ...(signal !== undefined ? { signal } : {}),
+    });
+  }
+
+  /**
    * Create → sign → submit, as one call.
    *
    * The create is retried under a STABLE key, so a timeout mid-create resolves to
@@ -343,28 +393,17 @@ export class PredictAgentClient {
     const idempotencyKey = intent.idempotencyKey ?? randomUUID();
     const { idempotencyKey: _ignored, ...body } = intent;
 
-    const created = await this.transport.request<CreateExecutionResponseBody>({
-      method: 'POST',
-      path: PREDICT_AGENT_API_ROUTES.executions,
-      body,
-      authenticated: true,
+    const created = await this.createExecution(body, {
       idempotencyKey,
-      idempotent: true,
       ...(options.signal !== undefined ? { signal: options.signal } : {}),
     });
 
     const signature = await signBase64(this.signer, created.sponsoredTransactionBytes);
-    const submitted = await this.transport.request<SubmitExecutionResponseBody>({
-      method: 'POST',
-      path: PREDICT_AGENT_API_ROUTES.submitExecution.replace(
-        ':executionId',
-        created.executionId,
-      ),
-      body: { signature },
-      authenticated: true,
-      idempotent: true,
-      ...(options.signal !== undefined ? { signal: options.signal } : {}),
-    });
+    const submitted = await this.submitExecution(
+      created.executionId,
+      signature,
+      options.signal,
+    );
 
     const outcome =
       options.waitFor === 'TERMINAL'
