@@ -11,11 +11,12 @@
  * `implementation`, which is what keeps two hosts issuing the same intent from
  * producing two different requests (ADR-0001 §3).
  *
- * SCOPE OF v1: only commands the execution core can actually perform today. The
- * `strategy` family is named in the plan but has no implementation, and a schema
- * entry is exactly what an adapter would turn into an advertised tool. Those are
- * added when they exist — the document is versioned and adding a command is
- * backwards-compatible.
+ * SCOPE OF v1: only commands the execution core can actually perform today. A
+ * schema entry is exactly what an adapter turns into an advertised tool, so a
+ * name appears here only once something can honour it. The document is versioned
+ * and adding a command is backwards-compatible, which is how the `strategy`
+ * family arrived: it was absent while the Runner could not execute a job, and it
+ * is here now that one can (`docs/IMPLEMENTATION_BACKLOG.md` 2.8).
  *
  * `market history` is absent for a different reason: the API has no endpoint
  * behind it (D-25). The CLI still answers it, with a symbolic
@@ -33,7 +34,12 @@ import type { JsonSchema } from './json-schema.ts';
 /** Bumped only for a breaking change to a command input. Additions are not breaking. */
 export const AGENT_COMMAND_SCHEMA_VERSION = '1';
 
-/** Whether the command can move funds. `write` covers anything that can. */
+/**
+ * Whether the command changes anything. `write` covers anything that can move
+ * funds, and anything that changes durable state a later trade is decided from —
+ * arming a strategy moves nothing today and is the reason something trades
+ * tomorrow, so calling it a read would be the most expensive kind of accurate.
+ */
 export type AgentCommandClassification = 'read' | 'write';
 
 export type AgentCommandSideEffect =
@@ -84,10 +90,25 @@ export interface AgentCommandExample {
  * discovery, which is exactly the divergence this document prevents. A `runtime`
  * command must never be a second way to trade — it may compose SDK reads and
  * report local facts, and nothing else.
+ *
+ * `runner` is the third kind, and it is not a way to trade either — it is a way
+ * to ASK the local Runner, which is the process that trades. A surface honouring
+ * one of these opens the Runner's authenticated local socket, hands over the
+ * input unchanged, and renders the answer. It decides nothing: expiry, sizing,
+ * the position read and the mandate are the Runner's, so a strategy created from
+ * the CLI and one created from an adapter are the same job under the same rules.
+ * The distinction from `runtime` is exactly that a `runtime` command may not
+ * cause a trade and one of these may — see `AgentCommandClassification`.
  */
 export type AgentCommandImplementation =
   | { readonly kind: 'sdk'; readonly method: string }
-  | { readonly kind: 'runtime'; readonly note: string };
+  | { readonly kind: 'runtime'; readonly note: string }
+  | {
+      readonly kind: 'runner';
+      /** The command name on the Runner's local IPC surface. */
+      readonly command: string;
+      readonly note: string;
+    };
 
 export interface AgentCommandSpec {
   /** Stable dotted identifier, e.g. `order.execute`. Adapters key on this. */
@@ -114,8 +135,11 @@ export interface AgentCommandSpec {
 const EXAMPLE_ACCOUNT_ID = `0x${'11'.repeat(32)}`;
 const EXAMPLE_MARKET_ID = `0x${'22'.repeat(32)}`;
 const EXAMPLE_POSITION_ID = `0x${'33'.repeat(32)}`;
+const EXAMPLE_OWNER_ADDRESS = `0x${'44'.repeat(32)}`;
+const EXAMPLE_AGENT_WALLET = `0x${'55'.repeat(32)}`;
 const EXAMPLE_QUOTE_ID = 'quo_example_0000000000';
 const EXAMPLE_EXECUTION_ID = 'exec_example_000000000';
+const EXAMPLE_JOB_ID = 'job_example_00000000000';
 /** Obviously not a real cursor: a caller must only ever echo one back verbatim. */
 const EXAMPLE_CURSOR = 'ZXhhbXBsZS1jdXJzb3ItZG8tbm90LWNvbnN0cnVjdA';
 
@@ -746,6 +770,265 @@ const accountStatus: AgentCommandSpec = {
   examples: [{ title: 'Read account status', input: { accountId: EXAMPLE_ACCOUNT_ID } }],
 };
 
+/* ── Strategy commands ───────────────────────────────────────────────────────
+ * A durable conditional job, held by the local Runner (ADR-0001 §6, ADR-0008).
+ *
+ * These are the only commands whose implementation is neither an SDK call nor a
+ * local computation: the surface hands the input to a Runner over its
+ * authenticated Unix socket and renders the answer. NOTHING about a strategy is
+ * decided by the surface — not the expiry, not which sizing field wins, not the
+ * position read a percentage is frozen against, and above all not the mandate,
+ * which is that machine's configuration and cannot be named in a request. Two
+ * hosts asking the same Runner for the same strategy therefore get the same job.
+ *
+ * The honest caveat, repeated in every summary because operators lose money on
+ * it: a strategy runs only while a Runner runs. Nothing server-side stores a
+ * price target, so a closed laptop is a strategy that is not watching. `create`
+ * reports `driving` for exactly this reason. */
+
+const STRATEGY_STATES: readonly string[] = [
+  'DRAFT',
+  'WATCHING',
+  'PAUSED',
+  'TRIGGERED',
+  'QUOTING',
+  'CREATING',
+  'AWAITING_SIGNATURE',
+  'SUBMITTING',
+  'SUBMITTED',
+  'RECONCILING',
+  'UNKNOWN_PENDING',
+  'FILLED',
+  'FAILED',
+  'CANCELLED',
+  'EXPIRED',
+];
+
+const strategyCreate: AgentCommandSpec = {
+  name: 'strategy.create',
+  cli: 'strategy create',
+  summary: 'Arm a durable conditional job on the local Runner. Can trade later, unattended.',
+  description:
+    'Creates a strategy the Runner owns and advances. It places nothing now and can place orders later WITHOUT a human present, which is why it is a write. expiresAt is MANDATORY and capped at seven days in this beta — the cap is refused, never clamped, because a silently shortened horizon is a strategy that stops watching at an hour nobody chose. Exactly one sizing field per leg: buyAmount for a BUY, and for a SELL one of sellShares, sellFractionOfPosition (a share count frozen NOW against a real position read) or dynamicSellFractionOfPosition (re-read at the trigger, so a position that grew sells more). Legs execute independently, each with its own quote and idempotency key, and none is rolled back because another failed. Every rule here belongs to the Runner and is named in its refusal — this surface re-decides none of them. The mandate is the Runner’s own configuration: there is no policy field, and the default configuration REFUSES to arm anything, so an unattended host cannot be talked into one. A Runner that is not driving still accepts this call and writes a real job that nothing will advance, so the reply carries driving and driverGaps; treat driving: false as "armed and asleep".',
+  classification: 'write',
+  sideEffects: ['MOVES_FUNDS'],
+  longRunning: false,
+  idempotency: {
+    required: false,
+    callerSupplied: 'UNSUPPORTED',
+    note: 'No key makes this repeatable: the Runner does not deduplicate creates, so a second call arms a SECOND strategy and both will trade. strategyId is an attribution label, not a key. If a create fails without an answer, LIST before retrying.',
+  },
+  confirmation: 'REQUIRED_UNLESS_DELEGATED',
+  implementation: {
+    kind: 'runner',
+    command: 'strategy.create',
+    note: 'Handed to the local Runner unchanged. The Runner normalizes sizing, enforces the expiry cap, reads the position a frozen fraction needs, and applies its own mandate.',
+  },
+  input: {
+    type: 'object',
+    required: ['ownerAddress', 'accountId', 'agentWallet', 'legs', 'trigger'],
+    additionalProperties: false,
+    properties: {
+      strategyId: {
+        title: 'Strategy id',
+        description:
+          'An attribution label, carried onto the executions this strategy produces and usable as a `strategy list` filter. NOT an idempotency key: two creates with the same label are two strategies.',
+        type: 'string',
+        minLength: 1,
+        maxLength: 128,
+      },
+      ownerAddress: { $ref: '#/$defs/ownerAddress' },
+      accountId: { $ref: '#/$defs/accountId' },
+      agentWallet: { $ref: '#/$defs/agentWallet' },
+      legs: {
+        title: 'Legs',
+        description:
+          'What to place when the trigger fires. Independent: a failed leg neither stops nor unwinds the others.',
+        type: 'array',
+        minItems: 1,
+        maxItems: 20,
+        items: { $ref: '#/$defs/strategyLeg' },
+      },
+      trigger: { $ref: '#/$defs/strategyTrigger' },
+      expiresAt: {
+        title: 'Expires at',
+        description:
+          'MANDATORY. An absolute ISO-8601 instant, at most seven days out in this beta. Not optional and not defaulted: nothing watches a market forever, and a strategy with no horizon is one an operator forgets is armed. A value past the cap is REFUSED with the cap named, never quietly clamped.',
+        type: 'string',
+        minLength: 1,
+        maxLength: 64,
+      },
+    },
+  },
+  examples: [
+    {
+      title: 'Sell half a position if the price reaches 0.80',
+      input: {
+        ownerAddress: EXAMPLE_OWNER_ADDRESS,
+        accountId: EXAMPLE_ACCOUNT_ID,
+        agentWallet: EXAMPLE_AGENT_WALLET,
+        strategyId: 'take-profit-example',
+        expiresAt: '2026-01-08T00:00:00.000Z',
+        trigger: { kind: 'PRICE', targetPrice: '0.8' },
+        legs: [
+          {
+            marketId: EXAMPLE_MARKET_ID,
+            outcomeId: 'YES',
+            side: 'SELL',
+            positionId: EXAMPLE_POSITION_ID,
+            sellFractionOfPosition: '0.5',
+            maxSlippageBps: 100,
+          },
+        ],
+      },
+    },
+    {
+      title: 'Buy immediately, in one leg',
+      input: {
+        ownerAddress: EXAMPLE_OWNER_ADDRESS,
+        accountId: EXAMPLE_ACCOUNT_ID,
+        agentWallet: EXAMPLE_AGENT_WALLET,
+        expiresAt: '2026-01-02T00:00:00.000Z',
+        trigger: { kind: 'IMMEDIATE' },
+        legs: [
+          {
+            marketId: EXAMPLE_MARKET_ID,
+            outcomeId: 'NO',
+            side: 'BUY',
+            buyAmount: '25',
+            maxSlippageBps: 100,
+          },
+        ],
+      },
+    },
+  ],
+};
+
+const strategyGet: AgentCommandSpec = {
+  ...readOnly,
+  name: 'strategy.get',
+  cli: 'strategy get',
+  summary: 'Read one strategy: its state, its legs, and what is still unaccounted for.',
+  description:
+    'The full record, including openSideEffects — attempts with no recorded outcome, which is the evidence that a request may have left the Runner unanswered. leasedHere says whether the Runner that answered is the one holding the job; a job leased elsewhere is being advanced by another instance, and one leased nowhere is being advanced by nobody. pastExpiry is a fact about the clock, not the state: a job can be past its expiry and still read WATCHING until a Runner notices.',
+  implementation: {
+    kind: 'runner',
+    command: 'strategy.get',
+    note: 'Read from the Runner’s durable job store. Issues no request to the exchange.',
+  },
+  input: {
+    type: 'object',
+    required: ['jobId'],
+    additionalProperties: false,
+    properties: { jobId: { $ref: '#/$defs/jobId' } },
+  },
+  examples: [{ title: 'Read one strategy', input: { jobId: EXAMPLE_JOB_ID } }],
+};
+
+const strategyList: AgentCommandSpec = {
+  ...readOnly,
+  name: 'strategy.list',
+  cli: 'strategy list',
+  summary: 'List the strategies this Runner is holding.',
+  description:
+    'Scoped to ONE Runner’s store: a job created against a different runtime directory is not absent, it is elsewhere, and this command cannot see it. Filters compose. This is the command to run after a create whose answer never arrived — a repeated create would arm a second strategy, so look before retrying.',
+  implementation: {
+    kind: 'runner',
+    command: 'strategy.list',
+    note: 'Read from the Runner’s durable job store. Issues no request to the exchange.',
+  },
+  input: {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      accountId: { $ref: '#/$defs/accountId' },
+      strategyId: {
+        title: 'Strategy id',
+        description: 'The attribution label given at creation. Matched exactly.',
+        type: 'string',
+        minLength: 1,
+        maxLength: 128,
+      },
+      state: {
+        title: 'Job state',
+        description:
+          'One state from the Runner’s job state machine. PAUSED is a live strategy that has stopped acting; EXPIRED and CANCELLED are terminal.',
+        type: 'string',
+        enum: [...STRATEGY_STATES],
+      },
+    },
+  },
+  examples: [
+    { title: 'Everything this Runner holds', input: {} },
+    { title: 'Only what is still watching', input: { state: 'WATCHING' } },
+  ],
+};
+
+const strategyCancel: AgentCommandSpec = {
+  name: 'strategy.cancel',
+  cli: 'strategy cancel',
+  summary: 'Record a cancellation. Says whether it was APPLIED, which is not the same thing.',
+  description:
+    'The request is durable immediately; whether it stops the job is a separate fact and the reply reports both. applied is false when this Runner does not hold the lease — another instance does, and it will honour the record when it next looks — or when the job has already started a write, which cannot be recalled: an order on its way to the chain is not cancellable, and saying "cancelled" there would be a lie that costs money. Treat applied: false as "not stopped yet" and re-read with `strategy get`. Cancelling moves no funds and can only ever stop trading, which is why it needs no approval.',
+  classification: 'write',
+  sideEffects: ['NONE'],
+  longRunning: false,
+  idempotency: {
+    required: false,
+    callerSupplied: 'UNSUPPORTED',
+    note: 'Naturally idempotent: cancelling an already-cancelled job records the same request and changes nothing.',
+  },
+  confirmation: 'NOT_REQUIRED',
+  implementation: {
+    kind: 'runner',
+    command: 'strategy.cancel',
+    note: 'Recorded in the Runner’s durable job store, and applied only if that instance holds the lease and no write has begun.',
+  },
+  input: {
+    type: 'object',
+    required: ['jobId', 'reason'],
+    additionalProperties: false,
+    properties: {
+      jobId: { $ref: '#/$defs/jobId' },
+      reason: {
+        title: 'Reason',
+        description:
+          'Recorded on the job’s event feed. Required, because a cancellation nobody can explain later is indistinguishable from a bug.',
+        type: 'string',
+        minLength: 1,
+        maxLength: 512,
+      },
+    },
+  },
+  examples: [
+    {
+      title: 'Stop a strategy',
+      input: { jobId: EXAMPLE_JOB_ID, reason: 'thesis changed' },
+    },
+  ],
+};
+
+const strategyEvents: AgentCommandSpec = {
+  ...readOnly,
+  name: 'strategy.events',
+  cli: 'strategy events',
+  summary: 'The transition and side-effect feed for one strategy, as of now.',
+  description:
+    'A SNAPSHOT, not a subscription: it returns what has been recorded up to this moment and then exits. This is the audit trail — every state change and every attempted side effect, including the ones with no recorded outcome. An unknown job id is an error rather than an empty feed, because an empty list would let a typo read as a strategy that simply has not done anything yet.',
+  implementation: {
+    kind: 'runner',
+    command: 'strategy.events',
+    note: 'Read from the Runner’s durable job store. Issues no request to the exchange.',
+  },
+  input: {
+    type: 'object',
+    required: ['jobId'],
+    additionalProperties: false,
+    properties: { jobId: { $ref: '#/$defs/jobId' } },
+  },
+  examples: [{ title: 'Audit one strategy', input: { jobId: EXAMPLE_JOB_ID } }],
+};
+
 /** Every command in this schema version, in a stable order. */
 export const AGENT_COMMANDS: readonly AgentCommandSpec[] = [
   runtimeDescribe,
@@ -766,6 +1049,11 @@ export const AGENT_COMMANDS: readonly AgentCommandSpec[] = [
   orderReconcile,
   orderExecute,
   orderExecuteMany,
+  strategyCreate,
+  strategyGet,
+  strategyList,
+  strategyCancel,
+  strategyEvents,
 ];
 
 const BY_NAME: ReadonlyMap<string, AgentCommandSpec> = new Map(

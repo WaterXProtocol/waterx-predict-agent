@@ -10,9 +10,20 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { CAPABILITIES } from '../packages/cli/src/capabilities.ts';
+import {
+  openRunnerSession,
+  RUNNER_IPC_PROTOCOL as CLI_IPC_PROTOCOL,
+  type RunnerSocket,
+} from '../packages/cli/src/runner-ipc.ts';
 import { SIGNER_PROTOCOL as CLI_SIGNER_PROTOCOL } from '../packages/cli/src/signer.ts';
+import { RUNNER_IPC_COMMANDS } from '../packages/runner/src/ipc/commands.ts';
+import {
+  decodeClientFrame,
+  RUNNER_IPC_PROTOCOL as RUNNER_IPC_PROTOCOL_SELF,
+} from '../packages/runner/src/ipc/protocol.ts';
 import { SIGNER_PROTOCOL as RUNNER_SIGNER_PROTOCOL } from '../packages/runner/src/signer.ts';
-import { AGENT_COMMANDS } from '../packages/schema/src/index.ts';
+import { JOB_STATES } from '../packages/runner/src/state-machine.ts';
+import { AGENT_COMMANDS, type JsonSchema } from '../packages/schema/src/index.ts';
 import { PredictAgentClient } from '../packages/sdk/src/index.ts';
 
 /** Repository root, with a trailing slash. */
@@ -283,18 +294,22 @@ describe('the Runner package', () => {
 
   it('says in its README which half of the Runner exists', () => {
     // The daemon, its socket, `driveJob`, the loop that calls it, the price
-    // source, the signer, the configuration that assembles them and now the
-    // `strategy.*` commands are all built, so a configured `runnerd` really does
-    // take a strategy and advance it. What is *not* built is a command: no CLI
-    // speaks this protocol. A README that described this package as "the Runner"
-    // would let a reader conclude an operator can start a durable strategy from a
-    // terminal, so the remaining absence has to survive in prose — and so does
-    // `driving: false`, which is what an unconfigured process still reports.
+    // source, the signer, the configuration that assembles them, the `strategy.*`
+    // commands and now a CLI that speaks this protocol are all built, so an
+    // operator really can arm a durable strategy from a terminal. What is *not*
+    // built is this daemon's lifecycle: nothing starts or supervises a `runnerd`
+    // for them, and the device has to stay awake. A README that stopped saying so
+    // would let a reader conclude `strategy create` is enough on its own — so the
+    // remaining absence has to survive in prose, and so does `driving: false`,
+    // which is what an unconfigured process still reports.
     const readme = read('packages/runner/README.md');
     expect(readme).toContain('**not implemented**');
     expect(readme.toLowerCase()).toContain('daemon');
     expect(readme).toContain('driving: false');
-    expect(readme).toContain('Strategy commands in the CLI | **not implemented**');
+    expect(readme).toContain(
+      'Starting, stopping or supervising this daemon from the CLI | **not implemented**',
+    );
+    expect(readme).toContain('stay awake and online');
     // The mandate is the load-bearing one now that a socket peer can arm a job:
     // it comes from this host, and the default refuses.
     expect(readme).toContain('The mandate is configuration, never a request');
@@ -403,6 +418,164 @@ describe('the local signing protocol', () => {
     expect(runner).not.toContain('predict-agent-cli');
   });
 });
+
+describe('the local Runner IPC protocol', () => {
+  it('is one wire, spoken identically by the CLI and the Runner', () => {
+    // Same arrangement, and same reason, as the signing protocol above: the CLI
+    // must not depend on the Runner, so the wire is the shared thing. The drift
+    // this catches is worse than a signer's, because it is silent — a CLI looking
+    // for `runner.sock` in a directory the daemon no longer uses reports "no
+    // Runner is listening" against a machine where one is, in the minute an
+    // operator is trying to cancel something.
+    expect(CLI_IPC_PROTOCOL).toEqual(RUNNER_IPC_PROTOCOL_SELF);
+    // Pinned, so changing both at once is still a decision someone states.
+    expect(CLI_IPC_PROTOCOL.version).toBe(1);
+  });
+
+  it('is checked against the frames the CLI really writes, through the Runner’s real decoder', async () => {
+    // The part that makes the duplicated descriptor safe rather than hopeful.
+    // Two matching literals prove nothing if the client builds something else, so
+    // these are the CLI's own frames, from `openRunnerSession`, parsed by the
+    // function the daemon actually runs on every line it receives.
+    const written = await framesTheCliWrites();
+    const decoded = written.map((line) => decodeClientFrame(line));
+    expect(decoded.map((frame) => frame.type)).toEqual(
+      CLI_IPC_PROTOCOL.clientFrames.map((frame) => frame.type),
+    );
+    for (const [index, expected] of CLI_IPC_PROTOCOL.clientFrames.entries()) {
+      const raw = JSON.parse(written[index] ?? '{}') as Record<string, unknown>;
+      expect(Object.keys(raw).sort(), expected.type).toEqual([...expected.fields].sort());
+    }
+  });
+
+  it('keeps the two implementations from importing each other', () => {
+    expect(read('packages/cli/src/runner-ipc.ts')).not.toContain('predict-agent-runner');
+    expect(read('packages/runner/src/ipc/protocol.ts')).not.toContain('predict-agent-cli');
+  });
+
+  it('names the same strategy family in the contract, on the socket, and in the descriptor', () => {
+    // Three lists that must not drift: what an agent may ask for, what the daemon
+    // will answer, and what the descriptor says the family is. A command in the
+    // contract with no schema on the socket is one an adapter advertises and the
+    // Runner rejects as unknown.
+    const contract = AGENT_COMMANDS.filter((command) => command.name.startsWith('strategy.')).map(
+      (command) => command.name,
+    );
+    const served = Object.keys(RUNNER_IPC_COMMANDS).filter((name) => name.startsWith('strategy.'));
+    expect([...CLI_IPC_PROTOCOL.strategyCommands]).toEqual(contract);
+    expect(served.sort()).toEqual([...contract].sort());
+  });
+
+  it('describes the same strategy shape on both sides of the socket', () => {
+    // Not the same schema — the socket's is looser on purpose, because the rules
+    // live in `strategy/intent.ts` and a peer must get `SIZE_AMBIGUOUS` rather
+    // than a schema violation. What must match is the SHAPE: a field an agent can
+    // send that the socket rejects as unknown, or a field the socket requires and
+    // the contract never mentions, is a create that fails at the daemon.
+    for (const command of AGENT_COMMANDS) {
+      if (!command.name.startsWith('strategy.')) continue;
+      const served = RUNNER_IPC_COMMANDS[command.name];
+      expect(served, command.name).toBeDefined();
+      expect(keysOf(command.input), command.name).toEqual(keysOf(served));
+      expect(requiredOf(command.input), command.name).toEqual(requiredOf(served));
+    }
+
+    // And the leg, which is where the four sizing fields live. All optional on
+    // both sides; exactly one of them is `normalizeStrategy`'s to enforce.
+    const contractLeg = commandDefs()['strategyLeg'];
+    const servedLeg = ((RUNNER_IPC_COMMANDS['strategy.create']?.properties ?? {})['legs'] ?? {})
+      .items;
+    expect(keysOf(contractLeg)).toEqual(keysOf(servedLeg));
+    expect(requiredOf(contractLeg)).toEqual(requiredOf(servedLeg));
+    for (const sizing of [
+      'buyAmount',
+      'sellShares',
+      'sellFractionOfPosition',
+      'dynamicSellFractionOfPosition',
+    ]) {
+      expect(keysOf(contractLeg), sizing).toContain(sizing);
+      expect(requiredOf(contractLeg), sizing).not.toContain(sizing);
+    }
+    // `expiresAt` is the same deliberate omission, and the one most likely to be
+    // "fixed" by someone adding it to `required`. That would replace the sentence
+    // about there being no permanent watcher with a schema violation.
+    expect(keysOf(RUNNER_IPC_COMMANDS['strategy.create'])).toContain('expiresAt');
+    expect(requiredOf(RUNNER_IPC_COMMANDS['strategy.create'])).not.toContain('expiresAt');
+  });
+
+  it('filters `strategy list` by the Runner’s own state machine, not by a copy of it', () => {
+    const contract = (
+      (AGENT_COMMANDS.find((command) => command.name === 'strategy.list')?.input.properties ?? {})[
+        'state'
+      ] ?? {}
+    ).enum;
+    expect(contract).toEqual(Object.keys(JOB_STATES));
+    // PAUSED is the one an operator has to be able to ask for by name: a live
+    // strategy that has stopped acting looks like a healthy one in every summary.
+    expect(contract).toContain('PAUSED');
+  });
+});
+
+const keysOf = (schema: JsonSchema | undefined): string[] =>
+  Object.keys(schema?.properties ?? {}).sort();
+
+const requiredOf = (schema: JsonSchema | undefined): string[] => [...(schema?.required ?? [])].sort();
+
+/** The contract's `$defs`, read from the emitted document rather than re-derived. */
+const commandDefs = (): Readonly<Record<string, JsonSchema>> =>
+  (JSON.parse(read('schemas/v1/agent-commands.json')) as { $defs: Record<string, JsonSchema> }).$defs;
+
+/**
+ * Drives the CLI's real session against a socket that is not one.
+ *
+ * Deliberately not the Runner's server: this asserts the frames, and standing up
+ * a daemon here would put a listening socket in the workspace suite for a
+ * property that does not need one.
+ */
+async function framesTheCliWrites(): Promise<string[]> {
+  const runtimeDir = '/tmp/waterx-workspace-test';
+  const uid = process.getuid?.() ?? 0;
+  const written: string[] = [];
+  let onData: ((chunk: string) => void) | undefined;
+
+  const socket: RunnerSocket = {
+    write: (line) => {
+      written.push(line);
+      const frame = JSON.parse(line) as Record<string, unknown>;
+      const reply =
+        frame['type'] === 'hello'
+          ? { v: CLI_IPC_PROTOCOL.version, type: 'hello-ok', instanceId: 'wf-1', driving: true }
+          : {
+              v: CLI_IPC_PROTOCOL.version,
+              type: 'response',
+              id: frame['id'],
+              ok: true,
+              result: { strategies: [] },
+            };
+      queueMicrotask(() => onData?.(`${JSON.stringify(reply)}\n`));
+    },
+    close: () => undefined,
+    onData: (listener) => {
+      onData = listener;
+    },
+    onClose: () => undefined,
+  };
+
+  const session = await openRunnerSession({
+    runtimeDir,
+    dial: () => Promise.resolve(socket),
+    stat: (path) =>
+      path === runtimeDir
+        ? { kind: 'directory', uid, mode: 0o700 }
+        : { kind: 'file', uid, mode: 0o600 },
+    readFile: () => 'workspace-test-token',
+    timeoutMs: 1_000,
+    client: 'workspace-test',
+  });
+  await session.request('strategy.list', {});
+  session.close();
+  return written;
+}
 
 describe('the e2e harness package', () => {
   it('stays unpublishable and depends only on what it drives', () => {

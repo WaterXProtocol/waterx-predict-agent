@@ -320,6 +320,169 @@ const orderIntent: JsonSchema = {
   allOf: [...ORDER_INTENT_RULES],
 };
 
+/* ── Strategy definitions ────────────────────────────────────────────────────
+ * A durable conditional job, as an operator states it. These describe SHAPE.
+ * The rules — exactly one sizing field, a mandatory expiry, the seven-day cap,
+ * which trigger fields go together — are deliberately NOT restated here, and
+ * that is the same decision `packages/runner/src/ipc/commands.ts` documents at
+ * length: they are decided once, in the Runner's `strategy/intent.ts`, by the
+ * process that will act on them. A second copy in this document would be a
+ * second opinion about how much gets traded, and the caller would get an
+ * anonymous schema violation instead of `SIZE_AMBIGUOUS` or `EXPIRY_REQUIRED`
+ * with the sentence explaining why.
+ *
+ * What IS enforced here is everything a shape can carry, and several fields are
+ * deliberately stricter than the socket accepts — six-decimal money, a
+ * probability price, `YES`/`NO`, slippage below 10000 — because those are the
+ * wire contract's own rules and an intent that violated one could never trade. */
+
+const ownerAddress: JsonSchema = {
+  title: 'Owner address',
+  description:
+    'The address that owns the account, as a full 0x-prefixed Sui address. The Runner records it on the job; it is not a second authorization.',
+  type: 'string',
+  pattern: SUI_ADDRESS_PATTERN,
+};
+
+const agentWallet: JsonSchema = {
+  title: 'Agent wallet',
+  description:
+    'The delegated agent wallet the eventual order is signed by, as a full 0x-prefixed Sui address. The private key stays inside the Runner’s signer and never reaches this surface.',
+  type: 'string',
+  pattern: SUI_ADDRESS_PATTERN,
+};
+
+/**
+ * A fraction of a holding, in `(0, 1]`.
+ *
+ * Excludes zero for the same reason `positiveDecimalAmount` does, and excludes
+ * anything above 1 because there is no such thing as selling 150% of a position:
+ * the Runner would refuse it, and refusing it here names the field.
+ */
+const positionFraction: JsonSchema = {
+  title: 'Fraction of a position',
+  description:
+    'A decimal string greater than 0 and at most 1 — "0.5" is half. Never a percentage and never a JSON number.',
+  type: 'string',
+  pattern: '^(0\\.(?!0+$)[0-9]{1,6}|1(\\.0{1,6})?)$',
+};
+
+const jobId: JsonSchema = {
+  title: 'Job id',
+  description:
+    'The durable job identifier the Runner minted when the strategy was created. Local to the Runner; the exchange has never heard of it.',
+  type: 'string',
+  minLength: 1,
+  maxLength: 128,
+};
+
+/**
+ * One leg of a strategy.
+ *
+ * The four sizing fields are mutually exclusive and all four are optional here:
+ * the Runner answers `SIZE_MISSING` or `SIZE_AMBIGUOUS`, which says which rule
+ * was broken. `sellFractionOfPosition` and `dynamicSellFractionOfPosition` are
+ * separate fields rather than a flag because they are different trades — the
+ * first freezes a share count when the strategy is created, the second re-reads
+ * the position at the trigger and therefore sells whatever is held then,
+ * including shares bought in between.
+ */
+const strategyLeg: JsonSchema = {
+  title: 'Strategy leg',
+  description:
+    'One order the strategy will place when it triggers. Legs execute INDEPENDENTLY: each has its own quote, its own idempotency key and its own outcome, and no leg is rolled back because another failed.',
+  type: 'object',
+  required: ['marketId', 'outcomeId', 'side', 'maxSlippageBps'],
+  additionalProperties: false,
+  properties: {
+    marketId: { $ref: '#/$defs/marketId' },
+    outcomeId: { $ref: '#/$defs/outcomeId' },
+    side: { $ref: '#/$defs/side' },
+    buyAmount: {
+      $ref: '#/$defs/positiveDecimalAmount',
+      title: 'BUY size (buyAmount)',
+      description: 'BUY only: the wxUSD budget to commit. Exactly one sizing field per leg.',
+    },
+    sellShares: {
+      $ref: '#/$defs/positiveDecimalAmount',
+      title: 'SELL size (sellShares)',
+      description: 'SELL only: an exact share count to close. Exactly one sizing field per leg.',
+    },
+    sellFractionOfPosition: {
+      $ref: '#/$defs/positionFraction',
+      title: 'SELL a frozen fraction of the position',
+      description:
+        'SELL only, and the DEFAULT meaning of a percentage: the fraction is resolved to a share count AT CREATION, against an authoritative position read, and that count is what trades. Buying more of the same outcome afterwards does not enlarge this sale.',
+    },
+    dynamicSellFractionOfPosition: {
+      $ref: '#/$defs/positionFraction',
+      title: 'SELL a fraction re-read at the trigger',
+      description:
+        'SELL only: the fraction is applied to whatever is held WHEN THE STRATEGY TRIGGERS, so a position that grew in the meantime sells more shares than existed when this was armed. A distinct field, never a default, because the difference is a different trade.',
+    },
+    positionId: {
+      title: 'Position id',
+      description: 'Required for a SELL: the on-chain position being closed. Absent for a BUY.',
+      type: 'string',
+      minLength: 1,
+      maxLength: 128,
+    },
+    maxSlippageBps: { $ref: '#/$defs/maxSlippageBps' },
+    worstAcceptablePrice: {
+      $ref: '#/$defs/probabilityPrice',
+      title: 'Worst acceptable price',
+      description:
+        'An absolute bound applied at execution, on top of the slippage budget. Checked against a FRESH quote at the trigger, never against the price that was current when the strategy was armed.',
+    },
+  },
+};
+
+/**
+ * When the strategy fires.
+ *
+ * `observe` is absent and must stay absent: which side of the book a target is
+ * read against is derived from the leg's side — a BUY ceiling watches the ask, a
+ * SELL floor watches the bid — and letting a caller state it would let them arm
+ * a strategy that triggers off the wrong half of the market.
+ */
+const strategyTrigger: JsonSchema = {
+  title: 'Strategy trigger',
+  description:
+    'IMMEDIATE runs at the next scheduler pass. PRICE waits for a market to reach targetPrice, which is watched by the Runner process — nothing server-side stores a target, so a Runner that is not running is a strategy that is not watching.',
+  type: 'object',
+  required: ['kind'],
+  additionalProperties: false,
+  properties: {
+    kind: {
+      title: 'Trigger kind',
+      description: 'A closed set on this schema version.',
+      type: 'string',
+      enum: ['IMMEDIATE', 'PRICE'],
+    },
+    targetPrice: {
+      $ref: '#/$defs/probabilityPrice',
+      title: 'Target price',
+      description: 'PRICE only. Crossed, not matched: a BUY fires at or below it, a SELL at or above.',
+    },
+    marketId: {
+      $ref: '#/$defs/marketId',
+      title: 'Watched market',
+      description: 'PRICE only. Defaults to the single leg’s market when every leg agrees.',
+    },
+    outcomeId: {
+      $ref: '#/$defs/outcomeId',
+      title: 'Watched outcome',
+      description: 'PRICE only. Defaults the same way the market does.',
+    },
+    side: {
+      $ref: '#/$defs/side',
+      title: 'Watched side',
+      description:
+        'PRICE only. Decides the direction of the comparison, and which half of the book is read.',
+    },
+  },
+};
+
 /**
  * `$defs` for the emitted document. Every command input `$ref`s into this map,
  * so a field rule is stated once and cannot disagree between commands.
@@ -342,4 +505,10 @@ export const COMMAND_SCHEMA_DEFS: Readonly<Record<string, JsonSchema>> = {
   searchText,
   idempotencyKey,
   orderIntent,
+  ownerAddress,
+  agentWallet,
+  positionFraction,
+  jobId,
+  strategyLeg,
+  strategyTrigger,
 };

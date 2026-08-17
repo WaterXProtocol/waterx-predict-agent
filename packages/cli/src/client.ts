@@ -16,11 +16,13 @@ import { CliError, isCliError } from './errors.ts';
 import {
   EXIT_CODES,
   exitCodeForCliError,
+  exitCodeForRunnerError,
   exitCodeForServerError,
   type ExitCode,
 } from './exit-codes.ts';
 import type { EnvelopeError } from './envelope.ts';
 import type { SigningGate } from './policy.ts';
+import { isRunnerRefusal } from './runner-ipc.ts';
 import { createSigner, type SignerRunner } from './signer.ts';
 
 export interface ClientFactoryOptions {
@@ -87,6 +89,19 @@ export function toEnvelopeError(error: unknown, timeoutMs: number): EnvelopeErro
     };
   }
 
+  // Kept in its own namespace rather than folded into CLI: an operator reading
+  // `source: "RUNNER"` knows the exchange was never involved, and that whatever
+  // has to change is on this machine.
+  if (isRunnerRefusal(error)) {
+    return {
+      code: error.code,
+      message: error.message,
+      retryable: false,
+      source: 'RUNNER',
+      ...(error.detail !== undefined ? { details: error.detail } : {}),
+    };
+  }
+
   if (isPredictAgentApiError(error)) {
     return {
       code: error.code,
@@ -135,6 +150,7 @@ export function exitCodeForThrown(error: unknown): ExitCode {
   if (isCliError(error)) return exitCodeForCliError(error.code);
   const envelope = toEnvelopeError(error, 0);
   if (envelope.source === 'SERVER') return exitCodeForServerError(envelope.code);
+  if (envelope.source === 'RUNNER') return exitCodeForRunnerError(envelope.code);
   if (envelope.source === 'TRANSPORT') return EXIT_CODES.TRANSPORT;
   return EXIT_CODES.INTERNAL;
 }

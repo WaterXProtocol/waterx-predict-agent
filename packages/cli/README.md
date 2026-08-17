@@ -110,11 +110,11 @@ On failure, `data` is absent and `error` is present:
 | 4 | `AUTH` | Authentication failed, or the signer produced no signature. |
 | 5 | `POLICY` | A limit, delegation or local policy refused. Retrying will not help. |
 | 6 | `NOT_FOUND` | The named entity does not exist. |
-| 7 | `UNAVAILABLE` | No quote, market closed, or the capability has no endpoint behind it. |
+| 7 | `UNAVAILABLE` | No quote, market closed, no Runner listening, or the capability has no endpoint behind it. |
 | 8 | `RATE_LIMITED` | Back off and retry. |
 | 9 | `TRANSPORT` | The request did not complete. No response was seen. |
 | 10 | `REJECTED` | The server refused, definitively. |
-| 11 | `AMBIGUOUS` | The outcome is unknown. Reconcile before deciding anything. |
+| 11 | `AMBIGUOUS` | The outcome is unknown. Reconcile before deciding anything — `order get`, or `strategy list` after a create. |
 | 70 | `INTERNAL` | A bug in this CLI. |
 
 `describe` publishes this table verbatim under `exitCodes`, so a host does not
@@ -136,7 +136,8 @@ it without reconciling is how an agent places the same order twice.
 | `order get`, `order reconcile` | available; reads only |
 | `market history` | **refused** — `NO_SERVER_ENDPOINT` (D-25) |
 | `order cancel` | **refused** — `NO_SERVER_ENDPOINT`; a market order is filled or refused, never resting |
-| `strategy`, `runner` | not implemented in this build |
+| `strategy create`, `strategy get`, `strategy list`, `strategy cancel`, `strategy events` | available; they talk to a **local Runner**, not to the exchange |
+| `runner` | not implemented in this build; nothing here starts or supervises a daemon |
 
 A refusal exits 7 with `error.code` `CAPABILITY_UNAVAILABLE` and a symbolic
 `reason`, and it makes **no network call at all**. `market history` is the
@@ -285,6 +286,73 @@ a limit it merely read. Nothing is ever synthesized — a limit that was not rea
 says `{"available": false, "reason": "NOT_READ"}`, an account with no mandate
 says `NO_RISK_PROFILE`, and neither is an unlimited default (ADR-0003).
 
+## Strategies
+
+The `strategy` family is the only one whose counterparty is **not the exchange**.
+A durable conditional job — "buy when YES reaches 0.42" — is held by a `runnerd`
+process on this machine: the price target, the job store and the signer all live
+there, and nothing server-side stores a trigger. So these five commands are a
+client for a local socket, and everything below follows from that.
+
+```sh
+INTENT="$(cat <<'JSON'
+{
+  "ownerAddress": "0x…",
+  "accountId": "0x…",
+  "agentWallet": "0x…",
+  "expiresAt": "2026-08-20T00:00:00Z",
+  "trigger": { "kind": "PRICE", "targetPrice": "0.42", "side": "BUY" },
+  "legs": [{ "marketId": "mkt_…", "outcomeId": "YES", "side": "BUY",
+             "buyAmount": "25.00", "maxSlippageBps": 150 }]
+}
+JSON
+)"
+
+waterx-predict strategy create --input "$INTENT"
+waterx-predict strategy list --state PAUSED
+waterx-predict strategy get --jobId job_…
+waterx-predict strategy cancel --jobId job_… --reason 'thesis changed'
+```
+
+**Which Runner.** `--runner-dir`, else `WATERX_RUNNER_DIR`, else
+`~/.waterx/runner`. The directory must exist, be owned by you and be mode `700`;
+one another local account can read is **refused with exit 3 before anything is
+dialled**, because a token another user can read lets their process stand in for
+the Runner and be handed your wallet addresses and sizes. No Runner there at all
+exits 7 and names the directory. A strategy is durable in *one* runtime
+directory: a job created against another is elsewhere, not absent.
+
+**Armed is not watching.** A Runner with no signer, no gateway or no price feed
+still accepts a create and writes a real, durable job that nothing advances. When
+that happens the envelope is `ok: true` with the real job id — you need it — and
+the **exit code is 7**, with the missing pieces on stderr. Every reply carries
+`runner.driving` for the same reason.
+
+**A create with no answer is `AMBIGUOUS` (11), not a transport error.** The
+Runner does **not** deduplicate creates — `strategyId` is an attribution label,
+not an idempotency key — so a second create arms a second strategy that also
+trades. On `CREATE_OUTCOME_UNKNOWN`, run `strategy list` and look for the job
+before deciding anything. Nothing else in this CLI is retried this carefully;
+nothing else in it can arm an unattended trade.
+
+**A cancellation is recorded, and separately applied.** It is applied only if
+that Runner holds the job's lease and no write has begun. `recorded: true,
+applied: false` exits **11**, because an order already on its way to the chain
+cannot be recalled and reporting the record as the stop would be a lie in exactly
+that case.
+
+**The rules are the Runner's, not this CLI's.** A mandatory `expiresAt` capped at
+seven days, exactly one of the four sizing fields per leg, a percentage SELL
+frozen to a share count at creation unless you asked for
+`dynamicSellFractionOfPosition` — all of them are decided in one place, and this
+CLI carries the symbolic refusal (`EXPIRY_REQUIRED`, `EXPIRY_TOO_FAR`,
+`SIZE_AMBIGUOUS`) out unchanged. `--policy read-only` is the one local refusal: a
+strategy signs and trades later, unattended, so this process will not arm one.
+
+Under `describe`, `runner` remains **not implemented**: starting, stopping and
+supervising the daemon is backlog 2.6. Run `runnerd` yourself, and keep the
+device awake and online — a sleeping machine is a strategy that is not watching.
+
 ## Input
 
 Three sources, applied in order: a JSON document (`--input '<json>'`, `--file
@@ -409,6 +477,9 @@ key file. This is covered by `tests/secrets.test.ts`.
 - `serverCapabilities` in `describe` is this build's own static knowledge, not
   something the server advertised — there is no capability document to query
   (backlog B7). Prefer the server's own errors when they disagree.
+- A strategy needs a `runnerd` running on this machine, and this CLI cannot
+  start one (backlog 2.6). It also cannot keep the device awake: a laptop that
+  sleeps is a strategy that stops watching, without saying so.
 - Supported platforms are macOS and Linux. Windows is not claimed.
 
 ## Development

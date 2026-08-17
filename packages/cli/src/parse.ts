@@ -30,6 +30,10 @@ export const GLOBAL_FLAGS = new Set([
   // only narrow what the configuration already allows.
   'approve',
   'policy',
+  // Which local Runner the strategy family talks to. An address, not part of any
+  // intent: the same strategy sent to two runtime directories is two strategies,
+  // and neither the schema nor the Runner should have to know how it was reached.
+  'runner-dir',
 ]);
 
 export function parseArgv(argv: readonly string[]): ParsedArgv {

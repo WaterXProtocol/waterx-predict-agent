@@ -185,22 +185,49 @@ export const CAPABILITIES: readonly Capability[] = [
     tracking: 'D-25',
   },
   {
-    id: 'strategy',
-    status: 'NOT_IMPLEMENTED',
-    summary: 'Create and manage durable conditional jobs.',
-    reason: 'NOT_BUILT',
-    detail:
-      'Conditional orders are client-side and live in the Runner. A Runner process exists in this workspace, but nothing in it executes a job yet, and this CLI has no command that talks to one. Nothing server-side stores a target order.',
-    tracking: '2.x',
+    id: 'strategy create',
+    command: 'strategy.create',
+    status: 'AVAILABLE',
+    summary:
+      'Arm a durable conditional job on the local Runner. Requires a Runner listening on this machine; nothing server-side stores a price target, so a stopped Runner is a strategy that is not watching.',
+  },
+  {
+    id: 'strategy get',
+    command: 'strategy.get',
+    status: 'AVAILABLE',
+    summary: 'Read one strategy from the local Runner, including what is still unaccounted for.',
+  },
+  {
+    id: 'strategy list',
+    command: 'strategy.list',
+    status: 'AVAILABLE',
+    summary:
+      'List the strategies one Runner holds. Scoped to that runtime directory: a job created against another is elsewhere, not absent.',
+  },
+  {
+    id: 'strategy cancel',
+    command: 'strategy.cancel',
+    status: 'AVAILABLE',
+    summary:
+      'Record a cancellation, and report whether it was applied. A job with a write already in flight cannot be recalled.',
+  },
+  {
+    id: 'strategy events',
+    command: 'strategy.events',
+    status: 'AVAILABLE',
+    summary:
+      'The transition and side-effect feed for one strategy, as of now. A snapshot, not a subscription.',
   },
   {
     id: 'runner',
     status: 'NOT_IMPLEMENTED',
-    summary: 'Run and inspect the local job runner.',
+    summary: 'Start, stop and inspect the local job runner from this CLI.',
     reason: 'NOT_BUILT',
     detail:
-      'The first Runner is self-hosted and local, and the device must stay awake and online for a job to progress. The daemon and its local socket exist in this workspace, but it drives no job and this CLI cannot start or reach one.',
-    tracking: '2.x',
+      'The strategy commands above reach a Runner that is already listening; managing the daemon itself is not built here. Start one with the `runnerd` binary in `@waterx/predict-agent-runner`, and read its health with `runner.status` over its socket. This CLI cannot start, stop or supervise one, and the device must stay awake and online for any job to progress.',
+    alternative:
+      'Run `runnerd` yourself, then use `strategy list` to confirm this CLI can reach it.',
+    tracking: '2.6',
   },
 ];
 

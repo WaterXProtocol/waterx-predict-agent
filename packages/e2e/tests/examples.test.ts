@@ -61,8 +61,15 @@ describe('the shipped examples', () => {
     expect(total).toBeGreaterThan(15);
   });
 
-  it('checks the README the same way', () => {
-    const invocations = extractInvocations(read(join(PACKAGE_DIR, 'README.md')));
+  // The CLI's own README is included, and is the one that matters most: it is
+  // where an operator copies a command from, and a documented flag that is not a
+  // field exits USAGE at the worst possible moment. That is the defect this
+  // linter was written for.
+  it.each([
+    ['the harness README', join(PACKAGE_DIR, 'README.md')],
+    ['the CLI README', join(PACKAGE_DIR, '../cli/README.md')],
+  ])('checks %s the same way', (_label, path) => {
+    const invocations = extractInvocations(read(path));
     expect(invocations.length).toBeGreaterThan(0);
     for (const argv of invocations) {
       expect(lintInvocation(argv).map((v) => v.message), argv.join(' ')).toEqual([]);

@@ -29,6 +29,15 @@ export interface InputSources {
   readStdin(): Promise<string>;
   /** Applied to `accountId` when the command needs one and none was given. */
   readonly defaultAccountId: string | undefined;
+  /**
+   * Applied to `agentWallet` the same way. Justified because it is the SAME
+   * value this CLI already hands the signer: a strategy created under a
+   * different wallet than the one that can sign for it is a job that refuses at
+   * the trigger, hours later. `ownerAddress` is deliberately NOT defaulted —
+   * nothing in this configuration knows who the owner is, and inventing one
+   * would attribute a trade to the wrong account.
+   */
+  readonly defaultAgentWallet: string | undefined;
 }
 
 export interface BuiltInput {
@@ -176,6 +185,11 @@ export async function buildCommandInput(
   if (wantsAccount && input.accountId === undefined && sources.defaultAccountId !== undefined) {
     input.accountId = sources.defaultAccountId;
     defaultsApplied.accountId = sources.defaultAccountId;
+  }
+  const wantsWallet = Object.hasOwn(properties, 'agentWallet');
+  if (wantsWallet && input.agentWallet === undefined && sources.defaultAgentWallet !== undefined) {
+    input.agentWallet = sources.defaultAgentWallet;
+    defaultsApplied.agentWallet = sources.defaultAgentWallet;
   }
 
   const result = validateCommandInput(command.name, input);

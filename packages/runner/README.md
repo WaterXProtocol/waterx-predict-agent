@@ -57,16 +57,24 @@ is absent, rather than a half-driver that could create an order it cannot sign.
 | Per-topic price-feed health in `runner.status` | implemented, tested |
 | `strategy.create` / `get` / `list` / `cancel` / `events` on the socket | implemented, tested |
 | The mandate a socket-created job is admitted under, from local configuration | implemented, tested |
+| `waterx-predict strategy …` against this socket | implemented, tested |
 | Keystore-file, OS-keychain and KMS signer providers | **not implemented** (backlog 1.8) |
-| Strategy commands in the CLI | **not implemented** (backlog 2.8) |
+| Starting, stopping or supervising this daemon from the CLI | **not implemented** (backlog 2.6) |
 | Cursor persistence wired back into a live stream | **not applicable here** (backlog 2.4) |
 
 Synthetic limit orders still run in-process via the SDK's `waitForPriceAndExecute`
 and die with the process — see `packages/sdk/README.md`. A configured `runnerd` is
-the durable alternative, and a strategy now reaches it over the socket. What is
-not there yet is a *command*: nothing in the CLI speaks this protocol (backlog
-2.8), so today the client is an embedding application or a script that opens the
-socket itself.
+the durable alternative, a strategy reaches it over the socket, and the CLI's
+`strategy` family now speaks that protocol: `waterx-predict strategy list` talks
+to whatever `runnerd` is listening in the runtime directory. The CLI does not
+depend on this package to do it — it carries its own copy of `RUNNER_IPC_PROTOCOL`,
+and `tests/workspace.test.ts` holds the two equal and runs the CLI's real frames
+through this package's `decodeClientFrame`.
+
+What is still **not implemented** is the daemon's *lifecycle* from the CLI
+(backlog 2.6): nothing there starts, stops or supervises a `runnerd`. An operator
+runs the binary, and the device has to stay awake and online for any job to
+progress.
 
 The stream-cursor row deserves its wording. The store persists cursors and the
 recovery path reads them, but there is nothing in this process to hand one back

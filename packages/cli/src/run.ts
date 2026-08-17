@@ -12,7 +12,8 @@
  */
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
+import { connect } from 'node:net';
 import { homedir } from 'node:os';
 
 import { AGENT_COMMANDS, type AgentCommandSpec } from '@waterx/predict-agent-schema';
@@ -39,6 +40,13 @@ import {
   orderPreview,
   orderReconcile,
 } from './commands/order.ts';
+import {
+  strategyCancel,
+  strategyCreate,
+  strategyEvents,
+  strategyGet,
+  strategyList,
+} from './commands/strategy.ts';
 import { loadConfig, type ResolvedConfig } from './config.ts';
 import type { CommandContext, CommandHandler } from './context.ts';
 import { errorEnvelope, successEnvelope, type EnvelopeMeta } from './envelope.ts';
@@ -46,6 +54,7 @@ import { CliError, isCliError } from './errors.ts';
 import {
   EXIT_CODES,
   exitCodeForCliError,
+  exitCodeForRunnerError,
   exitCodeForServerError,
   type ExitCode,
 } from './exit-codes.ts';
@@ -59,6 +68,15 @@ import {
 import { parseArgv, requireFlagValue, type ParsedArgv } from './parse.ts';
 import { SigningGate } from './policy.ts';
 import { Redactor, SECRET_ENV_KEYS } from './redact.ts';
+import {
+  createNodePathStat,
+  createNodeRunnerDialer,
+  openRunnerSession,
+  resolveRuntimeDir,
+  type PathStat,
+  type RunnerDialer,
+  type RunnerSession,
+} from './runner-ipc.ts';
 import { createNodeSignerRunner, type SignerRunner } from './signer.ts';
 import { CLI_NAME, CLI_VERSION } from './version.ts';
 
@@ -68,6 +86,14 @@ export interface CliIo {
   readonly streams: OutputStreams;
   readonly fetch: typeof globalThis.fetch;
   readonly runSigner: SignerRunner;
+  /**
+   * Opens a Unix socket to the local Runner. A seam, not a convenience: the CLI
+   * must not depend on `@waterx/predict-agent-runner`, and a test must be able
+   * to prove that a refusal cost zero socket traffic.
+   */
+  readonly dialRunner: RunnerDialer;
+  /** Ownership and permission bits, for the pre-dial privacy check. */
+  readonly pathStat: PathStat;
   /** Returns null when the file does not exist. */
   readFile(path: string): string | null;
   homeDir(): string | null;
@@ -101,6 +127,11 @@ const HANDLERS: Readonly<Record<string, CommandHandler>> = {
   'order.reconcile': orderReconcile,
   'order.execute': orderExecute,
   'order.execute-many': orderExecuteMany,
+  'strategy.create': strategyCreate,
+  'strategy.get': strategyGet,
+  'strategy.list': strategyList,
+  'strategy.cancel': strategyCancel,
+  'strategy.events': strategyEvents,
 };
 
 /** CLI invocation → contract command, taken from the contract's own `cli` field. */
@@ -182,6 +213,7 @@ export async function run(io: CliIo): Promise<number> {
   let command = '(none)';
   let meta: EnvelopeMeta | undefined;
   let timeoutMs = 0;
+  let closeRunner: (() => void) | undefined;
 
   // A successful result that still must not read as "done" — see
   // `CommandContext.exitAs`. AMBIGUOUS wins outright; otherwise the first class
@@ -273,13 +305,20 @@ export async function run(io: CliIo): Promise<number> {
       },
       readStdin: io.readStdin,
       defaultAccountId: config.defaultAccountId,
+      defaultAgentWallet: config.agentWallet,
     });
 
     meta = buildMeta(config, built.defaultsApplied);
-    const context = createContext(io, config, built.input, diagnostic, {
+    const invocation = createContext(io, config, built.input, diagnostic, {
       approval: requireFlagValue(parsed.flags, 'approve'),
+      runnerDir: requireFlagValue(parsed.flags, 'runner-dir'),
       exitAs,
     });
+    const context = invocation.context;
+    // Registered before the handler runs, so a socket opened by a command that
+    // then threw is still closed. A CLI that leaks an fd per invocation would
+    // hold the Runner's connection slot open long after the process cared.
+    closeRunner = invocation.close;
 
     if (spec.name === 'runtime.doctor') {
       const report = await runDoctor(context);
@@ -307,12 +346,15 @@ export async function run(io: CliIo): Promise<number> {
     const envelopeError = toEnvelopeError(error, timeoutMs);
     emitEnvelope(io.streams, errorEnvelope(command, requestId, envelopeError, meta), redactor);
     return resolveExit(error, envelopeError.source, envelopeError.code);
+  } finally {
+    closeRunner?.();
   }
 }
 
 function resolveExit(error: unknown, source: string, code: string): ExitCode {
   if (isCliError(error)) return exitCodeForCliError(error.code);
   if (source === 'SERVER') return exitCodeForServerError(code);
+  if (source === 'RUNNER') return exitCodeForRunnerError(code);
   if (source === 'TRANSPORT') return EXIT_CODES.TRANSPORT;
   return EXIT_CODES.INTERNAL;
 }
@@ -346,9 +388,14 @@ function createContext(
   config: ResolvedConfig,
   input: Readonly<Record<string, unknown>>,
   diagnostic: (text: string) => void,
-  options: { approval: string | undefined; exitAs: (code: ExitCode) => void },
-): CommandContext {
+  options: {
+    approval: string | undefined;
+    runnerDir: string | undefined;
+    exitAs: (code: ExitCode) => void;
+  },
+): { context: CommandContext; close: () => void } {
   let session: Promise<PredictAgentClient> | undefined;
+  let runner: Promise<RunnerSession> | undefined;
   // One gate per invocation, created before any client exists so that every
   // signer this run builds shares it. A command that never authorizes a write
   // leaves it empty, and an empty gate signs nothing.
@@ -370,19 +417,55 @@ function createContext(
     return client;
   };
 
+  /**
+   * The Runner session, memoized the same way and for the same reason.
+   *
+   * Everything that can refuse without touching the socket — an absent runtime
+   * directory, one another local account can reach — happens inside
+   * `openRunnerSession`, before a dial.
+   */
+  const openRunner = (): Promise<RunnerSession> =>
+    openRunnerSession({
+      runtimeDir: resolveRuntimeDir({
+        env: io.env,
+        homeDir: io.homeDir,
+        explicit: options.runnerDir,
+      }),
+      dial: io.dialRunner,
+      stat: io.pathStat,
+      readFile: io.readFile,
+      timeoutMs: config.timeoutMs,
+      client: `${CLI_NAME}/${CLI_VERSION}`,
+    });
+
   return {
-    input,
-    config,
-    approval: options.approval,
-    gate,
-    client: () => (session ??= open()),
-    signal: (atLeastMs?: number) => deadline(Math.max(config.timeoutMs, atLeastMs ?? 0)),
-    exitAs: options.exitAs,
-    diagnostic,
-    nodeVersion: io.nodeVersion,
-    now: io.now,
+    context: {
+      input,
+      config,
+      approval: options.approval,
+      gate,
+      client: () => (session ??= open()),
+      runner: () => (runner ??= openRunner()),
+      signal: (atLeastMs?: number) => deadline(Math.max(config.timeoutMs, atLeastMs ?? 0)),
+      exitAs: options.exitAs,
+      diagnostic,
+      nodeVersion: io.nodeVersion,
+      now: io.now,
+    },
+    close: () => {
+      // Swallowed deliberately: a socket that failed to open has nothing to
+      // close, and a close that throws must not replace the answer already on
+      // stdout with an internal error.
+      void runner?.then((open) => {
+        open.close();
+      }, noop);
+    },
   };
 }
+
+const noop = (): void => {
+  /* nothing to do */
+};
 
 /* ── Node bindings ───────────────────────────────────────────────────────── */
 
@@ -411,6 +494,8 @@ export function createNodeIo(overrides: Partial<CliIo> = {}): CliIo {
     streams: createNodeStreams(),
     fetch: globalThis.fetch.bind(globalThis),
     runSigner: createNodeSignerRunner(spawn),
+    dialRunner: createNodeRunnerDialer(connect),
+    pathStat: createNodePathStat(statSync),
     readFile: readFileOrNull,
     homeDir: () => {
       try {

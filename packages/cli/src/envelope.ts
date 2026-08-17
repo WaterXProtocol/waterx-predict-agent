@@ -19,10 +19,14 @@ export const ENVELOPE_SCHEMA_VERSION = '1';
  *
  * `CLI` — this runtime refused; the code is a `CliErrorCode`.
  * `SERVER` — the exchange refused; the code is a `PredictAgentErrorCode`.
+ * `RUNNER` — the local Runner refused, or could not be reached; the code is one
+ * of its own symbols. Distinct from both because nothing reached the exchange
+ * and the fix is almost always local: start the daemon, configure it, `chmod`
+ * its directory.
  * `TRANSPORT` — no response was seen, so nobody refused anything and the outcome
  * of a write would be unknown.
  */
-export type EnvelopeErrorSource = 'CLI' | 'SERVER' | 'TRANSPORT';
+export type EnvelopeErrorSource = 'CLI' | 'SERVER' | 'RUNNER' | 'TRANSPORT';
 
 export interface EnvelopeError {
   readonly code: string | PredictAgentErrorCode;

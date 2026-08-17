@@ -84,8 +84,8 @@ describe('capability negotiation', () => {
 
   it('separates "no endpoint exists" from "not built yet"', async () => {
     // `order cancel` has no endpoint and never will for a market order;
-    // `strategy` is specified and unbuilt. Both refuse before the network, and
-    // a caller can branch on which of the two it hit.
+    // supervising the daemon itself is specified and unbuilt. Both refuse before
+    // the network, and a caller can branch on which of the two it hit.
     const noEndpoint = await invoke(['order', 'cancel'], { env: CONFIGURED_ENV });
     expect(noEndpoint.envelope.error?.code).toBe('CAPABILITY_UNAVAILABLE');
     expect(noEndpoint.envelope.error?.details).toMatchObject({
@@ -93,8 +93,16 @@ describe('capability negotiation', () => {
       reason: 'NO_SERVER_ENDPOINT',
     });
 
-    const notBuilt = await invoke(['strategy', 'create'], { env: CONFIGURED_ENV });
+    // The strategy family left this test when the Runner grew a socket. What
+    // remains unbuilt is starting and stopping one from here — and the two must
+    // stay distinguishable, because `strategy list` failing means "no Runner is
+    // running" while `runner start` failing means "this CLI cannot start one".
+    const notBuilt = await invoke(['runner', 'start'], { env: CONFIGURED_ENV });
     expect(notBuilt.envelope.error?.code).toBe('COMMAND_NOT_IMPLEMENTED');
+    expect(notBuilt.envelope.error?.details).toMatchObject({
+      capability: 'runner',
+      reason: 'NOT_BUILT',
+    });
 
     for (const result of [noEndpoint, notBuilt]) {
       expect(result.exit).toBe(EXIT_CODES.UNAVAILABLE);

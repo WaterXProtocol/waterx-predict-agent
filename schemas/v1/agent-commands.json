@@ -278,6 +278,129 @@
           "$ref": "#/$defs/positionAgreement"
         }
       ]
+    },
+    "ownerAddress": {
+      "title": "Owner address",
+      "description": "The address that owns the account, as a full 0x-prefixed Sui address. The Runner records it on the job; it is not a second authorization.",
+      "type": "string",
+      "pattern": "^0x[0-9a-fA-F]{64}$"
+    },
+    "agentWallet": {
+      "title": "Agent wallet",
+      "description": "The delegated agent wallet the eventual order is signed by, as a full 0x-prefixed Sui address. The private key stays inside the Runner’s signer and never reaches this surface.",
+      "type": "string",
+      "pattern": "^0x[0-9a-fA-F]{64}$"
+    },
+    "positionFraction": {
+      "title": "Fraction of a position",
+      "description": "A decimal string greater than 0 and at most 1 — \"0.5\" is half. Never a percentage and never a JSON number.",
+      "type": "string",
+      "pattern": "^(0\\.(?!0+$)[0-9]{1,6}|1(\\.0{1,6})?)$"
+    },
+    "jobId": {
+      "title": "Job id",
+      "description": "The durable job identifier the Runner minted when the strategy was created. Local to the Runner; the exchange has never heard of it.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "strategyLeg": {
+      "title": "Strategy leg",
+      "description": "One order the strategy will place when it triggers. Legs execute INDEPENDENTLY: each has its own quote, its own idempotency key and its own outcome, and no leg is rolled back because another failed.",
+      "type": "object",
+      "required": [
+        "marketId",
+        "outcomeId",
+        "side",
+        "maxSlippageBps"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "marketId": {
+          "$ref": "#/$defs/marketId"
+        },
+        "outcomeId": {
+          "$ref": "#/$defs/outcomeId"
+        },
+        "side": {
+          "$ref": "#/$defs/side"
+        },
+        "buyAmount": {
+          "$ref": "#/$defs/positiveDecimalAmount",
+          "title": "BUY size (buyAmount)",
+          "description": "BUY only: the wxUSD budget to commit. Exactly one sizing field per leg."
+        },
+        "sellShares": {
+          "$ref": "#/$defs/positiveDecimalAmount",
+          "title": "SELL size (sellShares)",
+          "description": "SELL only: an exact share count to close. Exactly one sizing field per leg."
+        },
+        "sellFractionOfPosition": {
+          "$ref": "#/$defs/positionFraction",
+          "title": "SELL a frozen fraction of the position",
+          "description": "SELL only, and the DEFAULT meaning of a percentage: the fraction is resolved to a share count AT CREATION, against an authoritative position read, and that count is what trades. Buying more of the same outcome afterwards does not enlarge this sale."
+        },
+        "dynamicSellFractionOfPosition": {
+          "$ref": "#/$defs/positionFraction",
+          "title": "SELL a fraction re-read at the trigger",
+          "description": "SELL only: the fraction is applied to whatever is held WHEN THE STRATEGY TRIGGERS, so a position that grew in the meantime sells more shares than existed when this was armed. A distinct field, never a default, because the difference is a different trade."
+        },
+        "positionId": {
+          "title": "Position id",
+          "description": "Required for a SELL: the on-chain position being closed. Absent for a BUY.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "maxSlippageBps": {
+          "$ref": "#/$defs/maxSlippageBps"
+        },
+        "worstAcceptablePrice": {
+          "$ref": "#/$defs/probabilityPrice",
+          "title": "Worst acceptable price",
+          "description": "An absolute bound applied at execution, on top of the slippage budget. Checked against a FRESH quote at the trigger, never against the price that was current when the strategy was armed."
+        }
+      }
+    },
+    "strategyTrigger": {
+      "title": "Strategy trigger",
+      "description": "IMMEDIATE runs at the next scheduler pass. PRICE waits for a market to reach targetPrice, which is watched by the Runner process — nothing server-side stores a target, so a Runner that is not running is a strategy that is not watching.",
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "title": "Trigger kind",
+          "description": "A closed set on this schema version.",
+          "type": "string",
+          "enum": [
+            "IMMEDIATE",
+            "PRICE"
+          ]
+        },
+        "targetPrice": {
+          "$ref": "#/$defs/probabilityPrice",
+          "title": "Target price",
+          "description": "PRICE only. Crossed, not matched: a BUY fires at or below it, a SELL at or above."
+        },
+        "marketId": {
+          "$ref": "#/$defs/marketId",
+          "title": "Watched market",
+          "description": "PRICE only. Defaults to the single leg’s market when every leg agrees."
+        },
+        "outcomeId": {
+          "$ref": "#/$defs/outcomeId",
+          "title": "Watched outcome",
+          "description": "PRICE only. Defaults the same way the market does."
+        },
+        "side": {
+          "$ref": "#/$defs/side",
+          "title": "Watched side",
+          "description": "PRICE only. Decides the direction of the comparison, and which half of the book is read."
+        }
+      }
     }
   },
   "commands": [
@@ -1408,6 +1531,331 @@
             ],
             "concurrency": 2,
             "failurePolicy": "STOP"
+          }
+        }
+      ]
+    },
+    {
+      "name": "strategy.create",
+      "cli": "strategy create",
+      "summary": "Arm a durable conditional job on the local Runner. Can trade later, unattended.",
+      "description": "Creates a strategy the Runner owns and advances. It places nothing now and can place orders later WITHOUT a human present, which is why it is a write. expiresAt is MANDATORY and capped at seven days in this beta — the cap is refused, never clamped, because a silently shortened horizon is a strategy that stops watching at an hour nobody chose. Exactly one sizing field per leg: buyAmount for a BUY, and for a SELL one of sellShares, sellFractionOfPosition (a share count frozen NOW against a real position read) or dynamicSellFractionOfPosition (re-read at the trigger, so a position that grew sells more). Legs execute independently, each with its own quote and idempotency key, and none is rolled back because another failed. Every rule here belongs to the Runner and is named in its refusal — this surface re-decides none of them. The mandate is the Runner’s own configuration: there is no policy field, and the default configuration REFUSES to arm anything, so an unattended host cannot be talked into one. A Runner that is not driving still accepts this call and writes a real job that nothing will advance, so the reply carries driving and driverGaps; treat driving: false as \"armed and asleep\".",
+      "classification": "write",
+      "sideEffects": [
+        "MOVES_FUNDS"
+      ],
+      "longRunning": false,
+      "idempotency": {
+        "required": false,
+        "callerSupplied": "UNSUPPORTED",
+        "note": "No key makes this repeatable: the Runner does not deduplicate creates, so a second call arms a SECOND strategy and both will trade. strategyId is an attribution label, not a key. If a create fails without an answer, LIST before retrying."
+      },
+      "confirmation": "REQUIRED_UNLESS_DELEGATED",
+      "implementation": {
+        "kind": "runner",
+        "command": "strategy.create",
+        "note": "Handed to the local Runner unchanged. The Runner normalizes sizing, enforces the expiry cap, reads the position a frozen fraction needs, and applies its own mandate."
+      },
+      "input": {
+        "type": "object",
+        "required": [
+          "ownerAddress",
+          "accountId",
+          "agentWallet",
+          "legs",
+          "trigger"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "strategyId": {
+            "title": "Strategy id",
+            "description": "An attribution label, carried onto the executions this strategy produces and usable as a `strategy list` filter. NOT an idempotency key: two creates with the same label are two strategies.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "ownerAddress": {
+            "$ref": "#/$defs/ownerAddress"
+          },
+          "accountId": {
+            "$ref": "#/$defs/accountId"
+          },
+          "agentWallet": {
+            "$ref": "#/$defs/agentWallet"
+          },
+          "legs": {
+            "title": "Legs",
+            "description": "What to place when the trigger fires. Independent: a failed leg neither stops nor unwinds the others.",
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 20,
+            "items": {
+              "$ref": "#/$defs/strategyLeg"
+            }
+          },
+          "trigger": {
+            "$ref": "#/$defs/strategyTrigger"
+          },
+          "expiresAt": {
+            "title": "Expires at",
+            "description": "MANDATORY. An absolute ISO-8601 instant, at most seven days out in this beta. Not optional and not defaulted: nothing watches a market forever, and a strategy with no horizon is one an operator forgets is armed. A value past the cap is REFUSED with the cap named, never quietly clamped.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          }
+        }
+      },
+      "examples": [
+        {
+          "title": "Sell half a position if the price reaches 0.80",
+          "input": {
+            "ownerAddress": "0x4444444444444444444444444444444444444444444444444444444444444444",
+            "accountId": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "agentWallet": "0x5555555555555555555555555555555555555555555555555555555555555555",
+            "strategyId": "take-profit-example",
+            "expiresAt": "2026-01-08T00:00:00.000Z",
+            "trigger": {
+              "kind": "PRICE",
+              "targetPrice": "0.8"
+            },
+            "legs": [
+              {
+                "marketId": "0x2222222222222222222222222222222222222222222222222222222222222222",
+                "outcomeId": "YES",
+                "side": "SELL",
+                "positionId": "0x3333333333333333333333333333333333333333333333333333333333333333",
+                "sellFractionOfPosition": "0.5",
+                "maxSlippageBps": 100
+              }
+            ]
+          }
+        },
+        {
+          "title": "Buy immediately, in one leg",
+          "input": {
+            "ownerAddress": "0x4444444444444444444444444444444444444444444444444444444444444444",
+            "accountId": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "agentWallet": "0x5555555555555555555555555555555555555555555555555555555555555555",
+            "expiresAt": "2026-01-02T00:00:00.000Z",
+            "trigger": {
+              "kind": "IMMEDIATE"
+            },
+            "legs": [
+              {
+                "marketId": "0x2222222222222222222222222222222222222222222222222222222222222222",
+                "outcomeId": "NO",
+                "side": "BUY",
+                "buyAmount": "25",
+                "maxSlippageBps": 100
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "strategy.get",
+      "cli": "strategy get",
+      "summary": "Read one strategy: its state, its legs, and what is still unaccounted for.",
+      "description": "The full record, including openSideEffects — attempts with no recorded outcome, which is the evidence that a request may have left the Runner unanswered. leasedHere says whether the Runner that answered is the one holding the job; a job leased elsewhere is being advanced by another instance, and one leased nowhere is being advanced by nobody. pastExpiry is a fact about the clock, not the state: a job can be past its expiry and still read WATCHING until a Runner notices.",
+      "classification": "read",
+      "sideEffects": [
+        "NONE"
+      ],
+      "longRunning": false,
+      "idempotency": {
+        "required": false,
+        "callerSupplied": "UNSUPPORTED",
+        "note": "A read is safe to repeat; no key applies."
+      },
+      "confirmation": "NOT_REQUIRED",
+      "implementation": {
+        "kind": "runner",
+        "command": "strategy.get",
+        "note": "Read from the Runner’s durable job store. Issues no request to the exchange."
+      },
+      "input": {
+        "type": "object",
+        "required": [
+          "jobId"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "jobId": {
+            "$ref": "#/$defs/jobId"
+          }
+        }
+      },
+      "examples": [
+        {
+          "title": "Read one strategy",
+          "input": {
+            "jobId": "job_example_00000000000"
+          }
+        }
+      ]
+    },
+    {
+      "name": "strategy.list",
+      "cli": "strategy list",
+      "summary": "List the strategies this Runner is holding.",
+      "description": "Scoped to ONE Runner’s store: a job created against a different runtime directory is not absent, it is elsewhere, and this command cannot see it. Filters compose. This is the command to run after a create whose answer never arrived — a repeated create would arm a second strategy, so look before retrying.",
+      "classification": "read",
+      "sideEffects": [
+        "NONE"
+      ],
+      "longRunning": false,
+      "idempotency": {
+        "required": false,
+        "callerSupplied": "UNSUPPORTED",
+        "note": "A read is safe to repeat; no key applies."
+      },
+      "confirmation": "NOT_REQUIRED",
+      "implementation": {
+        "kind": "runner",
+        "command": "strategy.list",
+        "note": "Read from the Runner’s durable job store. Issues no request to the exchange."
+      },
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "accountId": {
+            "$ref": "#/$defs/accountId"
+          },
+          "strategyId": {
+            "title": "Strategy id",
+            "description": "The attribution label given at creation. Matched exactly.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "state": {
+            "title": "Job state",
+            "description": "One state from the Runner’s job state machine. PAUSED is a live strategy that has stopped acting; EXPIRED and CANCELLED are terminal.",
+            "type": "string",
+            "enum": [
+              "DRAFT",
+              "WATCHING",
+              "PAUSED",
+              "TRIGGERED",
+              "QUOTING",
+              "CREATING",
+              "AWAITING_SIGNATURE",
+              "SUBMITTING",
+              "SUBMITTED",
+              "RECONCILING",
+              "UNKNOWN_PENDING",
+              "FILLED",
+              "FAILED",
+              "CANCELLED",
+              "EXPIRED"
+            ]
+          }
+        }
+      },
+      "examples": [
+        {
+          "title": "Everything this Runner holds",
+          "input": {}
+        },
+        {
+          "title": "Only what is still watching",
+          "input": {
+            "state": "WATCHING"
+          }
+        }
+      ]
+    },
+    {
+      "name": "strategy.cancel",
+      "cli": "strategy cancel",
+      "summary": "Record a cancellation. Says whether it was APPLIED, which is not the same thing.",
+      "description": "The request is durable immediately; whether it stops the job is a separate fact and the reply reports both. applied is false when this Runner does not hold the lease — another instance does, and it will honour the record when it next looks — or when the job has already started a write, which cannot be recalled: an order on its way to the chain is not cancellable, and saying \"cancelled\" there would be a lie that costs money. Treat applied: false as \"not stopped yet\" and re-read with `strategy get`. Cancelling moves no funds and can only ever stop trading, which is why it needs no approval.",
+      "classification": "write",
+      "sideEffects": [
+        "NONE"
+      ],
+      "longRunning": false,
+      "idempotency": {
+        "required": false,
+        "callerSupplied": "UNSUPPORTED",
+        "note": "Naturally idempotent: cancelling an already-cancelled job records the same request and changes nothing."
+      },
+      "confirmation": "NOT_REQUIRED",
+      "implementation": {
+        "kind": "runner",
+        "command": "strategy.cancel",
+        "note": "Recorded in the Runner’s durable job store, and applied only if that instance holds the lease and no write has begun."
+      },
+      "input": {
+        "type": "object",
+        "required": [
+          "jobId",
+          "reason"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "jobId": {
+            "$ref": "#/$defs/jobId"
+          },
+          "reason": {
+            "title": "Reason",
+            "description": "Recorded on the job’s event feed. Required, because a cancellation nobody can explain later is indistinguishable from a bug.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        }
+      },
+      "examples": [
+        {
+          "title": "Stop a strategy",
+          "input": {
+            "jobId": "job_example_00000000000",
+            "reason": "thesis changed"
+          }
+        }
+      ]
+    },
+    {
+      "name": "strategy.events",
+      "cli": "strategy events",
+      "summary": "The transition and side-effect feed for one strategy, as of now.",
+      "description": "A SNAPSHOT, not a subscription: it returns what has been recorded up to this moment and then exits. This is the audit trail — every state change and every attempted side effect, including the ones with no recorded outcome. An unknown job id is an error rather than an empty feed, because an empty list would let a typo read as a strategy that simply has not done anything yet.",
+      "classification": "read",
+      "sideEffects": [
+        "NONE"
+      ],
+      "longRunning": false,
+      "idempotency": {
+        "required": false,
+        "callerSupplied": "UNSUPPORTED",
+        "note": "A read is safe to repeat; no key applies."
+      },
+      "confirmation": "NOT_REQUIRED",
+      "implementation": {
+        "kind": "runner",
+        "command": "strategy.events",
+        "note": "Read from the Runner’s durable job store. Issues no request to the exchange."
+      },
+      "input": {
+        "type": "object",
+        "required": [
+          "jobId"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "jobId": {
+            "$ref": "#/$defs/jobId"
+          }
+        }
+      },
+      "examples": [
+        {
+          "title": "Audit one strategy",
+          "input": {
+            "jobId": "job_example_00000000000"
           }
         }
       ]

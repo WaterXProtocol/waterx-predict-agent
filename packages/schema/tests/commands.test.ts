@@ -58,19 +58,115 @@ describe('the command registry', () => {
 
   it('marks exactly the fund-moving commands as writes needing confirmation', () => {
     const writes = AGENT_COMMANDS.filter((command) => command.classification === 'write');
-    expect(writes.map((command) => command.name)).toEqual(['order.execute', 'order.execute-many']);
-    for (const command of writes) {
-      expect(command.sideEffects, command.name).toContain('MOVES_FUNDS');
+    expect(writes.map((command) => command.name)).toEqual([
+      'order.execute',
+      'order.execute-many',
+      'strategy.create',
+      'strategy.cancel',
+    ]);
+
+    const fundMovers = writes.filter((command) => command.sideEffects.includes('MOVES_FUNDS'));
+    expect(fundMovers.map((command) => command.name)).toEqual([
+      'order.execute',
+      'order.execute-many',
+      // Arming a strategy places nothing today and is the reason something is
+      // placed tomorrow, unattended. Anything less than MOVES_FUNDS would let it
+      // through a gate written for trades.
+      'strategy.create',
+    ]);
+    for (const command of fundMovers) {
       expect(command.confirmation, command.name).toBe('REQUIRED_UNLESS_DELEGATED');
-      // A retried write without a key is a duplicate trade, not a duplicate request.
-      expect(command.idempotency.required, command.name).toBe(true);
     }
+
+    // A retried write without a key is a duplicate trade — but only where a key
+    // would help. The Runner does not deduplicate a create at all, so demanding
+    // one there would advertise a safety it cannot deliver; `strategy.create`
+    // says UNSUPPORTED and tells the caller to list before retrying instead.
+    for (const command of fundMovers) {
+      if (command.implementation.kind === 'sdk') {
+        expect(command.idempotency.required, command.name).toBe(true);
+      } else {
+        expect(command.idempotency.required, command.name).toBe(false);
+        expect(command.idempotency.callerSupplied, command.name).toBe('UNSUPPORTED');
+        expect(command.idempotency.note, command.name).toMatch(/list/iu);
+      }
+    }
+
+    // The one write that moves nothing. Cancelling can only ever stop trading,
+    // so making an operator approve it would be a gate that costs money to pass.
+    const stoppers = writes.filter((command) => !command.sideEffects.includes('MOVES_FUNDS'));
+    expect(stoppers.map((command) => command.name)).toEqual(['strategy.cancel']);
+    for (const command of stoppers) {
+      expect(command.sideEffects, command.name).toEqual(['NONE']);
+      expect(command.confirmation, command.name).toBe('NOT_REQUIRED');
+    }
+
     for (const command of AGENT_COMMANDS) {
       if (command.classification === 'read') {
         expect(command.sideEffects, command.name).not.toContain('MOVES_FUNDS');
         expect(command.confirmation, command.name).toBe('NOT_REQUIRED');
       }
     }
+  });
+
+  it('keeps runner-implemented commands honest about where they run', () => {
+    // A `runner` command is served by a process on this machine, not by the
+    // exchange. Two things must stay true of every one of them: the socket
+    // command name is carried here (the surface must not guess it), and no
+    // strategy command claims to be an SDK call, because none of them can be
+    // answered without a Runner running.
+    const runnerCommands = AGENT_COMMANDS.filter(
+      (command) => command.implementation.kind === 'runner',
+    );
+    expect(runnerCommands.map((command) => command.name)).toEqual([
+      'strategy.create',
+      'strategy.get',
+      'strategy.list',
+      'strategy.cancel',
+      'strategy.events',
+    ]);
+    for (const command of runnerCommands) {
+      if (command.implementation.kind !== 'runner') throw new Error('unreachable');
+      // The socket name is the contract name. A divergence here would be a
+      // command the CLI can spell and the Runner cannot answer.
+      expect(command.implementation.command, command.name).toBe(command.name);
+      expect(command.implementation.note.length, command.name).toBeGreaterThan(0);
+      expect(command.longRunning, command.name).toBe(false);
+    }
+    for (const command of AGENT_COMMANDS) {
+      if (!command.name.startsWith('strategy.')) continue;
+      expect(command.implementation.kind, command.name).toBe('runner');
+    }
+  });
+
+  it('demands an expiry on a strategy without letting the schema answer for the Runner', () => {
+    const create = AGENT_COMMANDS.find((command) => command.name === 'strategy.create');
+    if (!create) throw new Error('strategy.create is missing');
+
+    // expiresAt is mandatory, and is deliberately NOT in `required`. A schema
+    // rejection here would be an anonymous "input invalid"; leaving it out lets
+    // the Runner answer EXPIRY_REQUIRED and name the seven-day cap, which is the
+    // sentence the operator actually needs. The obligation lives in the text.
+    expect(create.input.properties?.expiresAt).toBeDefined();
+    expect(create.input.required).not.toContain('expiresAt');
+    expect(create.description).toMatch(/seven days/u);
+    expect(create.description).toMatch(/refused, never clamped/u);
+
+    // Same reasoning for sizing: four fields, all optional, exactly one allowed.
+    // The Runner is the single place that decides which, and it says so.
+    const leg = COMMAND_SCHEMA_DEFS.strategyLeg;
+    if (!leg) throw new Error('strategyLeg is missing');
+    const sizing = [
+      'buyAmount',
+      'sellShares',
+      'sellFractionOfPosition',
+      'dynamicSellFractionOfPosition',
+    ];
+    for (const field of sizing) {
+      expect(leg.properties?.[field], field).toBeDefined();
+      expect(leg.required, field).not.toContain(field);
+    }
+    expect(create.description).toMatch(/Exactly one sizing field/u);
   });
 
   it('keeps runtime-implemented commands away from anything that moves funds', () => {
@@ -132,7 +228,7 @@ describe('the command registry', () => {
     const serialized = JSON.stringify(AGENT_COMMANDS.map((command) => command.examples));
     expect(serialized).not.toMatch(/(?:secret|private|token|bearer|apikey|api_key)/iu);
     for (const address of serialized.matchAll(/0x[0-9a-fA-F]{64}/gu)) {
-      expect(address[0]).toMatch(/^0x(11|22|33)+$/u);
+      expect(address[0]).toMatch(/^0x(11|22|33|44|55)+$/u);
     }
   });
 });

@@ -17,6 +17,7 @@ import type { PredictAgentClient } from '@waterx/predict-agent-sdk';
 import type { ResolvedConfig } from './config.ts';
 import type { ExitCode } from './exit-codes.ts';
 import type { SigningGate } from './policy.ts';
+import type { RunnerSession } from './runner-ipc.ts';
 
 export interface CommandContext {
   /** Already validated against the command's schema. */
@@ -40,6 +41,17 @@ export interface CommandContext {
    * missing, or with the server's own error when the challenge is refused.
    */
   client(): Promise<PredictAgentClient>;
+  /**
+   * A handshaken session with the local Runner, for the strategy family.
+   *
+   * Separate from `client()` and not a fallback for it: this is a daemon on this
+   * machine, authenticated by a token in a private directory, and a command that
+   * needs one is useless without it. Memoized the same way and closed by the
+   * dispatcher, so an invocation opens at most one socket and never leaves it
+   * open. Rejects with a `RunnerRefusal` naming the runtime directory when no
+   * Runner is listening — before anything is dialled.
+   */
+  runner(): Promise<RunnerSession>;
   /**
    * A fresh deadline for one call.
    *
