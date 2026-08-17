@@ -246,6 +246,10 @@ export class SqliteJobStore implements JobStore {
       clauses.push('account_id = ?');
       params.push(filter.accountId);
     }
+    if (filter.strategyId !== undefined) {
+      clauses.push('strategy_id = ?');
+      params.push(filter.strategyId);
+    }
     if (filter.unleasedAt !== undefined) {
       clauses.push('(lease_instance_id IS NULL OR lease_expires_at IS NULL OR lease_expires_at <= ?)');
       params.push(filter.unleasedAt);

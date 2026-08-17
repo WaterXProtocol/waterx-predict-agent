@@ -24,6 +24,10 @@ over the socket is refused `NOT_IMPLEMENTED` rather than answered.
 | Authenticated local IPC over a Unix socket (ADR-0008) | implemented |
 | Lease renewal and heartbeat supervision, with abort on loss | implemented |
 | `UNKNOWN_PENDING` resolved from an authoritative REST read | implemented, uncalled |
+| Strategy create / get / list / cancel / events over the store | implemented |
+| Mandatory `expiresAt`, capped at seven days (ADR-0005) | implemented |
+| Frozen-share percentage SELL, and the explicit dynamic mode | implemented |
+| Market pause-vs-terminal classification (ADR-0004) | implemented, uncalled |
 | Executor that drives a job through the SDK | **not implemented** |
 | Price watcher feeding a job's trigger | **not implemented** |
 | Signer inside the Runner trust boundary | **not implemented** (backlog 1.x) |
@@ -92,6 +96,55 @@ Two fields exist so a caller cannot mistake reachable for running: `driving` is
 job, and only from a state that has not started a write, so a cancel arriving
 during a submit reports `pending: 'IN_FLIGHT'` rather than a stop that did not
 happen.
+
+## Strategies
+
+`StrategyService` is the command core — one implementation of what a strategy
+*is*, so the CLI, the IPC surface and any adapter cannot drift into a second set
+of rules about sizing, expiry or cancellation. `create` normalizes an intent and
+writes a durable job in `DRAFT`. Nothing advances it: there is no executor, so a
+created strategy is a record, not a running order. `create` returns the job's
+state rather than a word like "armed" for that reason, and it is deliberately not
+exposed over the IPC socket yet — advertising a strategy command from a process
+that reports `driving: false` would claim execution that does not exist.
+
+What it refuses is the interesting part. `normalizeStrategy` will not guess a
+size, an expiry or a market:
+
+- **`expiresAt` is mandatory and capped at seven days** (ADR-0005). A zoneless or
+  locale-formatted instant is refused rather than parsed, because the host would
+  be deciding what `01/02/2026` means. A request past the cap is refused with the
+  latest instant that *would* have been allowed — never silently clamped, since a
+  clamped expiry is a strategy that stops watching earlier than its owner asked.
+- **A size is never inferred from the side.** Exactly one of `buyAmount`,
+  `sellShares`, `sellFractionOfPosition` or `dynamicSellFractionOfPosition` may be
+  present; zero of them is `SIZE_MISSING` and two is `SIZE_AMBIGUOUS`, listing
+  what was given.
+- **"Sell half" freezes at creation** (D-15). The fraction is resolved against a
+  real position read into a concrete `sellShares`, and the position it was
+  computed from is persisted alongside it. Truncation is toward zero, and a
+  fraction that resolves to nothing is refused rather than submitted as a
+  zero-size order. `dynamicSellFractionOfPosition` is the distinct, explicit mode
+  that re-reads at trigger — and so performs no position read at creation.
+- **Absence must be proven.** A position lookup pages until the server answers
+  `nextCursor: null`. A server that simply stopped answering, a repeating cursor
+  or a page bound produces `POSITION_LOOKUP_INCONCLUSIVE`, not "you hold none".
+- **The watched market is derived, never assumed.** A price trigger takes market,
+  outcome and side all-or-nothing; otherwise they come from the legs, and legs
+  that disagree are refused with the distinct values rather than resolved by
+  picking one.
+
+`events(jobId)` merges the transition log with the side-effect ledger into one
+ordered feed with stable ids. An attempt with no recorded outcome appears as a
+`SIDE_EFFECT_BEGAN` event marked `unresolved` — it is the evidence that a request
+may have left the process, and it does not become silence.
+
+`classifyMarket` is ADR-0004 as a decision table, reading `status` and
+`tradeable` and nothing else: `tradeabilityReason` is free text for people, and
+pattern-matching it would make a copy edit on the server a control-flow change
+here. Closed and resolved are terminal; not-tradeable pauses under the original
+expiry; a status this build does not recognize pauses too, because ending a job
+that could still have fired cannot be undone. Nothing calls it yet.
 
 ## The three properties everything else follows from
 
@@ -164,6 +217,7 @@ src/sqlite/           the SQLite/WAL implementation and its migrations
 src/recovery.ts       what a Runner does with the jobs it finds at start-up
 src/reconciler.ts     resolving UNKNOWN_PENDING from an authoritative REST read
 src/secrets.ts        the refusal list applied at the store boundary
+src/strategy/         normalization, the command core, and what they refuse
 src/daemon.ts         start-up order, shutdown, and what the process admits to
 src/supervisor.ts     lease renewal, heartbeat, and the two aborts they cause
 src/ipc/              the socket: framing, auth, dispatch, and the client

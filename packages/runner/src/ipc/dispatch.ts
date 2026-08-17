@@ -17,8 +17,9 @@
 import type { Clock } from '../clock.ts';
 import { isJobStoreError, JobStoreError } from '../errors.ts';
 import type { RecoveryReport } from '../recovery.ts';
-import { canEndLocally, type JobState } from '../state-machine.ts';
+import type { JobState } from '../state-machine.ts';
 import type { JobStore } from '../store.ts';
+import { cancelStrategy } from '../strategy/service.ts';
 import type { LeaseKeeper } from '../supervisor.ts';
 import { validateRunnerCommand } from './commands.ts';
 import { isRunnerIpcError, RUNNER_IPC_PROTOCOL_VERSION, type ResponseErrorBody } from './protocol.ts';
@@ -156,60 +157,21 @@ const job = async (
   };
 };
 
+/**
+ * Delegated, not reimplemented. The recorded/applied distinction has exactly one
+ * implementation ({@link cancelStrategy}), so the IPC surface and any other
+ * client of the store cannot drift into disagreeing about whether a job with a
+ * write in flight counts as stopped.
+ */
 const cancelJob = async (
   input: Readonly<Record<string, unknown>>,
   context: RunnerCommandContext,
-): Promise<unknown> => {
-  const jobId = input['jobId'] as string;
-  const reason = input['reason'] as string;
-  const at = context.now();
-
-  const record = await context.store.requestCancel(jobId, reason, at);
-  const lease = context.leases.lease(jobId);
-
-  if (lease === undefined) {
-    return {
-      jobId,
-      state: record.state,
-      recorded: true,
-      applied: false,
-      // Honest, and product-visible: nothing is running this job, so the request
-      // sits until some Runner claims it.
-      pending: 'NOT_LEASED_BY_THIS_RUNNER',
-      cancelRequestedAt: record.cancelRequestedAt,
-    };
-  }
-
-  if (!canEndLocally(record.state)) {
-    return {
-      jobId,
-      state: record.state,
-      recorded: true,
-      applied: false,
-      pending: 'IN_FLIGHT',
-      cancelRequestedAt: record.cancelRequestedAt,
-    };
-  }
-
-  const cancelled = await context.store.transition({
-    lease,
-    to: 'CANCELLED',
-    reason: 'CANCEL_REQUESTED',
-    at,
-    detail: { requestedReason: reason, requestedVia: 'ipc' },
-  });
-  // The terminal transition cleared the lease inside its own transaction, so the
-  // keeper must forget it rather than try to hand back a lease it no longer has.
-  context.leases.forget(jobId, 'RELEASED');
-  return {
-    jobId,
-    state: cancelled.state,
-    recorded: true,
-    applied: true,
-    cancelRequestedAt: cancelled.cancelRequestedAt,
-    terminalAt: cancelled.terminalAt,
-  };
-};
+): Promise<unknown> =>
+  await cancelStrategy(
+    { store: context.store, now: context.now, leases: context.leases, via: 'ipc' },
+    input['jobId'] as string,
+    input['reason'] as string,
+  );
 
 /**
  * Maps a thrown value onto the wire error body.

@@ -125,6 +125,11 @@ export interface CompleteSideEffectInput {
 export interface JobFilter {
   readonly states?: readonly JobState[];
   readonly accountId?: string;
+  /**
+   * One strategy's jobs. A strategy is the unit a caller named and can cancel;
+   * the job is the unit this store runs, and today they are one to one.
+   */
+  readonly strategyId?: string;
   /** Only jobs whose lease is absent or expired as of this instant. */
   readonly unleasedAt?: string;
 }

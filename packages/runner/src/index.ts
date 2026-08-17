@@ -4,11 +4,15 @@
  * What ships here today: the SQLite/WAL job store behind a store interface, the
  * job state machine, crash recovery into `UNKNOWN_PENDING`, the daemon process,
  * its authenticated local IPC socket, the heartbeat/lease supervisor that stops
- * a fenced-out Runner from writing, and — new — `reconcileJob`, which resolves an
- * `UNKNOWN_PENDING` job from an authoritative REST read.
+ * a fenced-out Runner from writing, `reconcileJob`, which resolves an
+ * `UNKNOWN_PENDING` job from an authoritative REST read, and — new —
+ * `StrategyService`: create/get/list/cancel/events over the durable store, with
+ * mandatory capped expiry, frozen-share percentage SELLs and an explicit dynamic
+ * fraction mode.
  *
  * What is still missing is the part that makes a job *move*: there is no
- * executor and no signer, so nothing calls the reconciler on a schedule and a
+ * executor, signer or price watcher, so a created strategy is a durable record
+ * that nothing advances, nothing calls the reconciler on a schedule, and a
  * recovered job sits in the state recovery assigned it. The daemon says so
  * rather than implying otherwise
  * — `driving: false` on the IPC handshake and in `runner.status`, and every agent
@@ -80,10 +84,12 @@ export {
   newIdempotencyKey,
   newInstanceId,
   newJobId,
+  newStrategyId,
 } from './ids.ts';
 export type {
   JobLeg,
   JobLegIntent,
+  JobLegSizing,
   JobLegStatus,
   JobLease,
   JobPolicySnapshot,
@@ -135,5 +141,49 @@ export type {
   TransitionInput,
   UpdateLegInput,
 } from './store.ts';
+export {
+  buildStrategyEvents,
+  type StrategyEvent,
+  type StrategyEventKind,
+  type StrategySideEffectEvent,
+  type StrategyTransitionEvent,
+} from './strategy/events.ts';
+export { isStrategyError, StrategyError, type StrategyErrorCode } from './strategy/errors.ts';
+export {
+  BETA_MAX_EXPIRY_MS,
+  normalizeStrategy,
+  resolveExpiry,
+  type NormalizeOptions,
+  type NormalizedStrategy,
+  type ResolvedExpiry,
+  type StrategyLegRequest,
+  type StrategyRequest,
+  type StrategyTriggerRequest,
+} from './strategy/intent.ts';
+export {
+  classifyMarket,
+  type MarketDisposition,
+  type MarketDispositionReason,
+  type MarketLifecycleFacts,
+  type MarketVerdict,
+} from './strategy/lifecycle.ts';
+export {
+  findPosition,
+  type FindPositionOptions,
+  type PositionLookup,
+  type StrategyPositionReader,
+} from './strategy/positions.ts';
+export {
+  cancelStrategy,
+  StrategyService,
+  type CancelContext,
+  type StrategyCancelResult,
+  type StrategyDetail,
+  type StrategyExpiry,
+  type StrategyLeaseHolder,
+  type StrategyListFilter,
+  type StrategyServiceOptions,
+  type StrategySummary,
+} from './strategy/service.ts';
 export { LATEST_SCHEMA_VERSION, MIGRATIONS, migrate } from './sqlite/migrations.ts';
 export { SqliteJobStore, type SqliteJobStoreOptions } from './sqlite/store.ts';

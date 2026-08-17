@@ -8,7 +8,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { PredictAgentClient, type PriceWatcher } from '../src/client.ts';
-import { compareDecimal, targetReached, toScaled } from '../src/decimal.ts';
+import { compareDecimal, fromScaled, targetReached, toScaled } from '../src/decimal.ts';
 import type { AgentSigner } from '../src/signer.ts';
 
 const signer: AgentSigner = {
@@ -115,6 +115,27 @@ describe('direction', () => {
   it('refuses a malformed price rather than silently never firing', () => {
     expect(() => toScaled('abc')).toThrow(RangeError);
     expect(() => toScaled('0.1234567')).toThrow(RangeError);
+  });
+
+  it('renders a scaled integer back as a decimal string, never a number', () => {
+    // Always six fractional digits, so '0.5' and '0.500000' cannot disagree once
+    // a size has been computed. The wire carries strings; a float round-trip here
+    // is how a share count acquires a rounding error.
+    expect(fromScaled(toScaled('0.5'))).toBe('0.500000');
+    expect(fromScaled(0n)).toBe('0.000000');
+    expect(fromScaled(1n)).toBe('0.000001');
+    expect(fromScaled(toScaled('12.345678'))).toBe('12.345678');
+    expect(fromScaled(9_007_199_254_740_993_000_000n)).toBe('9007199254740993.000000');
+  });
+
+  it('round-trips every decimal it accepts', () => {
+    for (const value of ['0.000001', '0.999999', '1.000000', '25.000000', '1234.567890']) {
+      expect(fromScaled(toScaled(value))).toBe(value);
+    }
+  });
+
+  it('refuses a negative scaled value, because the contract has no signed decimals', () => {
+    expect(() => fromScaled(-1n)).toThrow(RangeError);
   });
 });
 

@@ -10,7 +10,7 @@
  * imported lazily, so a caller that never streams never loads it — see
  * `execution-stream.ts` for why re-implementing the protocol was the worse trade.
  */
-export { compareDecimal, targetReached, toScaled } from './decimal.ts';
+export { compareDecimal, fromScaled, targetReached, toScaled } from './decimal.ts';
 export {
   type ExecutionStream,
   SocketExecutionStream,

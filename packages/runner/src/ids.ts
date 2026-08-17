@@ -10,6 +10,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 
 export const newJobId = (): string => `job_${randomUUID()}`;
+/** The caller's handle on a strategy, when the caller did not bring its own. */
+export const newStrategyId = (): string => `strat_${randomUUID()}`;
 export const newAttemptId = (): string => `att_${randomUUID()}`;
 export const newInstanceId = (): string => `run_${randomUUID()}`;
 

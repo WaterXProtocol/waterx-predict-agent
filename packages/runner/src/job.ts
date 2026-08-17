@@ -39,11 +39,41 @@ export interface RunnerInstance {
 }
 
 /**
+ * How a leg's size was decided, and whether it is still open to change.
+ *
+ * ADR-0001 §13 makes the frozen share count the *default* reading of "sell half",
+ * and this discriminant is what keeps that structural rather than conventional.
+ * A stored leg either carries an absolute size or names, in a shape nothing else
+ * has, the one mode that deliberately re-evaluates later:
+ *
+ *   - `ABSOLUTE` — the caller gave a share count or a budget. Nothing to resolve.
+ *   - `FROZEN_FRACTION` — the caller said "half", and half of the position *as it
+ *     was at creation* is already computed into `sellShares`. The fraction and the
+ *     share count it was taken from are kept for the audit, not for arithmetic:
+ *     a position that grows afterwards does not enlarge this order.
+ *   - `DYNAMIC_FRACTION` — the caller explicitly asked for the fraction to be
+ *     re-read at trigger time, so `sellShares` is ABSENT until then. This is the
+ *     mode that sells more than the owner had in mind when the position moved, so
+ *     it is never reachable by wording, only by a distinct field (D-15).
+ */
+export type JobLegSizing =
+  | { readonly kind: 'ABSOLUTE' }
+  | {
+      readonly kind: 'FROZEN_FRACTION';
+      readonly fraction: DecimalString;
+      /** The position's share count at creation, from an authoritative read. */
+      readonly positionSharesAtCreation: DecimalString;
+      readonly frozenAt: Iso8601;
+    }
+  | { readonly kind: 'DYNAMIC_FRACTION'; readonly fraction: DecimalString };
+
+/**
  * One leg's normalized intent, frozen at job creation.
  *
- * `size` is absolute, which is how ADR-0001 §13's frozen-share percentage SELL
- * becomes structural rather than a convention: a job that stored "half" would
- * re-evaluate the fraction at trigger time by construction.
+ * The size is absolute for every mode but `DYNAMIC_FRACTION`, which is the whole
+ * point of the discriminant above: a reader that ignores `sizing` and finds
+ * `sellShares` is looking at a number that will not change, and a leg whose share
+ * count is still open cannot be mistaken for one, because it has none.
  */
 export interface JobLegIntent {
   readonly marketId: string;
@@ -51,19 +81,38 @@ export interface JobLegIntent {
   readonly side: PredictSide;
   /** BUY commits a budget; SELL closes shares. Never both (ADR-0001 §11). */
   readonly buyAmount?: DecimalString;
+  /** Absent only for `DYNAMIC_FRACTION`, where it is resolved at trigger time. */
   readonly sellShares?: DecimalString;
   /** Required for SELL: which on-chain position is being closed. */
   readonly positionId?: string;
   readonly maxSlippageBps: number;
   readonly worstAcceptablePrice?: PriceString;
+  /**
+   * Absent on records written before sizing was explicit; read as `ABSOLUTE`,
+   * which is what those legs are — they could only carry an absolute size.
+   */
+  readonly sizing?: JobLegSizing;
 }
 
-/** When the job may act. A BUY target is a ceiling, a SELL target a floor. */
+/**
+ * When the job may act. A BUY target is a ceiling, a SELL target a floor.
+ *
+ * The watched market is part of the trigger rather than inferred from the legs at
+ * trigger time. A multi-leg job may watch one market and trade another, and
+ * re-deriving "the market" from a leg list would silently pick a different one as
+ * soon as a job has more than one — ADR-0004 also requires the resolved market
+ * identity to be persisted rather than re-resolved from a name.
+ */
 export interface JobTrigger {
   readonly kind: 'IMMEDIATE' | 'PRICE';
   readonly targetPrice?: PriceString;
   /** Which side of the book is watched: BUY watches ask, SELL watches bid. */
   readonly observe?: 'ASK' | 'BID';
+  /** Absent for `IMMEDIATE`, and on records written before it was persisted. */
+  readonly marketId?: string;
+  readonly outcomeId?: PredictOutcomeId;
+  /** The side the target is read as: a BUY ceiling or a SELL floor. */
+  readonly side?: PredictSide;
 }
 
 /**

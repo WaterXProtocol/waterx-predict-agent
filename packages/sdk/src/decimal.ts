@@ -30,6 +30,25 @@ export function toScaled(value: string): bigint {
   return BigInt(whole + fraction.padEnd(SCALE, '0'));
 }
 
+/**
+ * The inverse of {@link toScaled}: a scaled integer back to a decimal string.
+ *
+ * Always emits the full six fractional digits rather than a trimmed form. A size
+ * that renders differently depending on its value is one a caller ends up
+ * normalizing itself before comparing, and the two renderings then disagree about
+ * whether `0.5` and `0.500000` are the same order.
+ *
+ * Negative input throws: this contract has no signed decimals, and formatting one
+ * would produce a string {@link toScaled} refuses to read back.
+ */
+export function fromScaled(scaled: bigint): string {
+  if (scaled < 0n) {
+    throw new RangeError(`not an unsigned scaled decimal: ${scaled.toString()}`);
+  }
+  const digits = scaled.toString().padStart(SCALE + 1, '0');
+  return `${digits.slice(0, -SCALE)}.${digits.slice(-SCALE)}`;
+}
+
 /** `-1` when `a < b`, `0` when equal, `1` when `a > b`. */
 export function compareDecimal(a: string, b: string): -1 | 0 | 1 {
   const left = toScaled(a);
