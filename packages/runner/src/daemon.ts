@@ -35,10 +35,10 @@
  * impression.
  *
  * Nothing in *this package* constructs a driver. `runnerd` starts a daemon with
- * no `driver`: a signer does not exist here at all, and while
- * `QuoteStreamPriceObserver` does, opening the stream behind it takes credentials
- * and an endpoint this build has no file format for yet. An embedding application
- * supplies all three.
+ * no `driver`: `QuoteStreamPriceObserver` and `createExternalCommandSigner` both
+ * exist, but opening the stream behind one takes credentials and an endpoint, and
+ * building the other takes a keystore command and a policy — and this build has no
+ * file format for any of it yet. An embedding application supplies all three.
  */
 import { hostname } from 'node:os';
 import { join } from 'node:path';
@@ -66,10 +66,11 @@ import { LeaseKeeper, type LeaseLossReason } from './supervisor.ts';
  * The pieces a daemon started with no `driver` is missing.
  *
  * This is a list of what a daemon INSTANCE was not handed, not of what the
- * package can build. Both `JobScheduler` and `QuoteStreamPriceObserver` exist;
- * a daemon started with no `driver` still has neither, because nothing wired one
- * up, and it still has no signer because none exists to wire. The consequence is
- * the loop: starting one that could not act would be worse than not starting it.
+ * package can build. `JobScheduler`, `QuoteStreamPriceObserver` and
+ * `createExternalCommandSigner` all exist; a daemon started with no `driver` has
+ * none of them, because nothing wired them up. `signer` therefore stays on this
+ * list — the gap it names is this instance's, and a Runner that reported a signer
+ * it was never handed would be claiming it can sign for a job it cannot.
  */
 export const RUNNER_DRIVER_GAPS: readonly string[] = ['scheduler', 'signer', 'price-watcher'];
 

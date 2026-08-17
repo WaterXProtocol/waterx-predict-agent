@@ -14,6 +14,8 @@
  * moves the job to `UNKNOWN_PENDING`. A process that dies gets to write nothing
  * at all, and that is the case the ledger has to survive.
  */
+import { existsSync, readFileSync } from 'node:fs';
+
 import type {
   PredictAgentMarket,
   PredictExecutionStatus,
@@ -23,11 +25,12 @@ import { PredictAgentTransportError } from '@waterx/predict-agent-sdk';
 
 import type { JobLease, JobLegIntent, JobRecord } from '../src/job.ts';
 import { recoverJobs } from '../src/recovery.ts';
+import { createExternalCommandSigner } from '../src/signer.ts';
 import { SqliteJobStore } from '../src/sqlite/store.ts';
 import type { JobState } from '../src/state-machine.ts';
 import type { JobStore, TransitionInput } from '../src/store.ts';
 import { driveJob, type DriveResult } from '../src/strategy/driver.ts';
-import type { PriceObserver, StrategyGateway } from '../src/strategy/gateway.ts';
+import type { PriceObserver, StrategyGateway, StrategySigner } from '../src/strategy/gateway.ts';
 import { jobInput, later, LEG, T0, tempStoreDir, type TempStoreDir } from './harness.ts';
 import {
   apiError,
@@ -98,12 +101,12 @@ const arm = async (overrides: Parameters<typeof jobInput>[0] = {}): Promise<JobR
 const drive = async (
   gateway: StrategyGateway,
   prices: PriceObserver,
-  options: { at?: string; store?: JobStore } = {},
+  options: { at?: string; store?: JobStore; signer?: StrategySigner } = {},
 ): Promise<DriveResult> =>
   await driveJob({
     store: options.store ?? store,
     gateway,
-    signer,
+    signer: options.signer ?? signer,
     prices,
     lease,
     at: options.at ?? NOW,
@@ -282,6 +285,131 @@ describe('a market that stops trading', () => {
 
     expect((await drive(gateway, pricesAt('0.900000'))).reason).toBe('MARKET_STATUS_UNKNOWN');
     expect(await stateOf()).toBe('PAUSED');
+  });
+});
+
+/* ── The authority a job was admitted under ────────────────────────────────── */
+
+describe('a job whose policy cannot authorize an unattended write', () => {
+  /**
+   * These records cannot be created through `normalizeStrategy` any more — it
+   * refuses both modes. They are written straight to the store here, which is
+   * exactly the case this check exists for: a row an older build wrote, or one
+   * written by a surface that skipped normalization.
+   */
+  const armUnder = async (mode: string): Promise<void> => {
+    await arm({
+      policy: { mode: mode as 'interactive', source: 'file:policy.json' },
+    });
+  };
+
+  it('ends an interactive job at the trigger, and reads nothing to decide it', async () => {
+    await armUnder('interactive');
+    const gateway = gatewayOf();
+
+    const result = await drive(gateway, pricesAt('0.900000'));
+
+    expect(result.reason).toBe('POLICY_REQUIRES_APPROVAL');
+    expect(await stateOf()).toBe('FAILED');
+    // The cheapest question in the pass, so it is asked first: no limits read, no
+    // market read, no quote, and above all no execution created for an order this
+    // Runner could never have authorized.
+    expect(gateway.marketCalls).toEqual([]);
+    expect(gateway.quoteCalls).toEqual([]);
+    expect(gateway.createCalls).toEqual([]);
+  });
+
+  it('ends a read-only job at the trigger for the same reason', async () => {
+    await armUnder('read-only');
+    const gateway = gatewayOf();
+
+    const result = await drive(gateway, pricesAt('0.900000'));
+
+    expect(result.reason).toBe('POLICY_READ_ONLY');
+    expect(await stateOf()).toBe('FAILED');
+    expect(gateway.createCalls).toEqual([]);
+  });
+
+  it('pauses on a policy mode it does not recognize, rather than ending the job', async () => {
+    await armUnder('delegated-auto-v2');
+    const gateway = gatewayOf();
+
+    const result = await drive(gateway, pricesAt('0.900000'));
+
+    // ADR-0004's rule, applied to an authority instead of a market: the build that
+    // understands this mode may be the next one to start, and a job ended here
+    // could not be brought back by installing it.
+    expect(result.reason).toBe('POLICY_MODE_UNRECOGNIZED');
+    expect(await stateOf()).toBe('PAUSED');
+    expect(gateway.createCalls).toEqual([]);
+  });
+});
+
+describe('a signer that refuses', () => {
+  /**
+   * The real gate, wired into a real pass. No child process and no key: `run` is
+   * injected, and it fails loudly, because a spawn here would mean the gate let
+   * through a job it was built to stop.
+   */
+  const gatedSigner = (signingAt: string): StrategySigner =>
+    createExternalCommandSigner({
+      command: ['/opt/keystore/bin/sign'],
+      agentWallet: '0xagent',
+      now: () => signingAt,
+      run: async () => {
+        throw new Error('the signer spawned a child for a job it should have refused');
+      },
+    });
+
+  it('leaves a created execution unsigned, records the reason, and lets the reconciler own it', async () => {
+    // The snapshot says delegated-auto and its scope is still open when preflight
+    // reads it, so the pass proceeds — and by the time the bytes come back the
+    // mandate has run out. This state exists only because the scope is read
+    // twice, once before the network calls and once at the signature itself.
+    await arm({ policy: { ...jobInput().policy, notAfter: later(NOW, 5_000) } });
+    const gateway = gatewayOf({
+      quotes: [quote()],
+      creates: [created('exe_1')],
+      executions: { exe_1: { executionId: 'exe_1', status: 'AWAITING_SIGNATURE' } },
+    });
+
+    const result = await drive(gateway, pricesAt('0.900000'), {
+      signer: gatedSigner(later(NOW, 10_000)),
+    });
+
+    // The execution EXISTS. A policy that forbids signing does not un-create it,
+    // and this module never calls an order failed on its own reading.
+    expect(gateway.createCalls).toHaveLength(1);
+    expect(gateway.submitCalls).toEqual([]);
+    expect(result.reason).toBe('NOTHING_SIGNED');
+    expect(result.legs?.[0]?.signRefusedCode).toBe('POLICY_SCOPE_EXPIRED');
+    // Kept apart from a server refusal: the two send an operator to different
+    // systems, and this one is local.
+    expect(result.legs?.[0]?.refusedCode).toBeUndefined();
+
+    const events = await store.listTransitions('job_1');
+    const nothingSigned = events.find((event) => event.reason === 'NOTHING_SIGNED');
+    expect(nothingSigned?.detail).toMatchObject({
+      unsigned: [{ legIndex: 0, code: 'POLICY_SCOPE_EXPIRED' }],
+    });
+  });
+
+  it('records a code even for a refusal that is not a SignerError', async () => {
+    await arm();
+    const gateway = gatewayOf({
+      quotes: [quote()],
+      creates: [created('exe_1')],
+      executions: { exe_1: { executionId: 'exe_1', status: 'AWAITING_SIGNATURE' } },
+    });
+
+    const result = await drive(gateway, pricesAt('0.900000'), {
+      signer: { sign: async () => Promise.reject(new Error('keystore socket closed')) },
+    });
+
+    // A third-party signer may throw anything. The leg still reports *that* it
+    // was refused, because silence here is a leg nobody looks for.
+    expect(result.legs?.[0]?.signRefusedCode).toBe('SIGNER_ERROR');
+    expect(gateway.submitCalls).toEqual([]);
   });
 });
 
@@ -720,6 +848,68 @@ describe('what never reaches the disk', () => {
     });
     expect(written).not.toContain(BYTES);
     expect(written).not.toContain(SIGNATURE);
+  });
+
+  it('keeps a real signer child out of the record too — file bytes included', async () => {
+    // The previous case uses the permissive fake. This one runs the module that
+    // actually talks to a keystore, because that is the path where a signature,
+    // the sponsored bytes and a child's stdout all exist in one process at once.
+    await arm();
+    const gateway = gatewayOf({
+      quotes: [quote()],
+      creates: [created('exe_1')],
+      submits: [{ executionId: 'exe_1', status: 'SUBMITTED', transactionDigest: '0xsubmit' }],
+      executions: { exe_1: { executionId: 'exe_1', status: 'PENDING_FILL' } },
+    });
+    const CHATTER = 'keystore: touch the hardware key to approve';
+    const diagnostics: string[] = [];
+    let sentToChild = '';
+
+    const result = await drive(gateway, pricesAt('0.900000'), {
+      signer: createExternalCommandSigner({
+        command: ['/opt/keystore/bin/sign'],
+        agentWallet: '0xagent',
+        now: () => NOW,
+        onDiagnostic: (message) => diagnostics.push(message),
+        run: async (_command, stdin) => {
+          sentToChild = stdin;
+          return {
+            code: 0,
+            stdout: `${JSON.stringify({ signature: SIGNATURE })}\n`,
+            stderr: `${CHATTER}\n`,
+            timedOut: false,
+          };
+        },
+      }),
+    });
+
+    // It really did sign and submit — otherwise this proves only that a failing
+    // path writes nothing.
+    expect(gateway.submitCalls).toEqual(['exe_1']);
+    // The child was handed the bytes, so they were in memory during this pass.
+    expect(sentToChild).toContain(BYTES);
+    // stderr is an operator's channel and may be forwarded…
+    expect(diagnostics.join('\n')).toContain(CHATTER);
+
+    // …and none of it — signature, bytes, or the child's own words — is in the
+    // record. Read from the FILE, not the store's return values: an in-memory
+    // check would pass for a store that writes more than it hands back.
+    const written = JSON.stringify({
+      result,
+      legs: await store.listLegs('job_1'),
+      attempts: await store.listSideEffects('job_1'),
+      transitions: await store.listTransitions('job_1'),
+    });
+    await store.close();
+    const onDisk = [dir.path, `${dir.path}-wal`]
+      .filter((path) => existsSync(path))
+      .map((path) => readFileSync(path).toString('binary'))
+      .join('');
+    store = open();
+    for (const secret of [SIGNATURE, BYTES, CHATTER]) {
+      expect(written, secret).not.toContain(secret);
+      expect(onDisk, secret).not.toContain(secret);
+    }
   });
 
   it('fingerprints the submit over the execution id, so a replay is provable', async () => {

@@ -10,6 +10,8 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { CAPABILITIES } from '../packages/cli/src/capabilities.ts';
+import { SIGNER_PROTOCOL as CLI_SIGNER_PROTOCOL } from '../packages/cli/src/signer.ts';
+import { SIGNER_PROTOCOL as RUNNER_SIGNER_PROTOCOL } from '../packages/runner/src/signer.ts';
 import { AGENT_COMMANDS } from '../packages/schema/src/index.ts';
 import { PredictAgentClient } from '../packages/sdk/src/index.ts';
 
@@ -280,8 +282,8 @@ describe('the Runner package', () => {
   });
 
   it('says in its README which half of the Runner exists', () => {
-    // The daemon, its socket, `driveJob`, the loop that calls it and the price
-    // source it reads are all built. What is not built is a signer, or any
+    // The daemon, its socket, `driveJob`, the loop that calls it, the price source
+    // it reads and now the signer are all built. What is not built is any
     // configuration surface to assemble a driver from, so a shipped `runnerd`
     // still advances nothing. A README that described this package as "the
     // Runner" would be claiming a job progresses on its own, so the absence has
@@ -291,11 +293,13 @@ describe('the Runner package', () => {
     expect(readme.toLowerCase()).toContain('daemon');
     expect(readme).toContain('driving: false');
     expect(readme).toContain(
-      'Signer inside the Runner trust boundary | **not implemented**',
-    );
-    expect(readme).toContain(
       'A driver `runnerd` can construct from local configuration | **not implemented**',
     );
+    // The signer exists here now, and the two refusals are the part that must not
+    // be quietly dropped from the prose if someone later "simplifies" the gate.
+    expect(readme).toContain('Signer inside the Runner trust boundary, over an external command');
+    expect(readme).toContain('`interactive` is refused');
+    expect(readme).toContain('Only `delegated-auto` signs');
   });
 
   it('keeps the price observer from ageing a price into an answer', () => {
@@ -336,6 +340,35 @@ describe('the Runner package', () => {
     const bin = read('packages/runner/src/bin/runnerd.ts');
     expect(bin).not.toMatch(/^\s*driver:/m);
     expect(bin).toContain('driving: handle.driving');
+  });
+});
+
+describe('the local signing protocol', () => {
+  it('is one wire, spoken identically by the CLI and the Runner', () => {
+    // The two implementations are deliberately separate: the CLI must not depend
+    // on a daemon and the Runner must not depend on a CLI, so neither can import
+    // the other's signer. That leaves the wire itself as the shared thing, and an
+    // operator who configured one keystore command has to be able to point the
+    // other at it unchanged — a drift here would be discovered by a signer
+    // refusing a request in the middle of a triggered order.
+    expect(RUNNER_SIGNER_PROTOCOL).toEqual(CLI_SIGNER_PROTOCOL);
+    // Pinned, so a change to both at once is still a decision someone states.
+    expect(RUNNER_SIGNER_PROTOCOL.version).toBe(1);
+  });
+
+  it('is enforced against what each side actually writes, not just declared', () => {
+    // A descriptor two packages agree on is worth nothing if neither is held to
+    // it. Each package asserts its own request has exactly these keys; this names
+    // the tests that do it, so deleting one is visible here.
+    expect(read('packages/cli/tests/signer.test.ts')).toContain('SIGNER_PROTOCOL.requests');
+    expect(read('packages/runner/tests/signer.test.ts')).toContain('SIGNER_PROTOCOL');
+  });
+
+  it('keeps the two implementations from importing each other', () => {
+    const cli = read('packages/cli/src/signer.ts');
+    const runner = read('packages/runner/src/signer.ts');
+    expect(cli).not.toContain('predict-agent-runner');
+    expect(runner).not.toContain('predict-agent-cli');
   });
 });
 

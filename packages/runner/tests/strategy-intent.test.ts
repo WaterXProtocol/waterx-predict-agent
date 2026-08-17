@@ -496,6 +496,50 @@ describe('the rest of the request', () => {
     expect(error.code).toBe('POLICY_FORBIDS_WRITE');
   });
 
+  /**
+   * The refusal that looks wrong until you follow it through.
+   *
+   * `interactive` is the DEFAULT approval mode, so refusing it reads at first like
+   * refusing the common case. But interactive means *a person approves this write
+   * when it happens*, and a durable strategy fires when its target is met — a
+   * moment nobody is present for. Accepting one would either sign without the
+   * approval it promises, or watch for seven days and refuse at the very end; and
+   * it would make delegated-auto's explicit scope evadable by anyone willing to
+   * phrase an order as a strategy whose trigger is already met.
+   */
+  it('refuses the interactive default, because a strategy fires while nobody is being asked', async () => {
+    const error = await refusal(
+      normalizeStrategy(request({ policy: { mode: 'interactive', source: 'default' } }), {
+        at: T0,
+      }),
+    );
+    expect(error.code).toBe('POLICY_REQUIRES_DELEGATION');
+    expect(error.message).toContain('delegated-auto');
+    expect(error.detail).toMatchObject({ mode: 'interactive' });
+  });
+
+  it('refuses a policy mode it does not recognize rather than treating it as permissive', async () => {
+    const error = await refusal(
+      normalizeStrategy(
+        request({ policy: { mode: 'yolo' as never, source: 'file:policy.json' } }),
+        { at: T0 },
+      ),
+    );
+    expect(error.code).toBe('POLICY_MODE_UNRECOGNIZED');
+  });
+
+  it('refuses the authority before it looks at anything else', async () => {
+    // The order matters for the message an owner sees. A read-only strategy with
+    // a bad expiry has one problem worth naming, and it is not the expiry.
+    const error = await refusal(
+      normalizeStrategy(
+        request({ policy: { mode: 'read-only', source: 'file:policy.json' }, expiresAt: 'never' }),
+        { at: T0 },
+      ),
+    );
+    expect(error.code).toBe('POLICY_FORBIDS_WRITE');
+  });
+
   it('refuses a strategy with no legs', async () => {
     const error = await refusal(normalizeStrategy(request({ legs: [] }), { at: T0 }));
     expect(error.code).toBe('NO_LEGS');

@@ -48,5 +48,10 @@ export { createNodeStreams, type OutputStreams } from './output.ts';
  */
 export { GLOBAL_FLAGS, parseArgv, type ParsedArgv } from './parse.ts';
 export { loadConfig, type ResolvedConfig } from './config.ts';
-export { describeSigner, type SignerDescription, type SignerRunner } from './signer.ts';
+export {
+  describeSigner,
+  SIGNER_PROTOCOL,
+  type SignerDescription,
+  type SignerRunner,
+} from './signer.ts';
 export { CLI_NAME, CLI_VERSION, API_VERSION } from './version.ts';

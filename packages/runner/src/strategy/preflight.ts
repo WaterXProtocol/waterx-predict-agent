@@ -18,7 +18,8 @@
  *   - **STOP** — this strategy will not act again, so it ends rather than sitting
  *     in a state its owner would read as live. Reserved for facts that do not
  *     reverse themselves: an explicit revocation, a closed or resolved market, a
- *     local mandate that has run out.
+ *     local mandate that has run out, and an approval mode no unattended process
+ *     can ever satisfy.
  *   - **PROCEED** — with a per-leg plan, in which a leg may be individually
  *     skipped. Legs are independent (ADR-0001 §15), so one leg's position having
  *     vanished must not cancel the leg beside it.
@@ -49,6 +50,13 @@ export type PreflightPauseReason =
   | 'MARKET_NOT_TRADEABLE'
   /** A market status this build does not recognize. Pause, never end (ADR-0004). */
   | 'MARKET_STATUS_UNKNOWN'
+  /**
+   * A policy mode this build does not recognize, from a store a newer build
+   * wrote. Paused rather than ended, for ADR-0004's reason: the build that
+   * understands the mode may be the next one to start, and a job ended here
+   * cannot be brought back by installing it.
+   */
+  | 'POLICY_MODE_UNRECOGNIZED'
   /** A position read that the server never proved complete. Not "you hold none". */
   | 'POSITION_UNVERIFIED';
 
@@ -58,6 +66,19 @@ export type PreflightStopReason =
   | 'DELEGATION_REVOKED'
   /** The local delegated-auto mandate ran out while the job was armed. */
   | 'POLICY_EXPIRED'
+  /**
+   * The job was admitted under `read-only`. Creation refuses this, so reaching
+   * it means a record written by an older build or by something that skipped
+   * normalization — and a read-only job will not become signable by waiting.
+   */
+  | 'POLICY_READ_ONLY'
+  /**
+   * The job was admitted under `interactive`, the default approval mode. An
+   * unattended Runner has nobody to ask, and it will not have anyone to ask
+   * tomorrow either, so the job ends rather than watching a price for seven days
+   * and refusing at the signer when the target is finally met.
+   */
+  | 'POLICY_REQUIRES_APPROVAL'
   | 'MARKET_CLOSED'
   | 'MARKET_RESOLVED';
 
@@ -153,8 +174,32 @@ export const preflight = async (input: PreflightInput): Promise<PreflightVerdict
  * audit record, and only in one direction: `notAfter` can pass, and a scope that
  * has run out is a scope the owner declined to extend. It cannot widen anything —
  * the server's effective limits are checked separately and always win.
+ *
+ * The MODE is checked here too, and first, because it is the cheapest question in
+ * the whole pass and the only one whose answer is knowable without a network
+ * call. `createExternalCommandSigner` refuses the same three cases independently
+ * (`src/signer.ts`), and that is the check that cannot be skipped — but a job
+ * refused only there would already have quoted, created executions and reserved
+ * allowance for orders it could never authorize. This is where it costs nothing.
+ *
+ * Exported because the driver calls it once more, ahead of the watch pass, so a
+ * job that can never authorize a write is not even watched. Both callers share
+ * this one function rather than each spelling the rule out: two copies of an
+ * authority check are two chances to disagree about who may move money.
  */
-const checkLocalPolicy = (job: JobRecord, at: string): PreflightVerdict | undefined => {
+export const checkLocalPolicy = (job: JobRecord, at: string): PreflightVerdict | undefined => {
+  const mode: string = job.policy.mode;
+  const modeDetail = { mode, source: job.policy.source };
+  if (mode === 'read-only') {
+    return { kind: 'STOP', reason: 'POLICY_READ_ONLY', detail: modeDetail };
+  }
+  if (mode === 'interactive') {
+    return { kind: 'STOP', reason: 'POLICY_REQUIRES_APPROVAL', detail: modeDetail };
+  }
+  if (mode !== 'delegated-auto') {
+    return { kind: 'PAUSE', reason: 'POLICY_MODE_UNRECOGNIZED', detail: modeDetail };
+  }
+
   const notAfter = job.policy.notAfter;
   if (notAfter === undefined) return undefined;
   if (Date.parse(notAfter) > Date.parse(at)) return undefined;

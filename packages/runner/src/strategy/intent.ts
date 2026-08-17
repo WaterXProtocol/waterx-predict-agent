@@ -217,6 +217,48 @@ const describeMs = (ms: number): string => {
     : `${String(Math.round(ms / 3_600_000))} hours`;
 };
 
+/* ── Policy ────────────────────────────────────────────────────────────────── */
+
+/**
+ * Refuse to write down a strategy this Runner could never authorize.
+ *
+ * Exported so the rule can be asserted directly, and so a surface that writes a
+ * job by another route cannot quietly skip it.
+ *
+ * `interactive` is the interesting refusal. It is the DEFAULT approval mode, and
+ * refusing it looks at first like refusing the common case — but interactive means
+ * *a person approves this write, at the moment it happens*, and a durable strategy
+ * fires when its target is met, which is precisely a moment nobody is present for.
+ * Accepting one would either sign without the approval it promises or watch for
+ * seven days and refuse at the end; and it would make `delegated-auto`'s explicit
+ * scope evadable by anyone willing to phrase an order as a strategy.
+ */
+export const requirePolicyThatCanSignUnattended = (policy: JobPolicySnapshot): void => {
+  const mode: string = policy.mode;
+  const detail = { mode, source: policy.source };
+  if (mode === 'read-only') {
+    throw new StrategyError(
+      'POLICY_FORBIDS_WRITE',
+      'the policy in force is read-only, and a durable strategy exists to place an order later',
+      detail,
+    );
+  }
+  if (mode === 'interactive') {
+    throw new StrategyError(
+      'POLICY_REQUIRES_DELEGATION',
+      'the policy in force is interactive, which requires a person to approve each write; a durable strategy fires while nobody is being asked, so it needs a scoped delegated-auto policy',
+      detail,
+    );
+  }
+  if (mode !== 'delegated-auto') {
+    throw new StrategyError(
+      'POLICY_MODE_UNRECOGNIZED',
+      `policy mode ${mode} is not one this build recognizes, and an unrecognized authority is not an authority`,
+      detail,
+    );
+  }
+};
+
 /* ── Normalization ─────────────────────────────────────────────────────────── */
 
 export const normalizeStrategy = async (
@@ -227,16 +269,12 @@ export const normalizeStrategy = async (
   requireText(request.accountId, 'accountId');
   requireText(request.agentWallet, 'agentWallet');
 
-  // A read-only policy is refused at creation rather than at the trigger. A
-  // strategy exists in order to sign later; arming one that may not is a promise
-  // the Runner would break hours after the owner walked away (ADR-0001 §9).
-  if (request.policy.mode === 'read-only') {
-    throw new StrategyError(
-      'POLICY_FORBIDS_WRITE',
-      'the policy in force is read-only, and a durable strategy exists to place an order later',
-      { mode: request.policy.mode, source: request.policy.source },
-    );
-  }
+  // The authority is checked at creation rather than at the trigger. A strategy
+  // exists in order to sign later; arming one that may not is a promise the
+  // Runner would break hours after the owner walked away (ADR-0001 §9). The same
+  // three cases are refused again by `preflight` and, last, by the signer itself —
+  // this is the layer that tells the owner while they are still there to hear it.
+  requirePolicyThatCanSignUnattended(request.policy);
 
   const expiry = resolveExpiry(request.expiresAt, options.at, options.maxExpiryMs);
 

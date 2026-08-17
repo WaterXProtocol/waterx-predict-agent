@@ -19,7 +19,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { CliError, describeSigner, EXIT_CODES, loadConfig } from '../src/index.ts';
 import { SigningGate, type WriteAuthorization } from '../src/policy.ts';
-import { createSigner, type SignerRunner } from '../src/signer.ts';
+import { createSigner, SIGNER_PROTOCOL, type SignerRunner } from '../src/signer.ts';
 import { AGENT_WALLET, AUTH_OK, CONFIGURED_ENV, invoke } from './harness.ts';
 
 const MARKETS_OK = { status: 200, body: { markets: [] } } as const;
@@ -123,6 +123,29 @@ describe('policy enforcement in the signer', () => {
       agentWallet: AGENT_WALLET,
     });
     expect(request.messageBase64).toBe(Buffer.from([9, 9]).toString('base64'));
+  });
+
+  it('writes exactly the fields the protocol descriptor claims, for both kinds', async () => {
+    // What makes SIGNER_PROTOCOL a claim rather than a comment. The Runner
+    // asserts the same thing about its own request, and `tests/workspace.test.ts`
+    // asserts the two descriptors are equal — so an operator who configured one
+    // keystore command for the CLI can point the Runner at it unchanged.
+    const gate = new SigningGate('interactive');
+    gate.grant(authorization(1));
+    const run = runnerReturning({ stdout: '{"signature":"s"}' });
+    const signer = createSigner(configFrom(), run, () => undefined, gate);
+
+    await signer.signPersonalMessage(new Uint8Array([1]));
+    await signer.signTransaction(new Uint8Array([2]));
+
+    for (const [index, expected] of SIGNER_PROTOCOL.requests.entries()) {
+      const written = JSON.parse(run.mock.calls[index]?.[1] ?? '{}') as Record<string, unknown>;
+      expect(written.type, expected.type).toBe(expected.type);
+      // Exactly these keys: an extra one is an undocumented field a provider
+      // cannot know to check, and a missing one is a promise this file broke.
+      expect(Object.keys(written).sort(), expected.type).toEqual([...expected.fields].sort());
+    }
+    expect(SIGNER_PROTOCOL.response.fields).toEqual(['signature']);
   });
 
   it('reports the address it was configured with rather than deriving one', () => {

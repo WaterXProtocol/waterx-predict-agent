@@ -19,7 +19,12 @@ import type {
 } from '@waterx/predict-agent-sdk';
 import { PredictAgentApiError } from '@waterx/predict-agent-sdk';
 
-import type { PriceObserver, StrategyGateway, StrategySigner } from '../src/strategy/gateway.ts';
+import type {
+  PriceObserver,
+  StrategyGateway,
+  StrategySignRequest,
+  StrategySigner,
+} from '../src/strategy/gateway.ts';
 import { later, T0 } from './harness.ts';
 
 export const INSTANCE = 'run_1';
@@ -193,8 +198,32 @@ export const gatewayOf = (script: Script = {}): Recorder => {
   };
 };
 
-/** The one seam that may see key material. A script; no key exists here. */
+/**
+ * The one seam that may see key material. A script; no key exists here.
+ *
+ * Deliberately *permissive*: it signs whatever it is handed, so a driver test
+ * that reaches the signer proves the executor got there rather than proving the
+ * signer's own gate. The real gate is `createExternalCommandSigner`, and it is
+ * tested against its own refusals in `tests/signer.test.ts`.
+ */
 export const signer: StrategySigner = { sign: async () => SIGNATURE };
+
+/** Records what the executor asked the signer to authorize, and refuses nothing. */
+export interface RecordingSigner extends StrategySigner {
+  readonly signCalls: StrategySignRequest[];
+}
+
+export const signerRecording = (answer: string | Error = SIGNATURE): RecordingSigner => {
+  const signCalls: StrategySignRequest[] = [];
+  return {
+    signCalls,
+    sign: async (request) => {
+      signCalls.push(request);
+      if (answer instanceof Error) throw answer;
+      return answer;
+    },
+  };
+};
 
 export const pricesAt = (...observed: (string | null)[]): PriceObserver => {
   let index = 0;

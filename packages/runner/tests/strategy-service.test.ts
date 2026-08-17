@@ -17,7 +17,13 @@ import {
 } from '../src/strategy/service.ts';
 import { later, T0, tempStoreDir, type TempStoreDir } from './harness.ts';
 
-const POLICY: JobPolicySnapshot = { mode: 'interactive', source: 'file:policy.json' };
+/**
+ * `delegated-auto`, because that is the only authority under which a durable
+ * strategy can be created at all: `interactive` and `read-only` are refused by
+ * `requirePolicyThatCanSignUnattended`, and the tests below are about what a
+ * *created* strategy does. The refusals have their own cases at the bottom.
+ */
+const POLICY: JobPolicySnapshot = { mode: 'delegated-auto', source: 'file:policy.json' };
 const DAY = 86_400_000;
 const KEY = '4c1c9d2e-0000-4000-8000-000000000001';
 const FINGERPRINT = 'a'.repeat(64);

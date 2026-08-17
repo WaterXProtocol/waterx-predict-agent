@@ -10,9 +10,12 @@
  * Two seams are separate from the gateway on purpose:
  *
  * - **The signer.** ADR-0001 §7 puts it inside the Runner trust boundary and
- *   nowhere else. It takes base64 in and returns a signature out, so no caller of
- *   the executor — and no subprocess — ever holds key material, and the executor
- *   itself never learns what kind of key it is.
+ *   nowhere else. It takes base64 plus the authority the job was admitted under,
+ *   and returns a signature — so no caller of the executor, and no subprocess,
+ *   ever holds key material, and the executor itself never learns what kind of
+ *   key it is. It is also the last place that may say no: the policy travels with
+ *   the request precisely so a refusal cannot be skipped by reaching the signer
+ *   from a path that forgot to check.
  * - **The price observer.** A trigger is watched with an *indicative* price, which
  *   may come from a stream frame or a size-blind quote, and is never the price an
  *   order is built on. Keeping it out of the gateway means the executor cannot
@@ -33,7 +36,7 @@ import type {
   SubmitExecutionResponseBody,
 } from '@waterx/predict-agent-sdk';
 
-import type { JobLegIntent, JobRecord } from '../job.ts';
+import type { JobLegIntent, JobPolicySnapshot, JobRecord } from '../job.ts';
 import { StrategyError } from './errors.ts';
 import type { StrategyPositionReader } from './positions.ts';
 
@@ -65,14 +68,43 @@ export interface StrategyGateway extends StrategyPositionReader {
   ): Promise<PredictEffectiveLimitsResponseBody>;
 }
 
+/**
+ * What the signer is told about the order it is being asked to authorize.
+ *
+ * The bytes alone would be enough to *produce* a signature, and that is exactly
+ * why they are not enough to *ask* for one. The policy snapshot travels with the
+ * request because a signer that cannot see the authority a job was admitted under
+ * cannot refuse to sign outside it — and refusing is the whole reason the signer,
+ * rather than its caller, holds the rule (`src/signer.ts`). The wallet travels
+ * with it so a signer holding one key can refuse another agent's job instead of
+ * authorizing it.
+ *
+ * `jobId` and `legIndex` are for the refusal's detail. They identify what was
+ * declined, and nothing here identifies what was signed.
+ */
+export interface StrategySignRequest {
+  readonly jobId: string;
+  readonly legIndex: number;
+  /** The wallet the job trades as, from the durable record. */
+  readonly agentWallet: string;
+  /** The authority that admitted the job. Read by the signer, never widened. */
+  readonly policy: JobPolicySnapshot;
+  /** Base64, exactly as the API handed it over. Never decoded by the executor. */
+  readonly sponsoredTransactionBytes: string;
+}
+
 /** The one thing that may see key material, and the least it can be given. */
 export interface StrategySigner {
   /**
-   * Sign sponsored transaction bytes given as base64, exactly as the API handed
-   * them over. `signBase64` from the SDK adapts an `AgentSigner` to this in one
-   * line; a KMS-backed implementation satisfies it without decoding anything here.
+   * Return a signature over `request.sponsoredTransactionBytes`, or throw.
+   *
+   * An implementation is expected to *refuse* under an authority that does not
+   * permit unattended signing rather than to trust its caller to have checked —
+   * see `createExternalCommandSigner`. A KMS- or HSM-backed implementation
+   * satisfies this without decoding anything here; nothing in the executor ever
+   * holds a key.
    */
-  sign(sponsoredTransactionBytes: string, signal?: AbortSignal): Promise<string>;
+  sign(request: StrategySignRequest, signal?: AbortSignal): Promise<string>;
 }
 
 /** The market/outcome/side a price trigger watches. */

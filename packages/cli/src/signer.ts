@@ -53,6 +53,33 @@ export type SignerRunner = (
 ) => Promise<SignerRunResult>;
 
 /**
+ * The local signing protocol, as data.
+ *
+ * The Runner speaks the same wire to the same keystore command
+ * (`packages/runner/src/signer.ts`), and an operator who configured one must not
+ * have to configure a second. Neither package may depend on the other — the CLI
+ * would be importing a daemon, the Runner a CLI — so the two implementations are
+ * genuinely separate, and `tests/workspace.test.ts` asserts these two descriptors
+ * are equal. `tests/signer.test.ts` asserts the request this file actually writes
+ * has exactly the keys listed here, which is what makes the descriptor a claim
+ * about behaviour rather than a comment.
+ */
+export const SIGNER_PROTOCOL = {
+  version: 1,
+  requests: [
+    {
+      type: 'PERSONAL_MESSAGE',
+      fields: ['version', 'type', 'agentWallet', 'messageBase64'],
+    },
+    {
+      type: 'TRANSACTION',
+      fields: ['version', 'type', 'agentWallet', 'transactionBytesBase64'],
+    },
+  ],
+  response: { fields: ['signature'] },
+} as const;
+
+/**
  * What the child receives on stdin, as one JSON line. Versioned so the protocol
  * can change, and discriminated on `type` so a provider can require a different
  * confirmation for a transaction than for a login challenge.

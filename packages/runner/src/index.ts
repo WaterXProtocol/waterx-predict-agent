@@ -19,11 +19,15 @@
  * SDK's indicative quote stream and reports nothing — never a remembered number
  * — the moment that feed can no longer prove it is live.
  *
- * What is still missing is the other collaborator a pass cannot happen without:
- * there is no signer behind `StrategySigner` in this package, only the
- * interface, and no local configuration from which a quote stream could be
- * opened. So a daemon started from `runnerd` supplies no `driver`, starts no
- * scheduler and advances nothing;
+ * and, new, `createExternalCommandSigner`, the signer inside the trust boundary:
+ * it signs sponsored bytes through a keystore command that holds the key, only
+ * for a job admitted under a `delegated-auto` policy, and refuses `interactive`
+ * and `read-only` before it starts anything.
+ *
+ * What is still missing is not a collaborator but the *configuration* to build
+ * them from: no file format yet says which keystore command to run or which
+ * stream to open. So a daemon started from `runnerd` supplies no `driver`, starts
+ * no scheduler and advances nothing;
  * an embedding application that supplies all three gets a Runner that does. The
  * daemon reports which it is rather than implying — `driving` is read from
  * whether a scheduler is ticking, and `driverGaps` names what is absent when it
@@ -142,6 +146,21 @@ export {
 } from './scheduler.ts';
 export { assertNoSecrets, FORBIDDEN_STORE_KEYS } from './secrets.ts';
 export {
+  createChildProcessSignerRunner,
+  createExternalCommandSigner,
+  isPreSpawnRefusal,
+  isSignerError,
+  refusePolicy,
+  SIGNER_PROTOCOL,
+  SignerError,
+  type ExternalCommandSignerOptions,
+  type PolicyRefusal,
+  type RunnerSignerRequest,
+  type SignerErrorCode,
+  type SignerRunResult,
+  type SignerRunner,
+} from './signer.ts';
+export {
   canEndLocally,
   canTransition,
   isInFlightJobState,
@@ -188,12 +207,14 @@ export {
   sizeOf,
   type PriceObserver,
   type StrategyGateway,
+  type StrategySignRequest,
   type StrategySigner,
   type WatchKey,
 } from './strategy/gateway.ts';
 export {
   BETA_MAX_EXPIRY_MS,
   normalizeStrategy,
+  requirePolicyThatCanSignUnattended,
   resolveExpiry,
   type NormalizeOptions,
   type NormalizedStrategy,

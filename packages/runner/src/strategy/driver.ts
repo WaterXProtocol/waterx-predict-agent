@@ -62,7 +62,13 @@ import { JobStoreError } from '../errors.ts';
 import { fingerprintRequest, newAttemptId, newIdempotencyKey } from '../ids.ts';
 import type { JobLease, JobLegIntent, JobRecord } from '../job.ts';
 import { reconcileJob } from '../reconciler.ts';
-import { canEndLocally, isTerminalJobState, type JobState } from '../state-machine.ts';
+import { isSignerError } from '../signer.ts';
+import {
+  canEndLocally,
+  canTransition,
+  isTerminalJobState,
+  type JobState,
+} from '../state-machine.ts';
 import type { JobStore } from '../store.ts';
 import {
   buildCreateRequest,
@@ -72,7 +78,13 @@ import {
   type StrategySigner,
   type WatchKey,
 } from './gateway.ts';
-import { checkMarkets, preflight, type LegSkip, type PreparedLeg } from './preflight.ts';
+import {
+  checkLocalPolicy,
+  checkMarkets,
+  preflight,
+  type LegSkip,
+  type PreparedLeg,
+} from './preflight.ts';
 
 export interface DriveJobOptions {
   readonly store: JobStore;
@@ -125,6 +137,13 @@ export interface DriveLegReport {
   readonly skip?: LegSkip;
   /** A server refusal this pass observed, by code. Legs stay independent. */
   readonly refusedCode?: string;
+  /**
+   * A local refusal by the signer, by code — kept apart from `refusedCode`
+   * because the execution exists on the server either way, and confusing "the
+   * server would not take this order" with "this Runner would not authorize it"
+   * sends an operator to the wrong system.
+   */
+  readonly signRefusedCode?: string;
 }
 
 export interface DriveResult {
@@ -164,6 +183,10 @@ export const driveJob = async (options: DriveJobOptions): Promise<DriveResult> =
   if (canEndLocally(job.state)) {
     const ended = await endLocally(options, job);
     if (ended !== undefined) return ended;
+    // Before any read: a job whose policy cannot authorize an unattended write is
+    // not a job to keep watching.
+    const refused = await refuseLocally(options, job);
+    if (refused !== undefined) return refused;
   }
 
   switch (job.state) {
@@ -236,6 +259,60 @@ const endLocally = async (
   return undefined;
 };
 
+/**
+ * The third local decision, and the one that is about authority rather than time:
+ * may this Runner sign for this job at all, without a person present?
+ *
+ * `checkLocalPolicy` is the same function `preflight` opens with, and the same
+ * rule `createExternalCommandSigner` applies before it will spawn anything. It is
+ * asked here, on every pass, because the alternative is a job that reads a market
+ * every few seconds for hours in order to reach a signature it was never going to
+ * be allowed to produce. Nothing here talks to the server.
+ *
+ * A refusal is an ending; an unrecognized mode is a pause, per ADR-0004 — the
+ * build that understands it may be the next one to start, and an ended job cannot
+ * be brought back by installing it.
+ */
+const refuseLocally = async (
+  options: DriveJobOptions,
+  job: JobRecord,
+): Promise<DriveResult | undefined> => {
+  const verdict = checkLocalPolicy(job, options.at);
+  if (verdict === undefined) return undefined;
+  if (verdict.kind === 'STOP') return await stop(options, job, verdict.reason, verdict.detail);
+  if (verdict.kind === 'PAUSE') return await pause(options, job, verdict.reason, verdict.detail);
+  return undefined;
+};
+
+/**
+ * Paused, without writing the same fact twice.
+ *
+ * A job already paused for one reason and still paused for it gets a report, not
+ * a transition: a log that records an unchanging fact once a second is a log
+ * nobody can read the interesting lines of. And a state that cannot legally pause
+ * yet — `DRAFT`, which has not been armed — simply stays put and is asked again
+ * on the next pass.
+ */
+const pause = async (
+  options: DriveJobOptions,
+  job: JobRecord,
+  reason: string,
+  detail: Readonly<Record<string, unknown>>,
+): Promise<DriveResult> => {
+  if (job.state === 'PAUSED') return say(job, 'PAUSED', 'WAITING', reason, { detail });
+  if (!canTransition(job.state, 'PAUSED')) {
+    return say(job, job.state, 'WAITING', reason, { detail });
+  }
+  await options.store.transition({
+    lease: options.lease,
+    to: 'PAUSED',
+    reason,
+    at: options.at,
+    detail,
+  });
+  return say(job, 'PAUSED', 'PAUSED', reason, { detail });
+};
+
 /* ── Watching ──────────────────────────────────────────────────────────────── */
 
 /**
@@ -258,21 +335,7 @@ const watchPass = async (options: DriveJobOptions, job: JobRecord): Promise<Driv
 
   if (markets?.kind === 'STOP') return await stop(options, job, markets.reason, markets.detail);
 
-  if (markets?.kind === 'PAUSE') {
-    if (job.state === 'PAUSED') {
-      // Already paused for the same class of reason. Re-writing the state would
-      // fill the transition log with an unchanging fact.
-      return say(job, 'PAUSED', 'WAITING', markets.reason, { detail: markets.detail });
-    }
-    await store.transition({
-      lease,
-      to: 'PAUSED',
-      reason: markets.reason,
-      at,
-      detail: markets.detail,
-    });
-    return say(job, 'PAUSED', 'PAUSED', markets.reason, { detail: markets.detail });
-  }
+  if (markets?.kind === 'PAUSE') return await pause(options, job, markets.reason, markets.detail);
 
   if (job.state === 'PAUSED') {
     // ADR-0004: resuming means going back to WATCHING, never skipping ahead to
@@ -692,7 +755,7 @@ const execute = async (
     // the same place from the leg rows this pass wrote.
     await store.transition({ lease, to: 'RECONCILING', reason: 'ALL_CREATES_REFUSED', at });
     const result = await reconcilePass(options, 'RECONCILING');
-    return { ...result, from, legs: sorted(reports), reason:'ALL_CREATES_REFUSED' };
+    return { ...result, from, legs: sorted(reports), reason: 'ALL_CREATES_REFUSED' };
   }
 
   await store.transition({
@@ -704,21 +767,44 @@ const execute = async (
   });
 
   const signed: SignedLeg[] = [];
-  const unsigned: number[] = [];
+  /**
+   * Every leg that was created and not signed, with the signer's own code.
+   *
+   * The code, not the message: a refusal an operator has to diagnose from a leg
+   * index alone is indistinguishable between "your keystore is down" and "this
+   * job may never sign, and never could have" — and the second one is a policy
+   * decision they need to see. A signer's error carries no bytes and no
+   * signature, so the code is safe to persist; nothing else about the attempt is.
+   */
+  const unsigned: { legIndex: number; code: string }[] = [];
   for (const leg of live) {
     try {
-      // The bytes go in and a signature comes out. Neither is persisted, logged,
-      // or put in a result — ADR-0001 §7.
+      // The bytes and the job's authority go in and a signature comes out.
+      // Neither the bytes nor the signature is persisted, logged, or put in a
+      // result — ADR-0001 §7. The policy travels with the request because the
+      // signer, not this loop, is the thing that must refuse an authority that
+      // does not permit unattended signing; passing it is not a courtesy.
       const signature = await options.signer.sign(
-        leg.created.sponsoredTransactionBytes,
+        {
+          jobId: job.jobId,
+          legIndex: leg.legIndex,
+          agentWallet: job.agentWallet,
+          policy: job.policy,
+          sponsoredTransactionBytes: leg.created.sponsoredTransactionBytes,
+        },
         options.signal,
       );
       signed.push({ ...leg, signature });
-    } catch {
+    } catch (error) {
       // An unsigned execution cannot fill, and it is not this module's place to
       // call it failed: the server holds it until `signatureExpiresAt`, and the
-      // reconciler will read whatever it becomes.
-      unsigned.push(leg.legIndex);
+      // reconciler will read whatever it becomes. That is true of a refusal as
+      // much as of a failure — a policy that forbids signing does not un-create
+      // the execution the create already made.
+      const code = isSignerError(error) ? error.code : 'SIGNER_ERROR';
+      unsigned.push({ legIndex: leg.legIndex, code });
+      const report = reports.get(leg.legIndex);
+      if (report !== undefined) reports.set(leg.legIndex, { ...report, signRefusedCode: code });
     }
   }
 
@@ -731,7 +817,7 @@ const execute = async (
       detail: { unsigned },
     });
     const result = await reconcilePass(options, 'RECONCILING');
-    return { ...result, from, legs: sorted(reports), reason:'NOTHING_SIGNED' };
+    return { ...result, from, legs: sorted(reports), reason: 'NOTHING_SIGNED' };
   }
 
   await store.transition({

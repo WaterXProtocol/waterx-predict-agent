@@ -81,7 +81,18 @@ export type StrategyErrorCode =
    * The policy in force is read-only. A durable strategy exists to sign later, so
    * it is refused at creation rather than at the moment it would have traded.
    */
-  | 'POLICY_FORBIDS_WRITE';
+  | 'POLICY_FORBIDS_WRITE'
+  /**
+   * The policy in force is `interactive` — the default — and a durable strategy
+   * fires while nobody is being asked. Unattended signing is what scoped
+   * `delegated-auto` authorizes, and it is refused here rather than at the trigger
+   * for two reasons: the owner finds out at the prompt instead of hours later, and
+   * accepting it would make the delegated scope evadable by wrapping any order in
+   * a strategy whose trigger is already met.
+   */
+  | 'POLICY_REQUIRES_DELEGATION'
+  /** A policy mode this build does not recognize. An unknown authority is none. */
+  | 'POLICY_MODE_UNRECOGNIZED';
 
 export class StrategyError extends Error {
   override readonly name = 'StrategyError';
