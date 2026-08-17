@@ -52,6 +52,17 @@ const ONE = 1_000_000n;
  */
 const ISO_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,9})?)?(Z|[+-]\d{2}:\d{2})$/;
 
+/**
+ * The same rule, for anything else in this package that takes an instant from a
+ * human — the operator's `policy.notAfter` in `config.ts`, today.
+ *
+ * Exported so the format has one definition. A configuration file that accepted
+ * a looser instant than a strategy request does would end a mandate at an hour
+ * that depends on the host's timezone.
+ */
+export const isIsoInstant = (value: unknown): value is Iso8601 =>
+  typeof value === 'string' && ISO_INSTANT.test(value) && !Number.isNaN(Date.parse(value));
+
 /* ── The request ───────────────────────────────────────────────────────────── */
 
 /**

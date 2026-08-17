@@ -271,6 +271,91 @@ describe('warnings, which are not refusals', () => {
   });
 });
 
+/**
+ * The mandate is written down on this machine, or it is `interactive`.
+ *
+ * A durable strategy signs while nobody is watching, so the authority it runs
+ * under cannot come from whatever asked for it. These tests pin the two ends of
+ * that: an operator who configured nothing gets the mode that refuses, and a mode
+ * this build does not recognize is refused at start-up rather than at the trigger.
+ */
+describe('the policy a strategy would be admitted under', () => {
+  it('defaults to the mode that refuses, and says the default is where it came from', () => {
+    const config = resolve(complete());
+    expect(config.policy).toEqual({ mode: 'interactive', source: 'default:interactive' });
+    // A fully configured driver is not a mandate: this Runner drives, and arms
+    // nothing.
+    expect(config.gaps).toEqual([]);
+    expect(describeRunnerConfig(config).policy.admitsStrategies).toBe(false);
+  });
+
+  it('reads the mode and the caps from the file, and names the file as the source', () => {
+    const config = resolve(complete(), {
+      [fileAt()]: JSON.stringify({
+        policy: {
+          mode: 'delegated-auto',
+          maxOrderNotional: '250.000000',
+          notAfter: '2026-08-24T12:00:00Z',
+        },
+      }),
+    });
+
+    expect(config.policy).toEqual({
+      mode: 'delegated-auto',
+      source: `file:${fileAt()}`,
+      maxOrderNotional: '250.000000',
+      notAfter: '2026-08-24T12:00:00Z',
+    });
+    expect(describeRunnerConfig(config).policy.admitsStrategies).toBe(true);
+  });
+
+  it('lets the environment override the mode, and records which one spoke', () => {
+    const config = resolve(complete({ [RUNNER_ENV_KEYS.policyMode]: 'read-only' }), {
+      [fileAt()]: JSON.stringify({ policy: { mode: 'delegated-auto' } }),
+    });
+    expect(config.policy.mode).toBe('read-only');
+    expect(config.policy.source).toBe(`env:${RUNNER_ENV_KEYS.policyMode}`);
+  });
+
+  it('refuses a mode it does not recognize instead of falling back', () => {
+    // An unknown authority is not an authority. Falling back to `interactive`
+    // would be safe and silent, which is how a typo survives to production.
+    const error = refusal(complete({ [RUNNER_ENV_KEYS.policyMode]: 'delegated_auto' }));
+    expect(isRunnerConfigError(error) && error.code).toBe('CONFIG_INVALID');
+    expect(error.message).toContain('delegated_auto');
+  });
+
+  it('refuses a ceiling that arrived as a JSON number', () => {
+    // Money at this scale does not survive an IEEE-754 round trip, and a ceiling
+    // that silently became 100.00000000000001 is a ceiling nobody set.
+    const error = refusal(complete(), {
+      [fileAt()]: JSON.stringify({ policy: { mode: 'delegated-auto', maxOrderNotional: 250 } }),
+    });
+    expect(isRunnerConfigError(error) && error.detail?.['key']).toBe('policy.maxOrderNotional');
+  });
+
+  it('refuses an end date without a zone, which would mean a different hour per host', () => {
+    const error = refusal(complete(), {
+      [fileAt()]: JSON.stringify({ policy: { notAfter: '2026-08-24 12:00' } }),
+    });
+    expect(isRunnerConfigError(error) && error.detail?.['key']).toBe('policy.notAfter');
+  });
+
+  it('refuses a setting inside the block that this build does not enforce', () => {
+    // `maxRunNotional` is a real idea and nothing here checks it, so accepting it
+    // would be a limit an operator believes is in force while it is not.
+    const error = refusal(complete(), {
+      [fileAt()]: JSON.stringify({ policy: { maxRunNotional: '1000.00' } }),
+    });
+    expect(isRunnerConfigError(error) && error.detail?.['key']).toBe('policy.maxRunNotional');
+  });
+
+  it('refuses a policy block that is not an object', () => {
+    const error = refusal(complete(), { [fileAt()]: JSON.stringify({ policy: 'delegated-auto' }) });
+    expect(isRunnerConfigError(error) && error.detail?.['key']).toBe('policy');
+  });
+});
+
 describe('the start-up diagnostic is safe to archive', () => {
   it('prints the keystore by base name and never the argv', () => {
     const config = resolve(

@@ -25,6 +25,22 @@
  * the child process is (ADR-0001 §6). A credential-shaped key anywhere in the
  * file — at any depth — is a hard refusal naming the key path and never the value.
  *
+ * ## The mandate is configuration, never a request
+ *
+ * A durable strategy signs while nobody is watching, so the authority it runs
+ * under has to be something the operator wrote down on this machine. That is what
+ * the `policy` block is: {@link RunnerPolicyConfig} is read here and handed to the
+ * daemon, and every job admitted over the local socket carries *this* snapshot.
+ * Nothing a client sends can name a mode, raise a notional ceiling or push out a
+ * `notAfter` — a socket peer that could would be granting itself the mandate,
+ * which is the failure ADR-0003 §1 exists to prevent.
+ *
+ * The default is `interactive`, and that is deliberate: it is the mode
+ * `requirePolicyThatCanSignUnattended` refuses. An operator who has not decided
+ * gets a Runner that answers, recovers and drives the jobs it already has, and
+ * refuses to arm a new one — rather than one that quietly signs because a default
+ * was convenient.
+ *
  * **No session token, from anywhere.** Not from the file and not from the
  * environment. A seven-day strategy outlives any token, so a Runner that was
  * handed one would stop being able to read a market halfway through a mandate it
@@ -43,6 +59,8 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
+import { isIsoInstant } from './strategy/intent.ts';
+
 /**
  * Every variable this process reads. Listed as data so the test that asserts no
  * token variable exists is checking the surface rather than a comment.
@@ -57,6 +75,7 @@ export const RUNNER_ENV_KEYS = {
   signerTimeoutMs: 'WATERX_RUNNER_SIGNER_TIMEOUT_MS',
   tickIntervalMs: 'WATERX_RUNNER_TICK_INTERVAL_MS',
   maxJobs: 'WATERX_RUNNER_MAX_JOBS',
+  policyMode: 'WATERX_RUNNER_POLICY_MODE',
 } as const;
 
 /** The settings the JSON file may carry. Anything else is a refusal, not a warning. */
@@ -67,7 +86,46 @@ export const RUNNER_FILE_KEYS: readonly string[] = [
   'signerTimeoutMs',
   'tickIntervalMs',
   'maxJobs',
+  'policy',
 ];
+
+/** The keys inside `policy`. Closed for the same reason the top level is. */
+export const RUNNER_POLICY_KEYS: readonly string[] = ['mode', 'maxOrderNotional', 'notAfter'];
+
+/**
+ * The three modes a job may be admitted under, matching {@link JobPolicySnapshot}.
+ *
+ * Two of them refuse: only `delegated-auto` can sign for a trigger nobody is
+ * present for, and `requirePolicyThatCanSignUnattended` is the one place that
+ * says so. They are accepted here rather than rejected at start-up because an
+ * operator running a Runner purely to *watch and reconcile* the jobs it already
+ * has is a legitimate configuration — it is arming a new one that is refused.
+ */
+export const RUNNER_POLICY_MODES = ['read-only', 'interactive', 'delegated-auto'] as const;
+
+export type RunnerPolicyMode = (typeof RUNNER_POLICY_MODES)[number];
+
+/**
+ * The mandate this process admits a strategy under.
+ *
+ * Assignable to `JobPolicySnapshot` as-is: what is resolved here is exactly what
+ * is written onto the durable job, so an audit reads the authority back rather
+ * than a summary of it.
+ *
+ * `maxRunNotional` is absent on purpose. `JobPolicySnapshot` has the field and
+ * nothing in this build enforces it — `preflight` reads `maxOrderNotional` and
+ * the signer re-reads `notAfter`, and offering an operator a third setting that
+ * bounds nothing would be a cap that exists only in a config file.
+ */
+export interface RunnerPolicyConfig {
+  readonly mode: RunnerPolicyMode;
+  /** Where the mandate came from, recorded on every job admitted under it. */
+  readonly source: string;
+  /** Per-order ceiling on a BUY's committed budget. Decimal string, never a number. */
+  readonly maxOrderNotional?: string;
+  /** The instant the mandate ends. Re-read by the signer at signing time. */
+  readonly notAfter?: string;
+}
 
 /**
  * Anything matching this in a key name is treated as a credential. Broad on
@@ -150,6 +208,15 @@ export interface RunnerConfig {
   };
   readonly tickIntervalMs: number | undefined;
   readonly maxJobs: number | undefined;
+  /**
+   * The mandate every strategy admitted through this process is written under.
+   *
+   * Always present, because "no policy" is not a state a Runner can be in: the
+   * absence of one is `interactive`, which refuses. Independent of `driver` on
+   * purpose — a process may be fully configured to trade and still not be allowed
+   * to arm anything, and that has to be visible as two facts rather than one.
+   */
+  readonly policy: RunnerPolicyConfig;
   readonly warnings: readonly string[];
 }
 
@@ -207,6 +274,7 @@ interface FileConfig {
   signerTimeoutMs?: unknown;
   tickIntervalMs?: unknown;
   maxJobs?: unknown;
+  policy?: unknown;
 }
 
 const readConfigFile = (
@@ -350,6 +418,98 @@ const plaintextWarning = (baseUrl: string | undefined): string | null => {
 
 const DEFAULT_SIGNER_TIMEOUT_MS = 15_000;
 
+/* ── The mandate ───────────────────────────────────────────────────────────── */
+
+/**
+ * A non-negative decimal, as a string.
+ *
+ * A JSON *number* is refused rather than accepted and stringified: money at this
+ * scale does not survive an IEEE-754 round trip, and a ceiling that silently
+ * became `100.00000000000001` is a ceiling nobody set.
+ */
+const DECIMAL = /^\d+(\.\d{1,18})?$/;
+
+const asDecimal = (value: unknown, key: string, where: string): string | undefined => {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string' || !DECIMAL.test(value)) {
+    throw new RunnerConfigError(
+      'CONFIG_INVALID',
+      `\`${key}\` in ${where} must be a non-negative decimal *string*, e.g. "100.000000"`,
+      { key },
+    );
+  }
+  return value;
+};
+
+/**
+ * Resolve the mandate: the file's `policy` block, with the mode overridable from
+ * the environment so a service manager can set it without rewriting the file.
+ *
+ * The caps are file-only. They are the part an operator should have to write down
+ * and be able to read back, and a notional ceiling that lives in an environment
+ * nobody can inspect after the fact is not a reviewable mandate.
+ */
+const resolvePolicy = (
+  env: RunnerEnv,
+  raw: unknown,
+  where: string,
+  filePath: string | null,
+): RunnerPolicyConfig => {
+  if (raw !== undefined && (raw === null || typeof raw !== 'object' || Array.isArray(raw))) {
+    throw new RunnerConfigError('CONFIG_INVALID', `\`policy\` in ${where} must be a JSON object`, {
+      key: 'policy',
+    });
+  }
+  const block = (raw ?? {}) as Record<string, unknown>;
+  for (const key of Object.keys(block)) {
+    if (!RUNNER_POLICY_KEYS.includes(key)) {
+      throw new RunnerConfigError(
+        'CONFIG_INVALID',
+        `\`policy.${key}\` in ${where} is not a known Runner policy setting; known settings: ${RUNNER_POLICY_KEYS.join(', ')}`,
+        { key: `policy.${key}` },
+      );
+    }
+  }
+
+  const envMode = asString(env[RUNNER_ENV_KEYS.policyMode], RUNNER_ENV_KEYS.policyMode, 'the environment');
+  const fileMode = asString(block['mode'], 'policy.mode', where);
+  const named = envMode ?? fileMode;
+  if (named !== undefined && !RUNNER_POLICY_MODES.includes(named as RunnerPolicyMode)) {
+    // Refused at start-up rather than at the first strategy: an unrecognized
+    // authority is not an authority, and an operator who typed `delegated_auto`
+    // should learn it now instead of when a trigger fires.
+    throw new RunnerConfigError(
+      'CONFIG_INVALID',
+      `policy mode \`${named}\` is not one this build recognizes; known modes: ${RUNNER_POLICY_MODES.join(', ')}`,
+      { key: 'policy.mode', mode: named },
+    );
+  }
+
+  const maxOrderNotional = asDecimal(block['maxOrderNotional'], 'policy.maxOrderNotional', where);
+  const notAfter = asString(block['notAfter'], 'policy.notAfter', where);
+  if (notAfter !== undefined && !isIsoInstant(notAfter)) {
+    throw new RunnerConfigError(
+      'CONFIG_INVALID',
+      `\`policy.notAfter\` in ${where} must be an ISO-8601 instant with a zone (e.g. 2026-08-24T12:00:00Z), got ${notAfter}`,
+      { key: 'policy.notAfter' },
+    );
+  }
+
+  return {
+    mode: (named ?? 'interactive') as RunnerPolicyMode,
+    // Named precisely, because this string is what an audit reads back off the
+    // job to answer "who said this Runner could sign that".
+    source:
+      envMode !== undefined
+        ? `env:${RUNNER_ENV_KEYS.policyMode}`
+        : fileMode !== undefined && filePath !== null
+          ? `file:${filePath}`
+          : 'default:interactive',
+    ...(maxOrderNotional === undefined ? {} : { maxOrderNotional }),
+    ...(notAfter === undefined ? {} : { notAfter }),
+  };
+};
+
 /* ── The resolver ──────────────────────────────────────────────────────────── */
 
 export const resolveRunnerConfig = (sources: RunnerConfigSources): RunnerConfig => {
@@ -418,6 +578,7 @@ export const resolveRunnerConfig = (sources: RunnerConfigSources): RunnerConfig 
     maxJobs:
       asInteger(env[RUNNER_ENV_KEYS.maxJobs], RUNNER_ENV_KEYS.maxJobs, 'the environment', 1, MAX_JOBS_CEILING) ??
       asInteger(config.maxJobs, 'maxJobs', where, 1, MAX_JOBS_CEILING),
+    policy: resolvePolicy(env, config.policy, where, path),
     warnings,
   };
 };
@@ -441,6 +602,12 @@ export interface RunnerConfigDiagnostics {
   readonly signerExecutable: string | null;
   readonly driverConfigured: boolean;
   readonly gaps: readonly RunnerDriverGap[];
+  /**
+   * The mandate, printed in full: none of it is a credential, and an operator
+   * whose Runner refuses to arm a strategy needs to see the mode that refused.
+   * `admitsStrategies` is the same fact stated the way an operator asks it.
+   */
+  readonly policy: RunnerPolicyConfig & { readonly admitsStrategies: boolean };
   readonly warnings: readonly string[];
 }
 
@@ -458,6 +625,7 @@ export const describeRunnerConfig = (config: RunnerConfig): RunnerConfigDiagnost
     signerExecutable: executable === undefined ? null : (executable.split('/').pop() ?? executable),
     driverConfigured: config.driver !== undefined,
     gaps: config.gaps,
+    policy: { ...config.policy, admitsStrategies: config.policy.mode === 'delegated-auto' },
     warnings: config.warnings,
   };
 };
