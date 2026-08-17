@@ -38,6 +38,13 @@ const INTERNAL = new Set(['cli']);
 /** Reserved boundaries with no implementation. They must not look like one. */
 const RESERVED = new Set(['runner', 'mcp']);
 
+/**
+ * Test harnesses. They drive the shipped artifacts and are never shipped
+ * themselves, so they may depend on anything in the workspace — including the
+ * unpublished CLI — and must never be publishable.
+ */
+const HARNESS = new Set(['e2e']);
+
 interface PackageManifest {
   readonly name?: string;
   readonly private?: boolean;
@@ -59,7 +66,9 @@ const manifest = (dir: string): PackageManifest =>
 
 describe('workspace layout', () => {
   it('accounts for every package directory', () => {
-    expect(new Set(PACKAGE_DIRS)).toEqual(new Set([...PUBLISHED, ...INTERNAL, ...RESERVED]));
+    expect(new Set(PACKAGE_DIRS)).toEqual(
+      new Set([...PUBLISHED, ...INTERNAL, ...RESERVED, ...HARNESS]),
+    );
   });
 
   it('is covered by the pnpm workspace glob', () => {
@@ -121,7 +130,9 @@ describe('dependency direction', () => {
   it('never lets a published package import an unpublished one, in source', () => {
     // A published package importing `@waterx/predict-agent-cli` would name a
     // dependency that does not exist on any registry.
-    const unpublishedNames = [...RESERVED, ...INTERNAL].map((dir) => manifest(dir).name ?? dir);
+    const unpublishedNames = [...RESERVED, ...INTERNAL, ...HARNESS].map(
+      (dir) => manifest(dir).name ?? dir,
+    );
     for (const dir of PUBLISHED) {
       for (const file of sourceFiles(`packages/${dir}/src`)) {
         for (const name of unpublishedNames) {
@@ -200,6 +211,37 @@ describe('the CLI package', () => {
       const source = read(file);
       expect(source, `${file} writes to stdout`).not.toMatch(/console\.log|process\.stdout/u);
     }
+  });
+});
+
+describe('the e2e harness package', () => {
+  it('stays unpublishable and depends only on what it drives', () => {
+    const pkg = manifest('e2e');
+    expect(pkg.private).toBe(true);
+    expect(pkg.type).toBe('module');
+    expect(pkg.engines?.node).toBe('>=20');
+    // It drives the CLI as a subprocess, so it resolves the CLI package. It has
+    // no business reaching past that to the SDK: a harness that called the
+    // client directly would stop testing the surface a user actually runs.
+    expect(Object.keys(pkg.dependencies ?? {}).sort()).toEqual([
+      '@waterx/predict-agent-cli',
+      '@waterx/predict-agent-schema',
+    ]);
+    for (const script of ['build', 'typecheck', 'test']) {
+      expect(pkg.scripts?.[script], script).toBeTypeOf('string');
+    }
+  });
+
+  it('never imports the SDK, in source', () => {
+    for (const file of sourceFiles('packages/e2e/src')) {
+      expect(read(file), file).not.toContain("from '@waterx/predict-agent-sdk'");
+    }
+  });
+
+  it('says in its README that it is not a production runner', () => {
+    const readme = read('packages/e2e/README.md').toLowerCase();
+    expect(readme).toContain('not');
+    expect(readme).toContain('production');
   });
 });
 

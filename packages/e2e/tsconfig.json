@@ -1,0 +1,23 @@
+{
+  "extends": "./tsconfig.build.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": false,
+    "resolveJsonModule": true,
+    "types": ["node", "vitest/globals"],
+    "rootDir": "../..",
+    // Typecheck against the sibling SOURCE, matching every other package here.
+    // Note that this affects only the STATIC imports: the harness locates the
+    // binary it drives through `node_modules` at runtime, which is the point —
+    // the artifact under test is the installed one, not this source tree.
+    "paths": {
+      "@waterx/predict-agent-cli": ["../cli/src/index.ts"],
+      "@waterx/predict-agent-schema": ["../schema/src/index.ts"]
+    }
+  },
+  "include": ["src", "tests"],
+  "exclude": ["node_modules", "dist"]
+}

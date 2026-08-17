@@ -1,0 +1,28 @@
+{
+  "name": "@waterx/predict-agent-e2e",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Non-production end-to-end harness: drives the INSTALLED `waterx-predict` binary through one whole trade, and where it cannot, emits a named provisioning gap list with the supplier of each. Never runs against production or mainnet, and never reports an E2E that did not run as passing.",
+  "license": "MIT",
+  "type": "module",
+  "bin": { "waterx-predict-e2e": "dist/src/main.js" },
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json && node -e \"require('node:fs').chmodSync('dist/src/main.js',0o755)\"",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "e2e": "node dist/src/main.js"
+  },
+  "dependencies": {
+    "@waterx/predict-agent-cli": "workspace:*",
+    "@waterx/predict-agent-schema": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.12.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.6"
+  }
+}
