@@ -41,6 +41,12 @@ export {
   type CapabilityStatus,
 } from './capabilities.ts';
 export { createNodeStreams, type OutputStreams } from './output.ts';
+/**
+ * The tokenizer, exported for one reason: anything that CHECKS an invocation —
+ * an example linter, a docs test — has to split argv the way this CLI does. A
+ * second tokenizer that disagreed would bless a command the CLI then rejects.
+ */
+export { GLOBAL_FLAGS, parseArgv, type ParsedArgv } from './parse.ts';
 export { loadConfig, type ResolvedConfig } from './config.ts';
 export { describeSigner, type SignerDescription, type SignerRunner } from './signer.ts';
 export { CLI_NAME, CLI_VERSION, API_VERSION } from './version.ts';

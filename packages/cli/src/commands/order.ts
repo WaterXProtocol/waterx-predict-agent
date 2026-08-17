@@ -538,21 +538,38 @@ export async function orderGet(context: CommandContext): Promise<unknown> {
 }
 
 /**
+ * How long a reconcile waits when the caller names no bound.
+ *
+ * Stated here rather than inherited from the SDK, because the deadline below has
+ * to be computed from the SAME number the wait uses. A default that lived only
+ * in the client would leave this signal sized against the wrong one.
+ */
+const RECONCILE_TIMEOUT_MS = 60_000;
+
+/**
  * Wait for one execution to stop moving.
  *
  * Running out of time is reported, not thrown: the exit code says AMBIGUOUS and
  * the execution id comes back intact, which is exactly what a caller needs to
  * try again. Throwing would push facts that are not failures into a catch block.
+ *
+ * Which is why the deadline is widened to hold the wait, exactly as `execute`
+ * does. This is the command an ambiguous outcome tells a caller to run; letting
+ * the 15-second invocation timeout abort a 60-second reconcile would turn "not
+ * terminal yet, here is the id" back into "the request failed" — for the one
+ * caller who is already holding an order whose outcome it does not know.
  */
 export async function orderReconcile(context: CommandContext): Promise<unknown> {
   const executionId = executionIdOf(context);
+  const timeoutMs =
+    typeof context.input.timeoutMs === 'number' ? context.input.timeoutMs : RECONCILE_TIMEOUT_MS;
   const client = await context.client();
   const outcome = await client.waitForExecution(executionId, {
-    ...(typeof context.input.timeoutMs === 'number' ? { timeoutMs: context.input.timeoutMs } : {}),
+    timeoutMs,
     ...(typeof context.input.pollIntervalMs === 'number'
       ? { pollIntervalMs: context.input.pollIntervalMs }
       : {}),
-    signal: context.signal(),
+    signal: context.signal(timeoutMs + WAIT_SLACK_MS),
   });
 
   if (outcome.timedOut) context.exitAs(EXIT_CODES.AMBIGUOUS);

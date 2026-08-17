@@ -158,6 +158,16 @@ export async function invoke(
       writeError: (text) => stderr.push(text),
     },
     fetch: (async (url: URL | string, init?: RequestInit) => {
+      // Real `fetch` rejects an already-aborted request instead of sending it. A
+      // double that ignored the signal would make every deadline in this CLI
+      // silently untestable — a command whose signal fires too early would look
+      // identical here to one whose signal is sized correctly.
+      const signal = init?.signal;
+      if (signal !== undefined && signal !== null && signal.aborted) {
+        throw signal.reason instanceof Error
+          ? signal.reason
+          : new Error('The operation was aborted.');
+      }
       const parsed = new URL(String(url));
       const method = init?.method ?? 'GET';
       fetches.push({

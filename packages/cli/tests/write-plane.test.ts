@@ -705,6 +705,46 @@ describe('order get and order reconcile', () => {
     expect(data.resolved).toBe(false);
     expect(data.reconciliation.reason).toBe('WAIT_TIMED_OUT');
   }, 15_000);
+
+  it('waits the bound it was given, not the invocation timeout', async () => {
+    // `execute` already widens its deadline to outlive a terminal wait. Reconcile
+    // did not, so a wait longer than the 15 s invocation timeout — including the
+    // DEFAULT reconcile bound, which is 60 s — was aborted mid-poll and surfaced
+    // as a transport failure. That is the exact collapse the timeout/failure
+    // distinction exists to prevent, and it landed on the one caller already
+    // holding an order whose outcome is unknown.
+    const startedAt = Date.now();
+    const result = await invoke(
+      [
+        'order',
+        'reconcile',
+        '--executionId',
+        EXECUTION_ID,
+        '--timeoutMs',
+        '3000',
+        '--pollIntervalMs',
+        '250',
+        // Deliberately shorter than the wait it was asked for.
+        '--timeout-ms',
+        '1000',
+      ],
+      {
+        env: CONFIGURED_ENV,
+        routes: {
+          'POST /agent-api/v1/auth': AUTH_OK,
+          [`GET ${EXECUTIONS_PATH}/${EXECUTION_ID}`]: submitted(EXECUTION_ID, 'PENDING_FILL'),
+        },
+      },
+    );
+    const data = result.envelope.data as { resolved: boolean; reconciliation: { reason: string } };
+
+    expect(result.envelope.ok).toBe(true);
+    expect(result.exit).toBe(EXIT_CODES.AMBIGUOUS);
+    expect(data.resolved).toBe(false);
+    expect(data.reconciliation.reason).toBe('WAIT_TIMED_OUT');
+    // It really waited, rather than reporting a timeout it reached early.
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(2_500);
+  }, 15_000);
 });
 
 describe('order execute-many is never atomic', () => {
