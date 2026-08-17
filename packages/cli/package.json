@@ -2,7 +2,7 @@
   "name": "@waterx/predict-agent-cli",
   "version": "0.1.0",
   "private": true,
-  "description": "The `waterx-predict` CLI: the canonical universal-agent surface over the command contract. Discovery and reads only — this version signs no transactions.",
+  "description": "The `waterx-predict` CLI: the canonical universal-agent surface over the command contract. Discovery, the market and account read plane, and the one-shot market-order write plane behind an enforced execution policy. No durable job outlives an invocation.",
   "license": "MIT",
   "type": "module",
   "bin": { "waterx-predict": "dist/src/main.js" },

@@ -1,0 +1,39 @@
+name: verify
+
+# The gate AGENTS.md requires before handoff. It ran per work package while the
+# Supervisor drove this repository; with the Supervisor paused nothing enforced
+# it, so it lives here instead of in a process that can stop.
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm typecheck
+
+      - run: pnpm test
+
+      - run: pnpm build
+
+      # The committed artifact is the one adapters read. A generator that no
+      # longer reproduces it byte-for-byte means the schema and the contract
+      # have diverged, which `packages/schema/tests` cannot catch on its own
+      # once the artifact is edited by hand.
+      - run: pnpm schema:generate
+      - name: schema artifact is reproducible
+        run: git diff --exit-code -- schemas/
