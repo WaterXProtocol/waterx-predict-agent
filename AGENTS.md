@@ -107,7 +107,7 @@ orchestrates.
 | `packages/sdk` | `@waterx/predict-agent-sdk` | Published surface, implemented |
 | `packages/schema` | `@waterx/predict-agent-schema` | Published surface, implemented |
 | `packages/cli` | `@waterx/predict-agent-cli` | Implemented, reads **and writes** behind an enforced execution policy; `private`, so nothing is published |
-| `packages/runner` | `@waterx/predict-agent-runner` | SQLite/WAL job store, state machine, lease fencing, crash recovery, `UNKNOWN_PENDING` reconciliation, plus a daemon with authenticated local IPC (ADR-0008) and lease supervision. The **executor, signer and price-watcher are not implemented**, so the process runs, nothing calls the reconciler on a schedule, and no job progresses on its own — `runner.status` reports `driving: false`. `private`, Node 24 floor (ADR-0007) |
+| `packages/runner` | `@waterx/predict-agent-runner` | SQLite/WAL job store, state machine, lease fencing, crash recovery, `UNKNOWN_PENDING` reconciliation, a daemon with authenticated local IPC (ADR-0008) and lease supervision, the one-job/one-pass `driveJob`, the scheduler that calls it on a tick, a price observer over the SDK's indicative quote stream, a signer inside the trust boundary, and the local configuration `runnerd` builds all three from — so a configured process reports `driving: true` and an unconfigured one reports `false` with `driverGaps` naming what to set. **No strategy command is exposed over the socket** (backlog 2.8): a durable strategy is created from an embedding application, not from a command. `private`, Node 24 floor (ADR-0007) |
 | `packages/mcp` | `@waterx/predict-agent-mcp` | Reserved boundary, **not implemented** |
 | `packages/e2e` | `@waterx/predict-agent-e2e` | Harness that drives the installed CLI as a subprocess; `private`, never shipped. The end-to-end has **not run** — nothing here is evidence that it passes |
 
@@ -188,15 +188,29 @@ Inside `packages/runner`:
   is unresolved, `reconcileJob` decides *what happened*, and only from an
   authoritative REST read. A non-terminal execution is left alone rather than
   finalized on a clock, and a create with no execution id reports `INCONCLUSIVE`
-  because no API read maps an idempotency key to an execution. Nothing calls it on
-  a schedule yet — that is the executor's job.
+  because no API read maps an idempotency key to an execution. `driveJob` calls it
+  at the end of every executing pass, and `JobScheduler` calls `driveJob` on a
+  tick, so in a configured daemon a `RECONCILING` job is read back until the
+  server says something terminal.
 - `src/secrets.ts` — refusal, not redaction, at the store boundary: a
   secret-shaped field is rejected rather than written and masked.
 - `src/daemon.ts` — the process. Start-up order is load-bearing: assert the
   runtime directory, open the store, recover, *then* listen, so no client can
-  observe a Runner that has not yet decided what its jobs are. `driving: false`
-  and a named `driverGaps` list are in every status reply, because a reachable
-  Runner is not a running strategy (ADR-0001 §6).
+  observe a Runner that has not yet decided what its jobs are. `driving` and a
+  named `driverGaps` list are in every status reply, read from whether a scheduler
+  is actually ticking rather than from configuration, because a reachable Runner is
+  not a running strategy (ADR-0001 §6). So is a per-topic `prices` block: a
+  `DEGRADED` feed answers "nothing observed" forever and must not read as a quiet
+  market.
+- `src/config.ts` — what an operator sets (environment, then one JSON file; no
+  flags) and what this process refuses to hold: no key material, and **no session
+  token from anywhere**, because a seven-day mandate outlives any token. The three
+  driver settings are all-or-nothing — a partial driver would create an order it
+  cannot sign — and a credential-shaped key is refused by path, never by value.
+- `src/runtime.ts` — the only place a `SchedulerDriver` is constructed. One client,
+  its own quote stream so REST and WS share a session, two signers over one
+  keystore command where the authentication one throws on `signTransaction`, and a
+  session opened lazily so a Runner still starts while the API is down.
 - `src/supervisor.ts` — `LeaseKeeper`. Renews without bumping the fence, and
   aborts a job's signal both when the lease was fenced out and when it could not
   be renewed inside the safety margin before expiry.
@@ -206,7 +220,9 @@ Inside `packages/runner`:
   `NOT_IMPLEMENTED` naming the missing executor rather than letting it read as a
   typo. This socket is not a second command surface.
 - `src/bin/runnerd.ts` — the entry point. Foreground only; it does not
-  daemonize, and it writes diagnostics to stderr, never the token.
+  daemonize, and it writes diagnostics to stderr, never the token, the signature,
+  the transaction bytes or the keystore argv (the executable appears by base name).
+  It builds a driver or refuses to build a partial one, and starts either way.
 
 Inside `packages/e2e` — the only place in this repository that spawns processes
 and opens sockets, and the only place allowed to:

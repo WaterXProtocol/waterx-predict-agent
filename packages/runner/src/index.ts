@@ -24,21 +24,43 @@
  * for a job admitted under a `delegated-auto` policy, and refuses `interactive`
  * and `read-only` before it starts anything.
  *
- * What is still missing is not a collaborator but the *configuration* to build
- * them from: no file format yet says which keystore command to run or which
- * stream to open. So a daemon started from `runnerd` supplies no `driver`, starts
- * no scheduler and advances nothing;
- * an embedding application that supplies all three gets a Runner that does. The
- * daemon reports which it is rather than implying — `driving` is read from
- * whether a scheduler is ticking, and `driverGaps` names what is absent when it
- * is not. Every agent command contract name is refused `NOT_IMPLEMENTED` on the
- * socket either way: this Runner drives durable jobs, not one-shot intents. See
- * the README and `docs/IMPLEMENTATION_BACKLOG.md` 2.6.
+ * and, new, `resolveRunnerConfig` and `buildRunnerDriver`: the configuration a
+ * `runnerd` process reads from its environment and its runtime directory, and the
+ * one place that turns it into the three collaborators a scheduler drives with. A
+ * process configured with all of a base URL, an agent wallet and a keystore
+ * command now starts a scheduler and reports `driving: true`. Anything missing
+ * builds **no** driver at all — a gateway without a signer would create an order
+ * it could not authorize — and names the missing piece in `driverGaps`, so an
+ * operator is told what to set rather than what is absent.
+ *
+ * The daemon reports which it is rather than implying: `driving` is read from
+ * whether a scheduler is ticking, `driverGaps` names what is missing when it is
+ * not, and `runner.status` carries per-topic price health so a feed that has given
+ * up cannot pass for a quiet market. Every agent command contract name is refused
+ * `NOT_IMPLEMENTED` on the socket either way: this Runner drives durable jobs, not
+ * one-shot intents. Strategy commands are not on the socket yet — see the README
+ * and `docs/IMPLEMENTATION_BACKLOG.md` 2.8.
  *
  * The Runner is local and self-hosted. The device and the process must stay
  * awake, online and running; nothing here is a managed service (ADR-0001 §6).
  */
 export { systemClock, type Clock } from './clock.ts';
+export {
+  createNodeRunnerConfigSources,
+  describeRunnerConfig,
+  isRunnerConfigError,
+  resolveRunnerConfig,
+  RUNNER_ENV_KEYS,
+  RUNNER_FILE_KEYS,
+  RunnerConfigError,
+  type RunnerConfig,
+  type RunnerConfigDiagnostics,
+  type RunnerConfigErrorCode,
+  type RunnerConfigSources,
+  type RunnerDriverConfig,
+  type RunnerDriverGap,
+  type RunnerEnv,
+} from './config.ts';
 export {
   installShutdownHandlers,
   RUNNER_DRIVER_GAPS,
@@ -144,15 +166,23 @@ export {
   type SchedulerEvent,
   type SchedulerTickReport,
 } from './scheduler.ts';
+export {
+  buildRunnerDriver,
+  type BuildRunnerDriverOptions,
+  type RunnerDriverBundle,
+} from './runtime.ts';
 export { assertNoSecrets, FORBIDDEN_STORE_KEYS } from './secrets.ts';
 export {
   createChildProcessSignerRunner,
+  createExternalCommandAuthSigner,
   createExternalCommandSigner,
   isPreSpawnRefusal,
   isSignerError,
   refusePolicy,
+  signerExecutableName,
   SIGNER_PROTOCOL,
   SignerError,
+  type ExternalCommandAuthSignerOptions,
   type ExternalCommandSignerOptions,
   type PolicyRefusal,
   type RunnerSignerRequest,

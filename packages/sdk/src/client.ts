@@ -281,6 +281,23 @@ export class PredictAgentClient {
   }
 
   /**
+   * Whether a session token is held — the boolean, never the token.
+   *
+   * For a long-lived embedder that must open a session before its first call and
+   * must not open a second one per tick: `authenticate()` joins a handshake
+   * already in flight, but mints a *fresh* token when one already exists, so
+   * "must I authenticate at all" has to be answerable without asking for the
+   * credential itself.
+   *
+   * It says nothing about whether the server still accepts that token. An expired
+   * or revoked one is discovered by using it, and `autoReauthenticate` replaces it
+   * then — keeping the replayed request's exact bytes and idempotency key.
+   */
+  isAuthenticated(): boolean {
+    return this.session.peek() !== undefined;
+  }
+
+  /**
    * The handshake itself. The timestamp is minted per attempt and embedded in the
    * signed text, so the signature is bound to this moment and this wallet — a
    * re-authentication must never replay an earlier challenge, which the server
@@ -812,6 +829,28 @@ export class PredictAgentClient {
     this.ownedStream = undefined;
     this.ownedQuoteStream?.close();
     this.ownedQuoteStream = undefined;
+  }
+
+  /**
+   * The quote stream this client is configured with, or `undefined` for none.
+   *
+   * For an embedder that wants indicative prices for something other than
+   * `waitForPriceAndExecute` — the Runner puts its own `PriceObserver` over this
+   * one — and it exists so that embedder does not have to build a second socket
+   * with a second handshake and a second copy of the session. With
+   * `quoteStream: 'native'` the socket is opened on first call and is still this
+   * client's to close, so {@link close} releases it either way.
+   *
+   * It hands over the stream and never the session: nothing here exposes the
+   * bearer token, which is what a caller building its own `SocketQuoteStream`
+   * would otherwise need from this object.
+   *
+   * The returned stream's `seq` is per (connection, topic) and means nothing off
+   * the connection that issued it, so there is no cursor here to persist and
+   * none to resume from — a resumed subscription's snapshot IS the recovery.
+   */
+  quoteStream(): QuoteStream | undefined {
+    return this.quoteStreamOption === undefined ? undefined : this.requireQuoteStream();
   }
 
   /**

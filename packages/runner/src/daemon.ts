@@ -52,6 +52,7 @@ import {
   mintIpcToken,
   writeIpcToken,
 } from './ipc/runtime-dir.ts';
+import type { PriceTopicStatus } from './prices.ts';
 import { recoverJobs, type RecoveryReport } from './recovery.ts';
 import {
   JobScheduler,
@@ -63,7 +64,7 @@ import type { JobStore } from './store.ts';
 import { LeaseKeeper, type LeaseLossReason } from './supervisor.ts';
 
 /**
- * The pieces a daemon started with no `driver` is missing.
+ * The pieces a daemon started with no `driver` is missing, when nobody said which.
  *
  * This is a list of what a daemon INSTANCE was not handed, not of what the
  * package can build. `JobScheduler`, `QuoteStreamPriceObserver` and
@@ -71,6 +72,11 @@ import { LeaseKeeper, type LeaseLossReason } from './supervisor.ts';
  * none of them, because nothing wired them up. `signer` therefore stays on this
  * list — the gap it names is this instance's, and a Runner that reported a signer
  * it was never handed would be claiming it can sign for a job it cannot.
+ *
+ * A caller that knows *why* it could not build a driver should say so instead,
+ * through {@link RunnerDaemonOptions.driverGaps}: `runnerd` passes the named
+ * configuration gaps (`base-url`, `agent-wallet`, `signer-command`), which tell an
+ * operator what to fix rather than what is absent.
  */
 export const RUNNER_DRIVER_GAPS: readonly string[] = ['scheduler', 'signer', 'price-watcher'];
 
@@ -93,6 +99,26 @@ export interface RunnerDaemonOptions {
    * carrying all three collaborators rather than three that can be half-given.
    */
   readonly driver?: SchedulerDriver;
+  /**
+   * What to report when this instance is not driving. Defaults to
+   * {@link RUNNER_DRIVER_GAPS}.
+   *
+   * Supplied by a caller that knows which *configuration* it was missing, so
+   * `runner.status` can say `signer-command` — something an operator can act on —
+   * rather than `signer`, which only restates that no driver was passed. Ignored
+   * while a scheduler is ticking, because then nothing is missing.
+   */
+  readonly driverGaps?: readonly string[];
+  /**
+   * Live topic health from the driver's price source, for `runner.status`.
+   *
+   * Read on each status call rather than snapshotted, and separate from `driver`
+   * because a `PriceObserver` is not required to have topics: only
+   * `QuoteStreamPriceObserver` does. A topic that has gone permanently quiet
+   * under `DEGRADED` looks exactly like a market nobody is trading, and this is
+   * the only place that distinction is visible from outside the process.
+   */
+  readonly priceTopics?: () => readonly PriceTopicStatus[];
   /** Only meaningful with a `driver`. How often each held job gets a pass. */
   readonly tickIntervalMs?: number;
   /** Only meaningful with a `driver`. The most jobs this instance holds at once. */
@@ -357,7 +383,10 @@ export class RunnerDaemon {
       // socket is up, and the socket's lifetime sits strictly inside the
       // scheduler's, so `driving` false here means no driver was ever supplied —
       // which is exactly the list below.
-      driverGaps: this.driving ? [] : RUNNER_DRIVER_GAPS,
+      driverGaps: this.driving ? [] : (this.options.driverGaps ?? RUNNER_DRIVER_GAPS),
+      ...(this.options.priceTopics === undefined
+        ? {}
+        : { priceTopics: this.options.priceTopics }),
       recovery: this.recovery,
       requestShutdown: (reason) => {
         this.emit({ kind: 'shutdown-requested', reason });

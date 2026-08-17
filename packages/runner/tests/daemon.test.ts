@@ -27,6 +27,7 @@ import {
   type RunnerDaemonOptions,
 } from '../src/daemon.ts';
 import { RunnerIpcClient } from '../src/ipc/client.ts';
+import type { PriceTopicStatus } from '../src/prices.ts';
 import { readIpcToken } from '../src/ipc/runtime-dir.ts';
 import type { SchedulerDriver } from '../src/scheduler.ts';
 import { SqliteJobStore } from '../src/sqlite/store.ts';
@@ -528,5 +529,72 @@ describe('signal handling', () => {
     // SIGKILL cannot be handled, which is exactly why the store is arranged to
     // survive it.
     expect(stops).toBe(1);
+  });
+});
+
+/**
+ * What an operator reads when a Runner is not driving, and what a client reads
+ * when it is. Both answers are about not mistaking one silence for another.
+ */
+describe('what the status says about why', () => {
+  it('reports the configuration gaps it was given rather than a generic list', async () => {
+    // `runnerd` knows *why* it built no driver — a missing keystore command is a
+    // line an operator can add. "No signer" would only restate the absence.
+    const handle = await startDaemon({ driverGaps: ['signer-command'] });
+    const client = await connect(handle);
+
+    const status = (await client.request('runner.status')) as Record<string, unknown>;
+    expect(status['driving']).toBe(false);
+    expect(status['driverGaps']).toEqual(['signer-command']);
+  });
+
+  it('says nothing about prices when nothing is watching them', async () => {
+    const handle = await startDaemon();
+    const client = await connect(handle);
+
+    // `null`, not an empty report: a Runner with no price source at all is not
+    // the same as one watching a market that has gone quiet.
+    const status = (await client.request('runner.status')) as Record<string, unknown>;
+    expect(status['prices']).toBeNull();
+  });
+
+  it('surfaces a feed that has given up, which otherwise looks like a quiet market', async () => {
+    const topics: PriceTopicStatus[] = [
+      {
+        marketId: 'mkt_1',
+        outcomeId: 'YES',
+        subscribedAt: T0,
+        lastAskedAt: NOW,
+        lastObservedAt: undefined,
+        unavailable: 'DEGRADED',
+        gapped: false,
+      },
+      {
+        marketId: 'mkt_2',
+        outcomeId: 'NO',
+        subscribedAt: T0,
+        lastAskedAt: NOW,
+        lastObservedAt: undefined,
+        unavailable: undefined,
+        gapped: true,
+      },
+    ];
+    const handle = await startDaemon({ priceTopics: () => topics });
+    const client = await connect(handle);
+
+    const status = (await client.request('runner.status')) as Record<string, unknown>;
+    const prices = status['prices'] as Record<string, unknown>;
+    expect(prices['watching']).toBe(2);
+    // The one status that never recovers on its own: those topics answer nothing
+    // for the life of the process, and every job watching them waits forever.
+    expect(prices['degraded']).toBe(1);
+    // Subscribed but never observed — a job that has not been able to trigger yet.
+    expect(prices['silent']).toBe(2);
+    expect((prices['topics'] as Record<string, unknown>[])[1]).toMatchObject({
+      marketId: 'mkt_2',
+      gapped: true,
+      unavailable: null,
+      lastObservedAt: null,
+    });
   });
 });

@@ -3,27 +3,27 @@
 The self-hosted local Runner. Private to this workspace; nothing here is
 published, and the SDK does not depend on it (ADR-0001 §4).
 
-**There is now a process, a thing that moves a job, and a loop that calls it — and
-what is still missing is what the loop needs to call it *with*.** The daemon
-starts, recovers the jobs it finds, holds their leases and answers a local socket.
-`driveJob` takes a held lease and walks one job one step: watch, pause, trigger,
-quote, create, sign, submit, reconcile. `JobScheduler` claims runnable jobs and
-calls it on a tick, one pass per job, never overlapping itself, and stops driving a
-job the instant this instance is fenced out of it.
+**There is now a process, a thing that moves a job, a loop that calls it, and a
+configuration a shipped `runnerd` can build that loop's collaborators from.** The
+daemon starts, recovers the jobs it finds, holds their leases and answers a local
+socket. `driveJob` takes a held lease and walks one job one step: watch, pause,
+trigger, quote, create, sign, submit, reconcile. `JobScheduler` claims runnable
+jobs and calls it on a tick, one pass per job, never overlapping itself, and stops
+driving a job the instant this instance is fenced out of it.
 
 The scheduler needs three collaborators supplied together — a gateway, a
-`PriceObserver` and a `StrategySigner` — and this package now implements all
-three: `QuoteStreamPriceObserver` turns the SDK's indicative quote stream into
-observed prices, and into silence whenever that feed cannot prove it is live, and
-`createExternalCommandSigner` signs sponsored bytes through a keystore command
-that holds the key. What is still missing is the *configuration surface* that
-would let `runnerd` assemble them from a file. So **whether a daemon drives is a
-decision, not a property of the build**:
-an embedding application that supplies all three gets a Runner that takes a
-strategy to a fill, and `runnerd`, which supplies none, starts no scheduler and
-advances nothing. `runner.status` reports which one it is — `driving`, plus
-`driverGaps` naming what is absent — and any real agent command sent over the
-socket is refused `NOT_IMPLEMENTED` either way.
+`PriceObserver` and a `StrategySigner`. `QuoteStreamPriceObserver` turns the SDK's
+indicative quote stream into observed prices, and into silence whenever that feed
+cannot prove it is live; `createExternalCommandSigner` signs sponsored bytes
+through a keystore command that holds the key; and `resolveRunnerConfig` plus
+`buildRunnerDriver` assemble all three from the environment and one JSON file, so
+`runnerd` drives when it is configured to. **Whether a daemon drives is still a
+decision rather than a property of the build**: the configuration is all-or-nothing
+— a missing base URL, wallet or keystore command yields *no* driver and names what
+is absent, rather than a half-driver that could create an order it cannot sign.
+`runner.status` reports which one it is — `driving`, `driverGaps`, and a per-topic
+`prices` block — and any real agent command sent over the socket is still refused
+`NOT_IMPLEMENTED` either way.
 
 | | status |
 | --- | --- |
@@ -51,15 +51,26 @@ socket is refused `NOT_IMPLEMENTED` either way.
 | `PriceObserver` over the SDK's indicative quote stream | implemented |
 | Signer inside the Runner trust boundary, over an external command | implemented |
 | Refusal to sign for an `interactive` or `read-only` job, before spawning | implemented, tested |
+| A driver `runnerd` builds from local configuration, or refuses to | implemented, tested |
+| Per-topic price-feed health in `runner.status` | implemented, tested |
 | Keystore-file, OS-keychain and KMS signer providers | **not implemented** (backlog 1.8) |
-| A driver `runnerd` can construct from local configuration | **not implemented** (backlog 2.6) |
-| Cursor persistence wired back into a live stream | **not implemented** (backlog 2.4) |
+| Strategy commands over the IPC socket / CLI | **not implemented** (backlog 2.8) |
+| Cursor persistence wired back into a live stream | **not applicable here** (backlog 2.4) |
 
-Synthetic limit orders therefore still run in-process via the SDK's
-`waitForPriceAndExecute` and die with the process — see `packages/sdk/README.md`.
-Starting `runnerd` does not change that yet: the signer and the price observer
-both exist, but neither has a configuration surface `runnerd` could build one
-from, so it starts with no driver and reports `driving: false`.
+Synthetic limit orders still run in-process via the SDK's `waitForPriceAndExecute`
+and die with the process — see `packages/sdk/README.md`. A configured `runnerd` is
+the durable alternative for a strategy that was *created* through
+`StrategyService`; what is not there yet is a way to create one over the socket
+(backlog 2.8), so today that means an embedding application, not a command.
+
+The stream-cursor row deserves its wording. The store persists cursors and the
+recovery path reads them, but there is nothing in this process to hand one back
+to: the Runner reads indicative quotes, whose recovery *is* the snapshot — a
+`SocketQuoteStream`'s `seq` is per connection and per topic, so a reconnect starts
+a new sequence rather than resuming an old one — and it deliberately does not open
+the *execution* stream at all, because a terminal state is confirmed by an
+authoritative REST read (`getExecution`), never by a frame. Backlog 2.4 is real,
+but it belongs to a consumer of the execution stream, which this package is not.
 
 ### What the price observer will and will not say
 
@@ -145,11 +156,58 @@ that owned it went away, and the whole point of ADR-0001 §6 is that a local Run
 makes no such promise. Backgrounding it, and keeping the device awake, are the
 operator's decisions to make explicitly.
 
-`WATERX_RUNNER_DIR` (default `~/.waterx/runner`) is the runtime directory;
-`WATERX_RUNNER_STORE` overrides where the database lives. Start-up order is fixed:
-assert the runtime directory, open the store, run recovery, *then* listen — so no
-client can observe a Runner that has not yet decided what its jobs are. Diagnostics
-go to stderr as one JSON object per line, never stdout, and never the token.
+Start-up order is fixed: resolve the configuration, assert the runtime directory,
+open the store, run recovery, *then* listen — so no client can observe a Runner
+that has not yet decided what its jobs are. Diagnostics go to stderr as one JSON
+object per line, never stdout, and never a token, a signature or transaction bytes.
+The first line is the resolved configuration, in which the keystore appears by
+**base name only**: a full argv can carry a path that identifies the operator or a
+hardware-token slot, and that line is what a service manager archives.
+
+### Configuring it
+
+Environment first, then `runner.json` in the runtime directory. There are no
+flags: a process that runs for days should be configured by a document an operator
+can read back, not by an argv nobody can recover after the terminal is gone.
+
+| env | `runner.json` | |
+| --- | --- | --- |
+| `WATERX_RUNNER_DIR` | — | runtime directory (default `~/.waterx/runner`) |
+| `WATERX_RUNNER_STORE` | — | database path (default `<dir>/jobs.sqlite`) |
+| `WATERX_RUNNER_CONFIG` | — | the file itself (default `<dir>/runner.json`) |
+| `WATERX_RUNNER_BASE_URL` | `baseUrl` | the API this Runner trades against |
+| `WATERX_RUNNER_AGENT_WALLET` | `agentWallet` | the address it trades as |
+| `WATERX_RUNNER_SIGNER_COMMAND` | `signerCommand` | the keystore **argv** |
+| `WATERX_RUNNER_SIGNER_TIMEOUT_MS` | `signerTimeoutMs` | default 15000 |
+| `WATERX_RUNNER_TICK_INTERVAL_MS` | `tickIntervalMs` | scheduler cadence |
+| `WATERX_RUNNER_MAX_JOBS` | `maxJobs` | jobs claimed per tick |
+
+```json
+{ "baseUrl": "https://predict.example/api",
+  "agentWallet": "0x…",
+  "signerCommand": ["/opt/keystore/bin/waterx-sign", "--slot", "3"] }
+```
+
+The signer command is argv and is never run through a shell, so a bare executable
+name is fine and anything with arguments must be an array — splitting on spaces
+would break the first path containing one and quietly change which program runs.
+An unknown key in the file is a refusal rather than a warning, and so is a
+credential-shaped key at any depth, named by its path and never by its value.
+
+**There is no token setting, from anywhere.** Not in the file, not in the
+environment. A seven-day mandate outlives any token it could have been handed, so
+the Runner authenticates itself through the same keystore command and
+re-authenticates when the server rejects one — which is the path that keeps a
+logical write's idempotency key and exact bytes intact across an expiry
+mid-order. The session is opened lazily on first use, not at boot, so a Runner
+restarted while the API is down still starts, still recovers its jobs, and
+authenticates when the server comes back.
+
+The three driver settings are all-or-nothing. Missing any of them, `runnerd`
+starts, recovers, listens and reports `driving: false` with `driverGaps` naming
+exactly what to set (`base-url`, `agent-wallet`, `signer-command`). A `baseUrl`
+using plaintext `http://` to anything but loopback warns rather than refuses — a
+local mock is legitimate — and the warning is printed once, at start-up.
 
 ## Talking to it
 
@@ -178,7 +236,18 @@ Two fields exist so a caller cannot mistake reachable for running: `driving` say
 whether a scheduler is ticking *in this process right now*, and `driverGaps` names
 what is absent when it is not. Both are read from the scheduler rather than from
 configuration, so a daemon that was told to drive but whose loop is stopped reports
-`false`. `runner.cancel-job` separates
+`false`.
+
+A third exists so a caller cannot mistake running for *watching*. `prices` is
+`null` when nothing observes prices at all, and otherwise counts the topics held,
+how many are `degraded`, and how many are `silent` — subscribed, but nothing has
+ever been observed on them — with a row per topic. `degraded` is the one worth
+alerting on: it means the stream gave up for the life of the process, so those
+topics will answer "nothing observed" forever without ever erroring, and a
+strategy waiting on one is indistinguishable from a strategy waiting on a quiet
+market unless something says so.
+
+`runner.cancel-job` separates
 `recorded` from `applied` for the same reason — only the lease holder may end a
 job, and only from a state that has not started a write, so a cancel arriving
 during a submit reports `pending: 'IN_FLIGHT'` rather than a stop that did not
@@ -191,9 +260,11 @@ happen.
 of rules about sizing, expiry or cancellation. `create` normalizes an intent and
 writes a durable job in `DRAFT`. Whether anything then advances it depends on
 whether *this* Runner was given a driver, which is why `create` returns the job's
-state rather than a word like "armed". It is deliberately not exposed over the IPC
-socket yet — advertising a strategy command from a process that may report
-`driving: false` would claim execution that does not exist.
+state rather than a word like "armed". It is not exposed over the IPC socket yet
+(backlog 2.8); a configured `runnerd` now reports `driving: true`, so the reason
+that held it back is gone, but the socket surface and the schema entry for it are
+not written. Until they are, `create` is reachable from an embedding application
+and not from a command.
 
 What it refuses is the interesting part. `normalizeStrategy` will not guess a
 size, an expiry or a market:
@@ -356,6 +427,8 @@ src/strategy/driver.ts     one job, one pass, and what a pass refuses to decide
 src/daemon.ts         start-up order, shutdown, and what the process admits to
 src/supervisor.ts     lease renewal, heartbeat, and the two aborts they cause
 src/ipc/              the socket: framing, auth, dispatch, and the client
+src/config.ts         what an operator sets, and what this process will not hold
+src/runtime.ts        the only place a SchedulerDriver is constructed
 src/bin/runnerd.ts    the process entry point
 ```
 

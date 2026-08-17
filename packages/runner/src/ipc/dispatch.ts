@@ -18,6 +18,7 @@
  */
 import type { Clock } from '../clock.ts';
 import { isJobStoreError, JobStoreError } from '../errors.ts';
+import type { PriceTopicStatus } from '../prices.ts';
 import type { RecoveryReport } from '../recovery.ts';
 import type { JobState } from '../state-machine.ts';
 import type { JobStore } from '../store.ts';
@@ -38,6 +39,11 @@ export interface RunnerCommandContext {
   readonly driving: boolean;
   /** Named, so a client can report which pieces are absent rather than guessing. */
   readonly driverGaps: readonly string[];
+  /**
+   * Live topic health from the driver's price source. Absent when nothing is
+   * watching prices, which is not the same as watching them and seeing none.
+   */
+  readonly priceTopics?: () => readonly PriceTopicStatus[];
   readonly recovery: RecoveryReport | undefined;
   requestShutdown(reason: string): void;
 }
@@ -69,6 +75,36 @@ export const dispatch = async (
   }
 };
 
+/**
+ * What the price feed is actually saying, per topic.
+ *
+ * `null` when nothing is watching prices at all — which a client must be able to
+ * tell from a feed that is watching and reporting nothing. `degraded` is counted
+ * out separately because it is the one status that never recovers on its own:
+ * the stream has given up for the life of the process, so those topics will
+ * answer `null` forever and every job watching them will wait forever without
+ * erroring. A silent strategy and a dead feed look identical without this.
+ */
+const priceHealth = (context: RunnerCommandContext): unknown => {
+  if (context.priceTopics === undefined) return null;
+  const topics = context.priceTopics();
+  return {
+    watching: topics.length,
+    degraded: topics.filter((topic) => topic.unavailable === 'DEGRADED').length,
+    /** Subscribed, but nothing has ever been observed on it. */
+    silent: topics.filter((topic) => topic.lastObservedAt === undefined).length,
+    topics: topics.map((topic) => ({
+      marketId: topic.marketId,
+      outcomeId: topic.outcomeId,
+      subscribedAt: topic.subscribedAt,
+      lastObservedAt: topic.lastObservedAt ?? null,
+      lastAskedAt: topic.lastAskedAt,
+      unavailable: topic.unavailable ?? null,
+      gapped: topic.gapped,
+    })),
+  };
+};
+
 const status = async (context: RunnerCommandContext): Promise<unknown> => {
   const all = await context.store.listJobs();
   const byState: Record<string, number> = {};
@@ -85,6 +121,7 @@ const status = async (context: RunnerCommandContext): Promise<unknown> => {
     // The two fields a caller must read before believing a strategy is running.
     driving: context.driving,
     driverGaps: [...context.driverGaps],
+    prices: priceHealth(context),
     jobs: { total: all.length, byState },
     leasedHere: context.leases.held(),
     recovery:

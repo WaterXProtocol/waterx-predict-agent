@@ -21,6 +21,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { JobPolicySnapshot } from '../src/job.ts';
 import {
+  createExternalCommandAuthSigner,
   createExternalCommandSigner,
   isPreSpawnRefusal,
   isSignerError,
@@ -350,5 +351,86 @@ describe('what an error may carry', () => {
     expect(error.detail).toMatchObject({ executable: 'waterx-sign' });
     // A full argv can name a home directory, a slot or a hostname.
     expect(JSON.stringify(error.detail)).not.toContain('/opt/keystore');
+  });
+});
+
+/**
+ * The Runner's *authentication* signer, which exists so the client can open a
+ * session for days without either handing it a token or handing it a way to sign
+ * an order. Both halves matter: it must actually sign the challenge, and it must
+ * refuse a transaction in a way no caller can talk it out of.
+ */
+describe('the authentication signer', () => {
+  const authBuild = (
+    answer: SignerRunResult | Error = ok(),
+  ): { signer: ReturnType<typeof createExternalCommandAuthSigner>; calls: Recorder['calls'] } => {
+    const run = recorder(answer);
+    return {
+      calls: run.calls,
+      signer: createExternalCommandAuthSigner({
+        command: COMMAND,
+        agentWallet: WALLET,
+        run: run.runner,
+      }),
+    };
+  };
+
+  it('signs the challenge as a personal message, and says so on the wire', async () => {
+    // PERSONAL_MESSAGE, not TRANSACTION: the server verifies this with
+    // verifyPersonalMessageSignature, and Sui's intent prefixes differ. A
+    // transaction signature here is well-formed over the wrong bytes.
+    const built = authBuild();
+    const result = await built.signer.signPersonalMessage(new TextEncoder().encode('challenge'));
+
+    expect(result.signature).toBe(SIGNATURE);
+    expect(built.calls).toHaveLength(1);
+    const sent = JSON.parse(built.calls[0]?.stdin ?? '{}') as Record<string, unknown>;
+    expect(Object.keys(sent).sort()).toEqual(['agentWallet', 'messageBase64', 'type', 'version']);
+    expect(sent['type']).toBe('PERSONAL_MESSAGE');
+    expect(sent['version']).toBe(SIGNER_PROTOCOL.version);
+    expect(sent['messageBase64']).toBe(Buffer.from('challenge').toString('base64'));
+  });
+
+  it('refuses a transaction, and starts nothing to refuse it', () => {
+    // This is what keeps `executeMarketOrder` from producing an order signature
+    // outside a job's policy snapshot: not a convention, a missing road.
+    const built = authBuild();
+    let thrown: unknown;
+    try {
+      built.signer.signTransaction(new TextEncoder().encode('an order'));
+    } catch (error: unknown) {
+      thrown = error;
+    }
+
+    expect(isSignerError(thrown)).toBe(true);
+    expect(isSignerError(thrown) && thrown.code).toBe('NOT_A_TRANSACTION_SIGNER');
+    expect(isSignerError(thrown) && isPreSpawnRefusal(thrown.code)).toBe(true);
+    expect(built.calls).toEqual([]);
+  });
+
+  it('reports the wallet it signs as, without being asked to prove it', () => {
+    expect(authBuild().signer.toSuiAddress()).toBe(WALLET);
+  });
+
+  it('carries neither the signature nor the challenge into an error', async () => {
+    const built = authBuild(ok({ code: 1, stderr: SIGNATURE }));
+    const error = (await built.signer
+      .signPersonalMessage(new TextEncoder().encode('challenge'))
+      .catch((thrown: unknown) => thrown)) as SignerError;
+
+    const serialized = `${error.message}|${JSON.stringify(error.detail)}`;
+    expect(serialized).not.toContain(SIGNATURE);
+    expect(error.detail).toMatchObject({ executable: 'waterx-sign' });
+  });
+
+  it('refuses to be built without a command or a wallet', () => {
+    for (const options of [
+      { command: [] as readonly string[], agentWallet: WALLET },
+      { command: COMMAND, agentWallet: '  ' },
+    ]) {
+      expect(() =>
+        createExternalCommandAuthSigner({ ...options, run: recorder().runner }),
+      ).toThrow(SignerError);
+    }
   });
 });

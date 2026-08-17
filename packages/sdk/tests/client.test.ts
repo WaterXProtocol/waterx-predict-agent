@@ -418,3 +418,70 @@ describe('reads', () => {
     expect(calls[0]?.method).toBe('GET');
   });
 });
+
+/**
+ * What an embedder may ask the client about its own session and its own socket.
+ *
+ * Both accessors exist for a long-lived host — the Runner — that must open one
+ * session, share it with a stream it drives itself, and never hold the token.
+ */
+describe('what a long-lived embedder can reach', () => {
+  it('answers whether a session is held without handing over the token', async () => {
+    const { fetch } = stubFetch([json(200, { token: 'tok-2', expiresIn: 900 })]);
+    const client = new PredictAgentClient({ baseUrl: 'https://api.test', fetch, signer });
+
+    // The question a host asks per tick, so it does not mint a login per tick.
+    expect(client.isAuthenticated()).toBe(false);
+    await client.authenticate();
+    expect(client.isAuthenticated()).toBe(true);
+
+    // The boolean, and nothing else: no accessor here returns the credential.
+    expect(JSON.stringify(client.isAuthenticated())).not.toContain('tok-2');
+  });
+
+  it('hands over the quote stream it owns, and none when none was configured', () => {
+    const { fetch } = stubFetch([json(200, {})]);
+    const bare = new PredictAgentClient({ baseUrl: 'https://api.test', fetch, signer });
+    expect(bare.quoteStream()).toBeUndefined();
+
+    const stream = { onQuote: () => () => undefined };
+    const configured = new PredictAgentClient({
+      baseUrl: 'https://api.test',
+      fetch,
+      signer,
+      quoteStream: stream,
+    });
+    // The same object, so an embedder putting its own observer over this stream
+    // is watching the feed the client's own price waits watch.
+    expect(configured.quoteStream()).toBe(stream);
+  });
+
+  it('opens the native stream once and closes it with the client', () => {
+    const { fetch } = stubFetch([json(200, {})]);
+    let disconnects = 0;
+    const client = new PredictAgentClient({
+      baseUrl: 'https://api.test',
+      fetch,
+      signer,
+      quoteStream: 'native',
+      quoteStreamConnector: () => ({
+        on: () => undefined,
+        emit: () => undefined,
+        disconnect: () => {
+          disconnects += 1;
+        },
+      }),
+    });
+
+    const first = client.quoteStream();
+    expect(first).toBeDefined();
+    // Lazily built, then remembered: two callers must not end up on two sockets
+    // with two handshakes and two copies of the session.
+    expect(client.quoteStream()).toBe(first);
+
+    client.close();
+    // No socket was ever connected here — nothing subscribed — so there is
+    // nothing to disconnect, and closing must still not throw.
+    expect(disconnects).toBe(0);
+  });
+});

@@ -282,19 +282,25 @@ describe('the Runner package', () => {
   });
 
   it('says in its README which half of the Runner exists', () => {
-    // The daemon, its socket, `driveJob`, the loop that calls it, the price source
-    // it reads and now the signer are all built. What is not built is any
-    // configuration surface to assemble a driver from, so a shipped `runnerd`
-    // still advances nothing. A README that described this package as "the
-    // Runner" would be claiming a job progresses on its own, so the absence has
-    // to survive in prose as well as in `driving: false`.
+    // The daemon, its socket, `driveJob`, the loop that calls it, the price
+    // source, the signer and now the configuration that assembles them are all
+    // built, so a configured `runnerd` really does advance a job. What is *not*
+    // built is any way to give that process a strategy: no `strategy.*` on the
+    // socket, none in the CLI. A README that described this package as "the
+    // Runner" would let a reader conclude an operator can start a durable
+    // strategy, so the remaining absence has to survive in prose — and so does
+    // `driving: false`, which is what an unconfigured process still reports.
     const readme = read('packages/runner/README.md');
     expect(readme).toContain('**not implemented**');
     expect(readme.toLowerCase()).toContain('daemon');
     expect(readme).toContain('driving: false');
-    expect(readme).toContain(
-      'A driver `runnerd` can construct from local configuration | **not implemented**',
-    );
+    expect(readme).toContain('Strategy commands over the IPC socket / CLI | **not implemented**');
+    // The configuration's two load-bearing refusals, which an operator reads the
+    // README to learn: it holds no token at all, and it will not build half a
+    // driver. Both are the difference between a Runner that authenticates itself
+    // for seven days and one that creates an order it cannot sign.
+    expect(readme).toContain('There is no token setting, from anywhere');
+    expect(readme).toContain('all-or-nothing');
     // The signer exists here now, and the two refusals are the part that must not
     // be quietly dropped from the prose if someone later "simplifies" the gate.
     expect(readme).toContain('Signer inside the Runner trust boundary, over an external command');

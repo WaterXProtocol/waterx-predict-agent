@@ -20,10 +20,25 @@
  *
  * `PERSONAL_MESSAGE` is part of the protocol because a key holder has to be able
  * to tell the two apart: it signs a login challenge, moves no funds, and Sui's
- * intent prefixes mean its signature cannot authorize a transaction. **This module
- * only ever emits `TRANSACTION`.** A Runner does not authenticate — the client it
- * is handed is already authenticated — and a signer that could be asked for
- * either would be one refusal away from sending transaction bytes as a "message".
+ * intent prefixes mean its signature cannot authorize a transaction.
+ *
+ * ## Two signers, and neither can do the other's job
+ *
+ * A daemon that must survive a seven-day strategy cannot be handed a session
+ * token, so it authenticates itself and re-authenticates when one expires. That
+ * gives this module two exports, deliberately split rather than one object with
+ * two methods:
+ *
+ * - {@link createExternalCommandSigner} is the {@link StrategySigner}. It emits
+ *   `TRANSACTION` **only**, and only for a job whose policy permits unattended
+ *   signing.
+ * - {@link createExternalCommandAuthSigner} is the `AgentSigner` the REST/WS
+ *   client opens its session with. It emits `PERSONAL_MESSAGE` **only**, and
+ *   throws on `signTransaction` — because `PredictAgentClient` would otherwise be
+ *   able to sign an order that never passed a job's policy snapshot at all.
+ *
+ * Between them there is exactly one road to a transaction signature in this
+ * process, and it runs past the policy gate below.
  *
  * ## Why the signer, and not the caller, applies the policy
  *
@@ -67,6 +82,8 @@
  * No error detail here carries bytes or a signature — only a length, an exit
  * status and the executable's base name.
  */
+import type { AgentSigner, SignatureWithBytes } from '@waterx/predict-agent-sdk';
+
 import { systemClock, type Clock } from './clock.ts';
 import type { JobPolicySnapshot } from './job.ts';
 import type { StrategySignRequest, StrategySigner } from './strategy/gateway.ts';
@@ -146,6 +163,17 @@ export type SignerErrorCode =
   | 'ABORTED'
   /** No signer command is configured, so this Runner cannot sign at all. */
   | 'SIGNER_UNAVAILABLE'
+  /**
+   * A transaction signature was asked of the Runner's *authentication* signer.
+   *
+   * The client the Runner hands its gateway holds an `AgentSigner`, and an
+   * `AgentSigner` can structurally sign transactions. In this process it must
+   * not: every transaction signature has to go through the {@link StrategySigner}
+   * that reads the job's policy snapshot, and a client-side one would produce an
+   * order under no policy at all. So the authentication signer refuses rather
+   * than being trusted not to be called.
+   */
+  | 'NOT_A_TRANSACTION_SIGNER'
 
   /* ── The child ran and did not produce a usable signature ──────────────── */
   /** Non-zero exit, unusable stdout, or no `signature` string. Never fabricated. */
@@ -274,7 +302,94 @@ export interface ExternalCommandSignerOptions {
 /** Never the full argv: an argument may be a path that says who the operator is. */
 const baseName = (path: string): string => path.split('/').pop() ?? path;
 
+/** Exported so a diagnostic line can name the executable the same way. */
+export const signerExecutableName = (command: readonly string[]): string =>
+  baseName(command[0] ?? '');
+
 const DEFAULT_TIMEOUT_MS = 15_000;
+
+interface ChildOptions {
+  readonly command: readonly string[];
+  readonly run: SignerRunner;
+  readonly timeoutMs: number;
+  readonly onDiagnostic: ((text: string) => void) | undefined;
+}
+
+/**
+ * Run the keystore command for one request and return the signature it produced.
+ *
+ * Shared by the two signers in this file so there is exactly one place that
+ * decides what a child's answer is worth. Nothing it throws carries the child's
+ * stdout, the bytes or a signature — only a length, an exit status and the
+ * executable's base name.
+ */
+const runSignerCommand = async (
+  child: ChildOptions,
+  request: RunnerSignerRequest,
+  context: Readonly<Record<string, unknown>>,
+): Promise<string> => {
+  const where = signerExecutableName(child.command);
+  const result = await child.run(child.command, `${JSON.stringify(request)}\n`, child.timeoutMs);
+
+  if (result.stderr.trim() !== '') {
+    child.onDiagnostic?.(result.stderr.trim());
+  }
+  if (result.timedOut) {
+    throw new SignerError(
+      'SIGNER_TIMEOUT',
+      `the signer command did not answer within ${String(child.timeoutMs)}ms and was terminated; whether it signed is unknown, and this execution was not submitted`,
+      { ...context, executable: where, timeoutMs: child.timeoutMs },
+    );
+  }
+  if (result.code !== 0) {
+    throw new SignerError(
+      'SIGNER_FAILED',
+      `the signer command exited with status ${String(result.code)}; its output was not used`,
+      { ...context, executable: where, exitCode: result.code },
+    );
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(result.stdout);
+  } catch {
+    // The message says what was expected and never what arrived: unparsed
+    // stdout may hold anything, including the signature itself.
+    throw new SignerError(
+      'SIGNER_FAILED',
+      'the signer command did not write JSON to stdout; it must write {"signature":"<base64>"} and nothing else',
+      { ...context, executable: where, stdoutBytes: result.stdout.length },
+    );
+  }
+  const signature = (parsed as { signature?: unknown } | null)?.signature;
+  if (typeof signature !== 'string' || signature === '') {
+    throw new SignerError(
+      'SIGNER_FAILED',
+      'the signer command returned JSON with no `signature` string; a signature is never fabricated from a partial answer',
+      { ...context, executable: where },
+    );
+  }
+  return signature;
+};
+
+/** Both signers refuse the same misconfiguration, in the same words. */
+const assertSignerConfig = (command: readonly string[], agentWallet: string): void => {
+  // Blank counts as absent. A wallet of spaces would otherwise be compared
+  // against the job's and refuse every signature at the trigger instead of here.
+  const executable = command[0]?.trim();
+  if (executable === undefined || executable === '') {
+    throw new SignerError(
+      'SIGNER_UNAVAILABLE',
+      'no signer command is configured, so this Runner can sign nothing and must not claim it drives jobs',
+    );
+  }
+  if (agentWallet.trim() === '') {
+    throw new SignerError(
+      'SIGNER_UNAVAILABLE',
+      'no agent wallet is configured for the signer; it must be stated so a job belonging to another agent can be refused rather than signed',
+    );
+  }
+};
 
 /**
  * The Runner's signer: an external command, gated by the job's own authority.
@@ -286,22 +401,14 @@ const DEFAULT_TIMEOUT_MS = 15_000;
 export const createExternalCommandSigner = (
   options: ExternalCommandSignerOptions,
 ): StrategySigner => {
-  const executable = options.command[0];
-  if (executable === undefined || executable === '') {
-    throw new SignerError(
-      'SIGNER_UNAVAILABLE',
-      'no signer command is configured, so this Runner can sign nothing and must not claim it drives jobs',
-    );
-  }
-  if (options.agentWallet === '') {
-    throw new SignerError(
-      'SIGNER_UNAVAILABLE',
-      'no agent wallet is configured for the signer; it must be stated so a job belonging to another agent can be refused rather than signed',
-    );
-  }
+  assertSignerConfig(options.command, options.agentWallet);
   const now = options.now ?? systemClock;
-  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const where = baseName(executable);
+  const child: ChildOptions = {
+    command: options.command,
+    run: options.run,
+    timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    onDiagnostic: options.onDiagnostic,
+  };
 
   return {
     sign: async (request: StrategySignRequest, signal?: AbortSignal): Promise<string> => {
@@ -339,53 +446,91 @@ export const createExternalCommandSigner = (
         );
       }
 
-      const wire: RunnerSignerRequest = {
-        version: 1,
-        type: 'TRANSACTION',
-        agentWallet: options.agentWallet,
-        transactionBytesBase64: request.sponsoredTransactionBytes,
-      };
-      const result = await options.run(options.command, `${JSON.stringify(wire)}\n`, timeoutMs);
+      return await runSignerCommand(
+        child,
+        {
+          version: 1,
+          type: 'TRANSACTION',
+          agentWallet: options.agentWallet,
+          transactionBytesBase64: request.sponsoredTransactionBytes,
+        },
+        context,
+      );
+    },
+  };
+};
 
-      if (result.stderr.trim() !== '') {
-        options.onDiagnostic?.(result.stderr.trim());
-      }
-      if (result.timedOut) {
-        throw new SignerError(
-          'SIGNER_TIMEOUT',
-          `the signer command did not answer within ${String(timeoutMs)}ms and was terminated; whether it signed is unknown, and this execution was not submitted`,
-          { ...context, executable: where, timeoutMs },
-        );
-      }
-      if (result.code !== 0) {
-        throw new SignerError(
-          'SIGNER_FAILED',
-          `the signer command exited with status ${String(result.code)}; its output was not used`,
-          { ...context, executable: where, exitCode: result.code },
-        );
-      }
+/* ── The other half: authenticating the session ────────────────────────────── */
 
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(result.stdout);
-      } catch {
-        // The message says what was expected and never what arrived: unparsed
-        // stdout may hold anything, including the signature itself.
-        throw new SignerError(
-          'SIGNER_FAILED',
-          'the signer command did not write JSON to stdout; it must write {"signature":"<base64>"} and nothing else',
-          { ...context, executable: where, stdoutBytes: result.stdout.length },
-        );
-      }
-      const signature = (parsed as { signature?: unknown } | null)?.signature;
-      if (typeof signature !== 'string' || signature === '') {
-        throw new SignerError(
-          'SIGNER_FAILED',
-          'the signer command returned JSON with no `signature` string; a signature is never fabricated from a partial answer',
-          { ...context, executable: where },
-        );
-      }
-      return signature;
+export interface ExternalCommandAuthSignerOptions {
+  /** The same keystore argv the {@link StrategySigner} uses. Run without a shell. */
+  readonly command: readonly string[];
+  /** The wallet the session is opened as. Returned rather than derived. */
+  readonly agentWallet: string;
+  readonly run: SignerRunner;
+  readonly timeoutMs?: number;
+  /** The child's **stderr**, trimmed. Never its stdout and never the signature. */
+  readonly onDiagnostic?: (text: string) => void;
+}
+
+/**
+ * The `AgentSigner` the Runner's REST/WS client authenticates with — and the one
+ * that refuses to sign a transaction.
+ *
+ * A long-lived daemon cannot hold a session token from a config file: a seven-day
+ * strategy outlives any token, and the fixed rule is that expiry triggers a safe
+ * re-authentication while a logical write keeps its idempotency key and its exact
+ * bytes. That re-authentication needs a `PERSONAL_MESSAGE` signature at an
+ * arbitrary later moment, so the Runner authenticates through the same keystore
+ * command it signs orders with, and the config surface holds no token at all.
+ *
+ * **`signTransaction` always throws.** `AgentSigner` is structurally capable of
+ * it, and `PredictAgentClient.executeMarketOrder` would use it — producing a
+ * signed order that never passed the job's policy snapshot, never spent a lease,
+ * and never touched the side-effect ledger. Inside this process there is exactly
+ * one road to a transaction signature and it runs through
+ * {@link createExternalCommandSigner}. This refusal is what makes that a property
+ * of the code rather than of the executor's restraint.
+ *
+ * `toSuiAddress` returns the configured wallet rather than deriving one, which
+ * would require the key. A wrong address fails the server's own check on the
+ * challenge signature; it is never silently accepted.
+ */
+export const createExternalCommandAuthSigner = (
+  options: ExternalCommandAuthSignerOptions,
+): AgentSigner => {
+  assertSignerConfig(options.command, options.agentWallet);
+  const child: ChildOptions = {
+    command: options.command,
+    run: options.run,
+    timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    onDiagnostic: options.onDiagnostic,
+  };
+
+  return {
+    toSuiAddress: () => options.agentWallet,
+    signTransaction: (): Promise<SignatureWithBytes> => {
+      throw new SignerError(
+        'NOT_A_TRANSACTION_SIGNER',
+        'this is the Runner’s authentication signer and it signs no transactions; every order signature must go through the strategy signer, which reads the policy the job was admitted under. Nothing was started and nothing was sent.',
+        { executable: signerExecutableName(options.command) },
+      );
+    },
+    signPersonalMessage: async (bytes: Uint8Array): Promise<SignatureWithBytes> => {
+      const messageBase64 = Buffer.from(bytes).toString('base64');
+      const signature = await runSignerCommand(
+        child,
+        {
+          version: 1,
+          type: 'PERSONAL_MESSAGE',
+          agentWallet: options.agentWallet,
+          messageBase64,
+        },
+        { request: 'PERSONAL_MESSAGE' },
+      );
+      // `bytes` echoed back as base64 for the SDK's interface. The challenge is
+      // public; the signature is returned to the client and logged nowhere.
+      return { signature, bytes: messageBase64 };
     },
   };
 };
