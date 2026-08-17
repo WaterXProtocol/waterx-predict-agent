@@ -6,12 +6,14 @@ implemented**. The plan describes the intended system; an ADR constrains how it
 gets built; neither is evidence that anything works.
 
 - Verified: 2026-08-17
-- SDK: `codex/waterx-predict-agent-runtime` @ `183126b` plus this commit
+- SDK: `codex/waterx-predict-agent-runtime` @ `00774fb` plus this commit
 - Backend: `codex/waterx-predict-agent-runtime` @ `2aedb8d8` — the paired commit
-  that **adds the quote stream** (B3). This SDK commit vendors that contract and
-  implements no client for it; see 2.1 / 2.3 and the Contract sync section.
-- SDK verification: `pnpm typecheck` clean, `pnpm test` 423/423 in 25 files
-  (120 SDK, 71 schema, 149 CLI, 59 E2E harness, 24 workspace), `pnpm build`
+  that **adds the quote stream** (B3), unchanged by this SDK commit. The contract
+  was vendored in SDK `00774fb`; this commit implements the client for it, so the
+  wire contract needed no change and the backend worktree is untouched. See
+  2.1 / 2.3 and the Contract sync section.
+- SDK verification: `pnpm typecheck` clean, `pnpm test` 453/453 in 27 files
+  (150 SDK, 71 schema, 149 CLI, 59 E2E harness, 24 workspace), `pnpm build`
   clean, `pnpm schema:generate` reproduces the committed artifact byte-for-byte.
 - **No end-to-end run against a live server has happened.** Nothing on this
   machine is provisioned — no `WATERX_PREDICT_*` variable, no config file — so
@@ -64,9 +66,9 @@ adds `PREDICT_QUOTE_*` events, `PredictQuoteTopic`,
 The full semantic diff is **one** replaced line — that union — plus additions;
 nothing was removed, renamed or retyped, and the union already carried a
 `(string & {})` escape, so a client built against the previous contract still
-compiles and still parses every response. What the SDK does with it today is
-**nothing**: the types are vendored so a future client cannot drift, and no
-quote-stream client ships in this commit.
+compiles and still parses every response. As of this commit the SDK **consumes**
+it: `packages/sdk/src/quote-stream.ts` speaks the protocol against these vendored
+types, so the compiler is what catches the next drift (2.3).
 
 **The backend moved first, three times.** B1 and B2 could not be closed on the
 client side — one needs a text index the catalog endpoint did not expose, the
@@ -97,22 +99,22 @@ signing gate are **local** constructs that never appear on the wire.
 
 | Capability | Status | Evidence |
 | --- | --- | --- |
-| Personal-message auth + token handling | DONE | `packages/sdk/src/client.ts:241`, `packages/sdk/src/signer.ts` |
+| Personal-message auth + token handling | DONE | `packages/sdk/src/client.ts:289`, `packages/sdk/src/signer.ts` |
 | Bounded automatic re-authentication | DONE | `packages/sdk/src/session.ts`, `packages/sdk/src/transport.ts:89`, `packages/sdk/tests/reauthentication.test.ts` (14). Single-flight mint, compare-and-swap token replacement, one retry per request, `401 UNAUTHENTICATED` only, replay keeps exact bytes and key. |
-| Executable quote | DONE | `packages/sdk/src/client.ts:266` |
-| Market catalog list + get | DONE | `packages/sdk/src/client.ts:544`, `packages/sdk/src/client.ts:559` |
-| Protected market order (create → sign → submit) | DONE | `packages/sdk/src/client.ts:291` |
-| Terminal wait + REST reconciliation | DONE | `packages/sdk/src/client.ts:582` (public `waitForExecution`), `packages/sdk/tests/client.test.ts` |
+| Executable quote | DONE | `packages/sdk/src/client.ts:314` |
+| Market catalog list + get | DONE | `packages/sdk/src/client.ts:658`, `packages/sdk/src/client.ts:710` |
+| Protected market order (create → sign → submit) | DONE | `packages/sdk/src/client.ts:339` |
+| Terminal wait + REST reconciliation | DONE | `packages/sdk/src/client.ts:733` (public `waitForExecution`), `packages/sdk/tests/client.test.ts` |
 | Terminal facts: fill, fee availability, remaining allowance | DONE | `packages/sdk/src/execution-facts.ts`, `packages/sdk/tests/terminal-result.test.ts` (14). Timeout returns `timedOut: true` with the execution id instead of throwing; absent fee is a reason, never zero; allowance is `undefined` off a non-terminal read and for an agent with no risk profile. |
 | Stable idempotency across retries | DONE | `packages/sdk/tests/client.test.ts` |
 | Server-driven retry policy | DONE | `packages/sdk/src/transport.ts`, `packages/sdk/src/errors.ts` |
 | Exact decimal comparison | DONE | `packages/sdk/src/decimal.ts`, `packages/sdk/tests/wait-for-price.test.ts` |
-| `executeMany` independent legs + STOP/CONTINUE | DONE | `packages/sdk/src/client.ts:340` |
-| Allowance / positions / executions / fills reads | DONE | `packages/sdk/src/client.ts:474`–`:531`. The three history reads take `{ limit?, cursor? }` and return `nextCursor` (B6). |
+| `executeMany` independent legs + STOP/CONTINUE | DONE | `packages/sdk/src/client.ts:388` |
+| Allowance / positions / executions / fills reads | DONE | `packages/sdk/src/client.ts:554`–`:657`. The three history reads take `{ limit?, cursor? }` and return `nextCursor` (B6). |
 | Keyset paging over account history | DONE | `packages/sdk/src/pagination.ts`, backend `2e247fc4`. Opaque row-anchored cursor over `(created_at, id)` for executions, `(filled_at, id)` for fills, `(created_at, id)` for positions, so a page boundary holds while new rows land at the head. `hasMorePages` is three-valued — `true` / `false` / `null` for "the server did not say" — and `isExhausted` is true only on an explicit `null` cursor, which the server proves by reading one row past the page. A malformed, edited, foreign-list or unowned cursor is refused as `INVALID_INPUT`, never ignored (B6). |
-| `waitForPriceAndExecute` in-process trigger | PARTIAL | `packages/sdk/src/client.ts:396`. Correct trigger, fresh re-quote, re-verify, one submission — but in-process only. Dies with the process; not durable. |
+| `waitForPriceAndExecute` in-process trigger | PARTIAL | `packages/sdk/src/client.ts:444`. Correct trigger, fresh re-quote, re-verify, one submission — and that holds whether the trigger came from a poll or from a streamed frame. Still in-process only: it dies with the process, and is not durable. |
 | Execution stream | DONE | `packages/sdk/src/execution-stream.ts`, `packages/sdk/tests/socket-execution-stream.test.ts` (35) + `execution-stream.test.ts` (13). `executionStream: 'native'` opens the official `socket.io-client` on the server's private namespace with the client's own session; the `ExecutionStream` seam remains for tests and custom transports. The default path still polls, and terminal state is **always** REST-confirmed — see 2.2/2.4. |
-| Quote stream | SEAM | `packages/sdk/src/client.ts:121`. Interface only; default polls `POST /quotes`. The **backend** protocol now exists (backend `2aedb8d8`, B3) and its types are vendored in `src/contract.ts`, but no SDK client speaks it — `waitForPriceAndExecute` still polls. A vendored type is not a capability. |
+| Quote stream | DONE | `packages/sdk/src/quote-stream.ts`, `packages/sdk/tests/quote-stream.test.ts` (19) + `quote-stream-trigger.test.ts` (9). `quoteStream: 'native'` opens the official `socket.io-client` on the server's private namespace with the client's own session (`forceNew`, so it never multiplexes onto the execution stream's socket); the `QuoteStream` and `PriceWatcher` seams remain for tests and custom transports. Reconnect re-subscribes with `resume: true` and treats the `gap: true` snapshot as the whole recovery, `seq` is per (connection, topic) and never persisted, a heartbeat watchdog invalidates cached prices and rebuilds a silent connection, and everything else — no frame yet, `stale`, gap, rejection, degraded — falls back to `POST /quotes`. The trigger is still only a trigger: the order is priced off a fresh executable quote and re-checked against the target before submission. Default remains polling. |
 | Server-side market resolution | DONE | `packages/sdk/src/client.ts` (`searchMarkets`), backend `7ecad3f3`. `?search=` matches published aliases server-side and returns `resolution` (`RESOLVED` / `AMBIGUOUS` / `NOT_FOUND`); `marketId` is non-null only on exactly one match, and `matchCount` is counted before `limit` truncates the page. A server that answers without a `resolution` reads as `NOT_FOUND` — the client withholds an id rather than inferring one (B2). |
 | Agent-readable effective risk limits | DONE | `packages/sdk/src/client.ts` (`getEffectiveLimits`), backend `7ecad3f3`. `GET accounts/:accountId/effective-limits` returns the limits, the rolling-window usage, the allowance, the on-chain delegation and the blockers. **Read-only**: writes stay owner-authenticated (ADR-0003), so an agent credential can see its mandate and cannot raise it. `limits: null` is denial, not an unlimited default; a `null` delegation permission means the chain read failed, not that it was denied (B1). |
 
@@ -202,8 +204,8 @@ gaps are owner-authenticated actions no automation here may take.
 | --- | --- | --- | --- |
 | 2.1 | Backend quote WS | DONE (backend `2aedb8d8`) | Socket.IO on the existing private namespace `/agent-api/v1/predict`: `predict.quotes.subscribe` / `.unsubscribe` → a per-topic `predict.quotes.subscription` ack, a `predict.quotes.v1` SNAPSHOT per accepted topic, UPDATE only when a price moved, and a 15 s `predict.quotes.heartbeat` carrying each topic's `seq` and `stale`. 32 topics per connection, 60 messages per rolling minute, rejection per topic (`INVALID_REQUEST` / `UNKNOWN_MARKET` / `MARKET_CLOSED` / `NOT_QUOTABLE` / `SUBSCRIPTION_LIMIT` / `RATE_LIMITED`). **No replay exists and none is claimed**: this is a state feed, `seq` is per (connection, topic) from 1, the snapshot *is* the recovery, and `resume: true` returns it with `gap: true`. **Not low-latency, and labelled as such**: the server polls an upstream cache every ~2 s behind a publisher on a ~5 s cadence, so every frame carries `POLLED_UPSTREAM` plus `freshness.pollIntervalMs` / `staleAfterMs`, a past-TTL value publishes as `stale` with **null** prices, and an unstamped value reports `sourceAgeMs: null`, never 0. SLO measured as freshness — `value_age_seconds` P95 ≤ 8 s / P99 ≤ 15 s end to end, `delivery_lag_seconds` P99 ≤ 1 s for the WaterX-controlled portion. Tests: `predict-agent-quote-stream.service.spec.ts` (30) + `predict-agent-stream.gateway.spec.ts` (14, four of them the quote delegation and release), on a mock socket seam — no port, no live Socket.IO server. |
 | 2.2 | Native execution stream client (replaces the SEAM) | DONE | `packages/sdk/src/execution-stream.ts`. `socket.io-client@^4.8.3` added as the SDK's only runtime dependency, justified in that file's header and allowlisted in `tests/workspace.test.ts`; loaded with `await import`, so a caller that never streams never loads it, and a pruned dependency degrades to polling instead of crashing at module load. WebSocket-only transport, because the server fans out per pod with no Socket.IO Redis adapter. Note what this buys: the outbox dispatcher publishes on a ~5 s tick, so it saves **requests**, not milliseconds. |
-| 2.3 | Native quote stream client | TODO | Unblocked by 2.1; **not started**. The contract types are vendored, nothing consumes them. When it is built it must subscribe with `resume: true` after a reconnect and treat the returned `gap: true` snapshot as the whole recovery (there is no replay), must not persist `seq` (it is per connection), and must re-quote through `POST /quotes` before acting — a stream price is a trigger, never an order price. |
-| 2.4 | Gap detection, cursor persistence, REST reconciliation | PARTIAL | Implemented in the stream client: the cursor advances monotonically (BigInt, never rewound by a replay), rides every handshake including reconnects, and `gap: true` — plus a plain reconnect, which loses frames just as quietly — wakes every waiter to re-read over REST. `onCursor`/`cursor` expose the resume point for a caller that persists it. The gap: nothing in this repo persists it yet, so a restart resumes from *now* rather than replaying. That needs the durable store (2.5). |
+| 2.3 | Native quote stream client (replaces the SEAM) | DONE | `packages/sdk/src/quote-stream.ts`. Subscribes only after the ready frame proves the handshake was accepted, batches a burst of topics into one message against the 60-per-minute budget, and reports a `seq` break — from a frame or from the heartbeat, which is the only gap signal a quiet market has — without re-subscribing, because on a state feed a gap costs intermediate values and not the value now. A reconnect re-subscribes every held topic with `resume: true` and invalidates every cached price first. Two missed heartbeats rebuild the connection; a bounded number of silent windows, or of refused handshakes, gives up to REST polling via `onDegraded`. `MARKET_CLOSED` / `UNKNOWN_MARKET` / `INVALID_REQUEST` are terminal for the round and never re-asked; `NOT_QUOTABLE` / `SUBSCRIPTION_LIMIT` / `RATE_LIMITED` are retried on a timer. What it buys is **requests, not milliseconds** — one quote mint per trigger instead of one per tick (2.1: the server polls an upstream cache every ~2 s). Integrated into `waitForPriceAndExecute`: `pollIntervalMs` becomes a ceiling, the subscription is bracketed to the wait, and the order is still built on a fresh `POST /quotes` and re-verified against the target. |
+| 2.4 | Gap detection, cursor persistence, REST reconciliation | PARTIAL | Implemented in the stream client: the cursor advances monotonically (BigInt, never rewound by a replay), rides every handshake including reconnects, and `gap: true` — plus a plain reconnect, which loses frames just as quietly — wakes every waiter to re-read over REST. `onCursor`/`cursor` expose the resume point for a caller that persists it. The gap: nothing in this repo persists it yet, so a restart resumes from *now* rather than replaying. That needs the durable store (2.5). The quote stream (2.3) detects gaps too, but has nothing to persist and nothing to reconcile against: it keeps no log, so its snapshot is the recovery and its `seq` is meaningless off the connection that issued it. |
 | 2.5 | SQLite/WAL durable job store behind a store interface | TODO | ADR-0001 §8 |
 | 2.6 | Runner daemon + local IPC | TODO | 2.5, 1.8. Unix domain socket; no Windows fallback in beta (ADR-0002). |
 | 2.7 | Policy engine: `interactive` / `delegated-auto` / `read-only` | PARTIAL | ADR-0001 §9. Implemented and enforced for **one-shot CLI writes**: `packages/cli/src/policy.ts`, `packages/cli/tests/write-plane.test.ts` (34) + `signer.test.ts`. `--policy` may only narrow, never widen; `read-only` is enforced inside the signer; `delegated-auto` requires a file-only scope with mandatory per-order and per-run ceilings, an allow-listed account, side and market, and an unexpired `notAfter`, and every local check runs **before** any network read so an out-of-scope order costs nothing. The gap: no daemon-side policy and no policy evaluated across a durable job's lifetime (2.5, 2.6) — a scope is checked at invocation, and there is nothing yet that could check it an hour later. |

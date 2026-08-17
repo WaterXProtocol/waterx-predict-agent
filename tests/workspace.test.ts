@@ -135,9 +135,9 @@ describe('dependency direction', () => {
     for (const file of sourceFiles('packages/sdk/src')) {
       expect(read(file), file).not.toMatch(/^import .*'socket\.io-client'/mu);
     }
-    expect(read('packages/sdk/src/execution-stream.ts')).toContain(
-      "await import('socket.io-client')",
-    );
+    for (const file of ['execution-stream.ts', 'quote-stream.ts']) {
+      expect(read(`packages/sdk/src/${file}`), file).toContain("await import('socket.io-client')");
+    }
   });
 
   it('points the CLI at both published packages and nothing else', () => {

@@ -8,12 +8,11 @@ idempotency keys, and a structural signer interface a Sui `Keypair` already
 satisfies. Nothing here touches the chain: the backend builds every PTB, so you
 are not pulling Move bindings or a protocol SDK into your process. The one
 dependency is `socket.io-client`, which the server's stream protocol requires — it
-is loaded lazily, so nothing but [the execution stream](#execution-stream) pays
-for it.
+is loaded lazily, so nothing but [the execution stream](#execution-stream) and
+[the quote stream](#price-source) pays for it.
 
 > Status: **0.1.0, pre-release.** The API it targets is gated off by default on
-> the server side. See [Not implemented yet](#not-implemented-yet) before planning
-> around it.
+> the server side, so confirm your account is enabled before planning around it.
 
 ## Install
 
@@ -297,23 +296,55 @@ is no execution to reconcile. Once an order exists, a timeout is returned as
 
 ### Price source
 
-Today it polls `POST /quotes`. The server now also publishes a sequenced quote
-stream on the agent socket (`predict.quotes.*`: snapshot on subscribe, `seq` per
-connection and topic, `gap: true` on a resume, 15 s heartbeat) and this package
-vendors its types — but **no client here speaks it yet**, so nothing in this SDK
-gets prices from it.
-
-It would not buy latency in any case. The server has no upstream push: it re-reads
-a cache every ~2 s behind a publisher on a ~5 s cadence, which is why every stream
-frame carries `POLLED_UPSTREAM` and its own freshness facts. What a stream buys is
-*requests* — one connection instead of one quote call per tick — and a value that
-is explicitly `stale` instead of a silently old one. Supply your own `priceWatcher`
-to change where prices come from; the trigger, re-verify and single-submission
-logic are unaffected:
+By default a wait polls `POST /quotes`. Pass `quoteStream: 'native'` and the
+trigger reads the server's quote stream instead:
 
 ```ts
-new PredictAgentClient({ baseUrl, signer, priceWatcher: myStreamWatcher });
+const client = new PredictAgentClient({ baseUrl, signer, quoteStream: 'native' });
+try {
+  await client.waitForPriceAndExecute(intent, { pollIntervalMs: 5_000 });
+} finally {
+  client.close(); // the client owns this socket
+}
 ```
+
+**What that changes is the cost of watching, not the price you trade at.** The
+order is still built on a fresh `POST /quotes` and still re-checked against the
+target immediately before submission — a streamed frame carries `INDICATIVE_ONLY`
+and has no quote id to reference. What you save is one quote mint per tick per
+watched market.
+
+It buys no latency. The server has no upstream push: it re-reads a cache every
+~2 s behind a publisher on a ~5 s cadence, which is why every frame carries
+`POLLED_UPSTREAM` and its own freshness facts. `pollIntervalMs` becomes a
+*ceiling* rather than a period — the wait wakes when a frame says the price moved.
+
+Failure behaviour, all of it degrading to the same place:
+
+| What happens | What the client does |
+| --- | --- |
+| Sequence break, or a heartbeat that has moved on | Report the gap, keep the frame — it is complete current state |
+| Reconnect | Re-subscribe every topic with `resume: true`; the snapshot is the whole recovery |
+| Two heartbeats missed | Invalidate every cached price and rebuild the connection |
+| Silent past that budget, or the handshake refused repeatedly | Give up, call `onDegraded`, poll `POST /quotes` from then on |
+| `MARKET_CLOSED` / `UNKNOWN_MARKET` / `INVALID_REQUEST` | Terminal for the round — never re-asked |
+| `NOT_QUOTABLE` / `SUBSCRIPTION_LIMIT` / `RATE_LIMITED` | Temporary — retried on a timer |
+| Frame marked `stale`, or no price yet | Fall back to `POST /quotes` for that tick |
+
+`quoteStream` also accepts anything implementing `QuoteStream`, and
+`SocketQuoteStream` / `QuoteStreamPriceWatcher` are exported for direct
+construction. To replace price observation wholesale — a different venue, a local
+book — supply a `priceWatcher`; the trigger, re-verify and single-submission logic
+are unaffected:
+
+```ts
+new PredictAgentClient({ baseUrl, signer, priceWatcher: myWatcher });
+```
+
+An adapter of your own owes one thing above all: emit `UNAVAILABLE` whenever it
+can no longer prove the feed is live. Updates are change-only, so a quiet market
+and a dead socket are indistinguishable by frame arrival alone, and a watcher that
+is never told will keep serving an hour-old price.
 
 ## Execution stream
 
@@ -369,15 +400,6 @@ REST, and so is every waiter on a plain reconnect, which loses frames just as
 quietly without announcing it. After a bounded number of refused handshakes the
 stream stops trying and calls `onDegraded` — a login loop against a server that has
 already said no is worse than polling.
-
-## Not implemented yet
-
-- **Quote streaming** — see [Price source](#price-source). No longer blocked: the
-  server protocol exists and its types are vendored in `src/contract.ts`. It is
-  simply not built here, and a vendored type is not a capability. Note when it is
-  built: the feed keeps no log, so a resumed subscription's snapshot is the entire
-  recovery, `seq` must not be persisted, and a streamed price still has to be
-  re-quoted through `POST /quotes` before it can be traded on.
 
 ## Signer
 

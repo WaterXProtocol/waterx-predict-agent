@@ -48,7 +48,15 @@ import {
   isTerminalExecutionStatus,
   toExecutionOutcome,
 } from './execution-facts.ts';
+import {
+  type PriceWatcher,
+  type QuoteStream,
+  type QuoteStreamConnector,
+  QuoteStreamPriceWatcher,
+  SocketQuoteStream,
+} from './quote-stream.ts';
 import { AuthSession } from './session.ts';
+import { sleep } from './sleep.ts';
 import { type AgentSigner, buildAuthMessage, signBase64 } from './signer.ts';
 import { Transport, type TransportOptions } from './transport.ts';
 
@@ -70,8 +78,31 @@ export interface PredictAgentClientOptions extends TransportOptions {
    * the first session is always explicit.
    */
   autoReauthenticate?: boolean;
-  /** Override how prices are observed. Defaults to polling `POST /quotes`. */
+  /**
+   * Override how prices are observed. Takes precedence over `quoteStream`;
+   * omitted with no quote stream either, price waits poll `POST /quotes`.
+   */
   priceWatcher?: PriceWatcher;
+  /**
+   * Push source for indicative prices, used for the TRIGGER half of
+   * {@link PredictAgentClient.waitForPriceAndExecute} only. A wait still mints a
+   * fresh executable quote and re-checks the target before submitting, so the
+   * stream changes what a wait COSTS — one quote mint per tick becomes one per
+   * trigger — and never what it trades at.
+   *
+   * `'native'` opens the official Socket.IO quote stream against this client's
+   * base URL and session; this client then owns the socket, so call
+   * {@link PredictAgentClient.close} when you are done. It connects on the first
+   * wait, disconnects when the last one ends, and falls back to `POST /quotes`
+   * whenever it cannot prove the feed is live.
+   */
+  quoteStream?: QuoteStream | 'native';
+  /**
+   * Injectable socket transport for `quoteStream: 'native'`. Exists so this
+   * package's tests never open a real connection; production callers leave it
+   * unset and get `socket.io-client`.
+   */
+  quoteStreamConnector?: QuoteStreamConnector;
   /**
    * Push source for execution updates. Waits then react to frames instead of
    * sleeping out a fixed interval; omitted, they poll. Either way the terminal
@@ -132,19 +163,11 @@ export interface ExecuteMarketOrderResult extends ExecutionOutcome {
 }
 
 /**
- * How `waitForPriceAndExecute` observes prices.
- *
- * A SEAM, not an abstraction for its own sake. Today the only price source an
- * agent can reach is `POST /quotes`, so the default polls it. Spec §16.1 wants a
- * sequenced quote stream with gap detection instead — but §21.3 says the feed
- * behind it is a ~2 s poll that "cannot reliably satisfy the WS P95", and fixing
- * that lives outside this SDK. When it lands, a WS watcher drops in here and the
- * trigger logic below is untouched.
+ * Re-exported from where it now lives, because it grew a stream behind it: a
+ * watcher may also bracket a wait's subscription and wake it early, and both of
+ * those belong next to the quote stream rather than in the REST client.
  */
-export interface PriceWatcher {
-  /** The current side-appropriate price, or null when there is none right now. */
-  currentPrice(request: CreateQuoteRequestBody, signal?: AbortSignal): Promise<string | null>;
-}
+export type { PriceWatcher } from './quote-stream.ts';
 
 export interface WaitForPriceIntent {
   accountId: string;
@@ -203,6 +226,10 @@ export class PredictAgentClient {
   private readonly streamConnector: StreamConnector | undefined;
   /** Only set for `executionStream: 'native'` — the socket this client must close. */
   private ownedStream: SocketExecutionStream | undefined;
+  private readonly quoteStreamOption: QuoteStream | 'native' | undefined;
+  private readonly quoteStreamConnector: QuoteStreamConnector | undefined;
+  /** Only set for `quoteStream: 'native'` — the socket this client must close. */
+  private ownedQuoteStream: SocketQuoteStream | undefined;
   private readonly session: AuthSession;
 
   constructor(options: PredictAgentClientOptions) {
@@ -219,11 +246,27 @@ export class PredictAgentClient {
     this.transport = new Transport(options, this.session);
     this.streamOption = options.executionStream;
     this.streamConnector = options.streamConnector;
-    // Defaults to polling the quote endpoint — the only price source an agent can
-    // reach today. See PriceWatcher for why this is a seam.
-    this.watcher = options.priceWatcher ?? {
-      currentPrice: async (request, signal) => (await this.getQuote(request, signal)).expectedPrice,
-    };
+    this.quoteStreamOption = options.quoteStream;
+    this.quoteStreamConnector = options.quoteStreamConnector;
+    // Polling `POST /quotes` — the price source every agent can reach, and the
+    // fallback underneath every other one.
+    const poll = async (
+      request: CreateQuoteRequestBody,
+      signal?: AbortSignal,
+    ): Promise<string | null> => (await this.getQuote(request, signal)).expectedPrice;
+    this.watcher =
+      options.priceWatcher ??
+      (this.quoteStreamOption === undefined
+        ? { currentPrice: poll }
+        : new QuoteStreamPriceWatcher({
+            // Indirected so the socket opens on the first watched topic rather
+            // than at construction: building a client must cost no connection,
+            // and the session has to exist to mint a handshake token.
+            stream: {
+              onQuote: (topic, listener) => this.requireQuoteStream().onQuote(topic, listener),
+            },
+            fallback: poll,
+          }));
   }
 
   /**
@@ -414,55 +457,84 @@ export class PredictAgentClient {
       size: intent.size,
     };
     let submitted = false;
+    // Brackets the subscription to this wait exactly: a watcher that pushes needs
+    // to know when to start and, more importantly, when to stop. The `finally`
+    // below releases it however the wait ends — target hit, timeout, abort, or a
+    // throw out of the middle of an order.
+    const release = this.watcher.watch?.(quoteRequest);
 
-    for (;;) {
-      options.signal?.throwIfAborted();
+    try {
+      for (;;) {
+        options.signal?.throwIfAborted();
 
-      const observed = await this.watcher.currentPrice(quoteRequest, options.signal);
-      if (observed !== null && targetReached(intent.side, observed, intent.targetPrice)) {
-        // Fresh quote: the observation above is a trigger, never the price the
-        // order is built on.
-        const quote = await this.getQuote(quoteRequest, options.signal);
-        if (targetReached(intent.side, quote.expectedPrice, intent.targetPrice)) {
-          if (submitted) {
-            throw new Error('waitForPriceAndExecute attempted a second submission');
+        const observed = await this.watcher.currentPrice(quoteRequest, options.signal);
+        if (observed !== null && targetReached(intent.side, observed, intent.targetPrice)) {
+          // Fresh quote: the observation above is a trigger, never the price the
+          // order is built on. This holds whether the trigger came from a poll or
+          // from a streamed frame — a streamed price is indicative by protocol and
+          // is not executable at all.
+          const quote = await this.getQuote(quoteRequest, options.signal);
+          if (targetReached(intent.side, quote.expectedPrice, intent.targetPrice)) {
+            if (submitted) {
+              throw new Error('waitForPriceAndExecute attempted a second submission');
+            }
+            submitted = true;
+            return await this.executeMarketOrder(
+              {
+                accountId: intent.accountId,
+                marketId: intent.marketId,
+                outcomeId: intent.outcomeId,
+                side: intent.side,
+                size: intent.size,
+                referenceQuoteId: quote.quoteId,
+                maxSlippageBps: intent.maxSlippageBps,
+                idempotencyKey,
+                ...(intent.positionId !== undefined ? { positionId: intent.positionId } : {}),
+                ...(intent.worstAcceptablePrice !== undefined
+                  ? { worstAcceptablePrice: intent.worstAcceptablePrice }
+                  : {}),
+                ...(intent.strategyId !== undefined ? { strategyId: intent.strategyId } : {}),
+                ...(intent.clientOrderId !== undefined
+                  ? { clientOrderId: intent.clientOrderId }
+                  : {}),
+              },
+              options,
+            );
           }
-          submitted = true;
-          return await this.executeMarketOrder(
-            {
-              accountId: intent.accountId,
-              marketId: intent.marketId,
-              outcomeId: intent.outcomeId,
-              side: intent.side,
-              size: intent.size,
-              referenceQuoteId: quote.quoteId,
-              maxSlippageBps: intent.maxSlippageBps,
-              idempotencyKey,
-              ...(intent.positionId !== undefined ? { positionId: intent.positionId } : {}),
-              ...(intent.worstAcceptablePrice !== undefined
-                ? { worstAcceptablePrice: intent.worstAcceptablePrice }
-                : {}),
-              ...(intent.strategyId !== undefined ? { strategyId: intent.strategyId } : {}),
-              ...(intent.clientOrderId !== undefined ? { clientOrderId: intent.clientOrderId } : {}),
-            },
-            options,
-          );
+          // The market moved back between the sample and the fresh quote. Keep
+          // waiting — firing here would trade at a price that does not qualify.
         }
-        // The market moved back between the sample and the fresh quote. Keep
-        // waiting — firing here would trade at a price that does not qualify.
-      }
 
-      if (Date.now() >= deadline) {
-        throw new PredictAgentApiError(504, {
-          code: 'EXECUTION_TIMEOUT',
-          message: `Target ${intent.targetPrice} was not reached before the wait expired; nothing was submitted`,
-          retryable: false,
-        });
+        if (Date.now() >= deadline) {
+          throw new PredictAgentApiError(504, {
+            code: 'EXECUTION_TIMEOUT',
+            message: `Target ${intent.targetPrice} was not reached before the wait expired; nothing was submitted`,
+            retryable: false,
+          });
+        }
+        // Clamped to the deadline and cut short by an abort. A price wait defaults
+        // to an hour, so sleeping past either one strands a cancelled strategy for
+        // a full interval and reports the timeout late.
+        //
+        // With a pushing watcher the interval becomes a CEILING rather than a
+        // period: `waitForChange` returns as soon as a frame says the price may
+        // have moved. It is still bounded by the same sleep, so a stream that goes
+        // quiet or dies leaves the wait polling exactly as it always did.
+        const idleMs = Math.max(0, Math.min(interval, deadline - Date.now()));
+        if (this.watcher.waitForChange !== undefined) {
+          await this.watcher.waitForChange(quoteRequest, idleMs, options.signal);
+        } else {
+          await sleep(idleMs, options.signal);
+        }
       }
-      // Clamped to the deadline and cut short by an abort. A price wait defaults
-      // to an hour, so sleeping past either one strands a cancelled strategy for
-      // a full interval and reports the timeout late.
-      await sleep(Math.max(0, Math.min(interval, deadline - Date.now())), options.signal);
+    } finally {
+      // An adapter that throws on release must not turn a completed order into a
+      // failed call.
+      try {
+        release?.();
+      } catch {
+        /* ignore */
+      }
     }
   }
 
@@ -689,15 +761,42 @@ export class PredictAgentClient {
   }
 
   /**
-   * Release the socket opened for `executionStream: 'native'`.
+   * Release the sockets opened for `executionStream: 'native'` and
+   * `quoteStream: 'native'`.
    *
-   * Only needed for that option — a caller-supplied stream is the caller's to
+   * Only needed for those options — a caller-supplied stream is the caller's to
    * close, and a client with no stream holds nothing. Safe to call repeatedly; a
    * later wait simply opens a new socket.
    */
   close(): void {
     this.ownedStream?.close();
     this.ownedStream = undefined;
+    this.ownedQuoteStream?.close();
+    this.ownedQuoteStream = undefined;
+  }
+
+  /**
+   * The quote stream backing a price wait, opening the native one on first use.
+   *
+   * Reached only through the watcher built in the constructor, so it is called
+   * only when `quoteStream` was actually configured — hence `require`: there is
+   * no undefined case left to handle here.
+   */
+  private requireQuoteStream(): QuoteStream {
+    const option = this.quoteStreamOption;
+    if (option === undefined) {
+      throw new Error('quote stream requested without configuring one');
+    }
+    if (option !== 'native') return option;
+    this.ownedQuoteStream ??= new SocketQuoteStream({
+      baseUrl: this.baseUrl,
+      // The same session as the REST calls, so a token rolled over mid-wait is
+      // the one the next reconnect presents.
+      token: async () => await this.session.require(),
+      refreshToken: async (rejected) => await this.session.refresh(rejected),
+      ...(this.quoteStreamConnector !== undefined ? { connect: this.quoteStreamConnector } : {}),
+    });
+    return this.ownedQuoteStream;
   }
 
   /**
@@ -787,24 +886,6 @@ export class PredictAgentClient {
       },
     };
   }
-}
-
-/**
- * An abortable sleep that RESOLVES on abort rather than rejecting — the callers
- * here re-check their own abort condition at the top of the loop, and rejecting
- * from a timer would bypass the cleanup that runs around it.
- */
-async function sleep(ms: number, signal?: AbortSignal): Promise<void> {
-  if (signal?.aborted === true) return;
-  await new Promise<void>((resolve) => {
-    const timer = setTimeout(finish, ms);
-    signal?.addEventListener('abort', finish, { once: true });
-    function finish(): void {
-      clearTimeout(timer);
-      signal?.removeEventListener('abort', finish);
-      resolve();
-    }
-  });
 }
 
 /**

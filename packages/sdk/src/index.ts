@@ -6,8 +6,8 @@
  * signer interface a Sui `Keypair` already satisfies. Nothing here touches the
  * chain — the backend builds every PTB.
  *
- * ONE runtime dependency, `socket.io-client`, and only the execution stream uses
- * it. It is imported lazily, so a caller that never streams never loads it — see
+ * ONE runtime dependency, `socket.io-client`, used only by the two streams. It is
+ * imported lazily, so a caller that never streams never loads it — see
  * `execution-stream.ts` for why re-implementing the protocol was the worse trade.
  */
 export { compareDecimal, targetReached, toScaled } from './decimal.ts';
@@ -21,8 +21,21 @@ export {
   type StreamSocket,
 } from './execution-stream.ts';
 export {
-  PredictAgentClient,
   type PriceWatcher,
+  type QuoteListener,
+  type QuoteSocket,
+  type QuoteStream,
+  type QuoteStreamConnector,
+  type QuoteStreamEvent,
+  QuoteStreamPriceWatcher,
+  type QuoteStreamPriceWatcherOptions,
+  type QuoteUnavailableReason,
+  SocketQuoteStream,
+  type SocketQuoteStreamOptions,
+  streamTriggerPrice,
+} from './quote-stream.ts';
+export {
+  PredictAgentClient,
   type WaitForExecutionOptions,
   type WaitForPriceIntent,
   type WaitForPriceOptions,
