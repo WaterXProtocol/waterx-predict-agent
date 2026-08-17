@@ -107,7 +107,7 @@ orchestrates.
 | `packages/sdk` | `@waterx/predict-agent-sdk` | Published surface, implemented |
 | `packages/schema` | `@waterx/predict-agent-schema` | Published surface, implemented |
 | `packages/cli` | `@waterx/predict-agent-cli` | Implemented, reads **and writes** behind an enforced execution policy; `private`, so nothing is published |
-| `packages/runner` | `@waterx/predict-agent-runner` | Reserved boundary, **not implemented** |
+| `packages/runner` | `@waterx/predict-agent-runner` | Durable half only: SQLite/WAL job store, state machine, lease fencing, crash recovery. The **daemon, IPC, executor and signer are not implemented**, so no job progresses on its own. `private`, Node 24 floor (ADR-0007) |
 | `packages/mcp` | `@waterx/predict-agent-mcp` | Reserved boundary, **not implemented** |
 | `packages/e2e` | `@waterx/predict-agent-e2e` | Harness that drives the installed CLI as a subprocess; `private`, never shipped. The end-to-end has **not run** — nothing here is evidence that it passes |
 
@@ -169,6 +169,23 @@ Inside `packages/cli`:
   unchanged, with caveats attached alongside rather than merged in.
 - `tests/harness.ts` — every test invokes the CLI end to end through it; none
   opens a socket, spawns a process or reads a real file.
+
+Inside `packages/runner`:
+
+- `src/state-machine.ts` — the states, the legal edges, and the reason each one
+  exists. Three properties are load-bearing: no local cancel or expiry once a
+  write may have started, `UNKNOWN_PENDING` has exactly one exit (a reconcile
+  under the original key), and a side-effect state is unreachable before the
+  idempotency key is on disk.
+- `src/store.ts` — the engine-free `JobStore` interface. Every method is exactly
+  one transaction and none is exposed, so a half-applied "persist the key, then
+  mark the state" is unrepresentable. Every mutating job method takes a lease.
+- `src/sqlite/` — the SQLite/WAL implementation and its forward-only migrations.
+  `synchronous = FULL` is deliberate; a newer schema is refused outright.
+- `src/recovery.ts` — what a Runner does with the jobs it finds at start-up. Its
+  rule is *only evidence ends a job; absence of evidence ends nothing.*
+- `src/secrets.ts` — refusal, not redaction, at the store boundary: a
+  secret-shaped field is rejected rather than written and masked.
 
 Inside `packages/e2e` — the only place in this repository that spawns processes
 and opens sockets, and the only place allowed to:

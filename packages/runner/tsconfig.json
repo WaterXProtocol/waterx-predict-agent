@@ -1,0 +1,24 @@
+{
+  "extends": "./tsconfig.build.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": false,
+    "resolveJsonModule": true,
+    "types": ["node", "vitest/globals"],
+    // Nothing is emitted here, so `rootDir` only has to be wide enough to
+    // contain the sibling sources the `paths` below pull in.
+    "rootDir": "../..",
+    // Typecheck against the sibling SOURCE, not its build output — same reason
+    // as the CLI: a clean checkout must not need `pnpm build` before
+    // `pnpm typecheck` says anything, and a stale `dist` must not be able to
+    // make a broken change look clean.
+    "paths": {
+      "@waterx/predict-agent-sdk": ["../sdk/src/index.ts"]
+    }
+  },
+  "include": ["src", "tests"],
+  "exclude": ["node_modules", "dist"]
+}

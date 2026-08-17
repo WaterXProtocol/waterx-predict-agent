@@ -30,13 +30,13 @@ const PUBLISHED = new Set(['sdk', 'schema']);
 /**
  * Implemented, but deliberately unreleased: real code, real tests, `private`
  * until the release work in the backlog is done. The distinction from RESERVED
- * matters — this one has to look like a package, and must still not be
- * publishable by accident.
+ * matters — these have to look like packages, and must still not be publishable
+ * by accident.
  */
-const INTERNAL = new Set(['cli']);
+const INTERNAL = new Set(['cli', 'runner']);
 
 /** Reserved boundaries with no implementation. They must not look like one. */
-const RESERVED = new Set(['runner', 'mcp']);
+const RESERVED = new Set(['mcp']);
 
 /**
  * Test harnesses. They drive the shipped artifacts and are never shipped
@@ -233,6 +233,49 @@ describe('the CLI package', () => {
       const source = read(file);
       expect(source, `${file} writes to stdout`).not.toMatch(/console\.log|process\.stdout/u);
     }
+  });
+});
+
+describe('the Runner package', () => {
+  it('is unpublishable, and depends on nothing outside the workspace', () => {
+    // This package will hold the signer, so a runtime dependency here is a
+    // decision to widen the trust boundary around the keys (ADR-0007). Adding one
+    // means editing this test, which means saying why.
+    const pkg = manifest('runner');
+    expect(pkg.private).toBe(true);
+    expect(pkg.type).toBe('module');
+    expect(Object.keys(pkg.dependencies ?? {})).toEqual(['@waterx/predict-agent-sdk']);
+    for (const script of ['build', 'typecheck', 'test']) {
+      expect(pkg.scripts?.[script], script).toBeTypeOf('string');
+    }
+  });
+
+  it('declares the higher Node floor its store engine costs', () => {
+    // `node:sqlite` instead of a native binding, so no compiler and no postinstall
+    // script runs inside the process that holds the keys. The price is Node 24
+    // here while the published packages stay at 20 — checked rather than
+    // commented, because a floor that drifts is a floor nobody can rely on.
+    expect(manifest('runner').engines?.node).toBe('>=24');
+    expect(manifest('sdk').engines?.node).toBe('>=20');
+  });
+
+  it('keeps the SQLite engine behind the store interface', () => {
+    // The JobStore interface exists so a managed Runner could implement the same
+    // semantics on a different database. An engine import above `src/sqlite/`
+    // would quietly make that impossible.
+    for (const file of sourceFiles('packages/runner/src')) {
+      if (file.startsWith('packages/runner/src/sqlite/')) continue;
+      expect(read(file), `${file} imports the engine`).not.toContain("'node:sqlite'");
+    }
+  });
+
+  it('says in its README which half of the Runner exists', () => {
+    // The daemon and the IPC are not built. A README that described this package
+    // as "the Runner" would be claiming a job progresses on its own, which is the
+    // one thing it cannot yet do.
+    const readme = read('packages/runner/README.md');
+    expect(readme).toContain('**not implemented**');
+    expect(readme.toLowerCase()).toContain('daemon');
   });
 });
 

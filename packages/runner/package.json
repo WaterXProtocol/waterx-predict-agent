@@ -1,9 +1,25 @@
 {
   "name": "@waterx/predict-agent-runner",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
-  "description": "RESERVED BOUNDARY, NOT IMPLEMENTED. The self-hosted local Runner: durable jobs, approval policy and the signer trust boundary.",
+  "description": "The self-hosted local Runner: a durable SQLite/WAL job store behind a store interface, the job state machine, leases and heartbeats, and crash recovery into UNKNOWN_PENDING. Not a managed service.",
   "license": "MIT",
   "type": "module",
-  "engines": { "node": ">=20" }
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@waterx/predict-agent-sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.12.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.6"
+  }
 }
