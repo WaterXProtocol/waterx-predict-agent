@@ -6,10 +6,10 @@ implemented**. The plan describes the intended system; an ADR constrains how it
 gets built; neither is evidence that anything works.
 
 - Verified: 2026-08-17
-- SDK: `codex/waterx-predict-agent-runtime` @ `e990823` plus this commit
-- Backend: `codex/waterx-predict-agent-runtime` @ `2e247fc4` (**unchanged** by
-  this commit — the stream gateway, dispatcher and outbox already implement the
-  wire surface the SDK now speaks, and `src/contract.ts` still matches it)
+- SDK: `codex/waterx-predict-agent-runtime` @ `183126b` plus this commit
+- Backend: `codex/waterx-predict-agent-runtime` @ `2aedb8d8` — the paired commit
+  that **adds the quote stream** (B3). This SDK commit vendors that contract and
+  implements no client for it; see 2.1 / 2.3 and the Contract sync section.
 - SDK verification: `pnpm typecheck` clean, `pnpm test` 423/423 in 25 files
   (120 SDK, 71 schema, 149 CLI, 59 E2E harness, 24 workspace), `pnpm build`
   clean, `pnpm schema:generate` reproduces the committed artifact byte-for-byte.
@@ -51,9 +51,22 @@ seam for. The SDK has two, and both are correctly disclosed in
 
 `packages/sdk/src/contract.ts` and
 `bucket-backend-mono/apps/waterx/src/predict/agent-api/agent-api.contract.ts`
-were diffed in full at SDK `HEAD` and backend `2e247fc4`. Below the file header
+were diffed in full at SDK `HEAD` and backend `2aedb8d8`. Below the file header
 (SDK lines 1–28, backend lines 1–22, which differ only in the vendoring notice)
 they are byte-identical. No drift.
+
+**The backend moved first again, for B3.** The quote stream (backend `2aedb8d8`)
+adds `PREDICT_QUOTE_*` events, `PredictQuoteTopic`,
+`PredictQuoteSubscribeMessage`, `PredictQuoteSubscriptionFrame`,
+`PredictQuoteRejection(Reason)`, `PredictQuoteFreshness`,
+`PredictQuoteStreamFrame` and `PredictQuoteHeartbeatFrame`, and widens
+`PredictQuoteQualityFlag` with `INDICATIVE_ONLY`, `POLLED_UPSTREAM` and `STALE`.
+The full semantic diff is **one** replaced line — that union — plus additions;
+nothing was removed, renamed or retyped, and the union already carried a
+`(string & {})` escape, so a client built against the previous contract still
+compiles and still parses every response. What the SDK does with it today is
+**nothing**: the types are vendored so a future client cannot drift, and no
+quote-stream client ships in this commit.
 
 **The backend moved first, three times.** B1 and B2 could not be closed on the
 client side — one needs a text index the catalog endpoint did not expose, the
@@ -99,7 +112,7 @@ signing gate are **local** constructs that never appear on the wire.
 | Keyset paging over account history | DONE | `packages/sdk/src/pagination.ts`, backend `2e247fc4`. Opaque row-anchored cursor over `(created_at, id)` for executions, `(filled_at, id)` for fills, `(created_at, id)` for positions, so a page boundary holds while new rows land at the head. `hasMorePages` is three-valued — `true` / `false` / `null` for "the server did not say" — and `isExhausted` is true only on an explicit `null` cursor, which the server proves by reading one row past the page. A malformed, edited, foreign-list or unowned cursor is refused as `INVALID_INPUT`, never ignored (B6). |
 | `waitForPriceAndExecute` in-process trigger | PARTIAL | `packages/sdk/src/client.ts:396`. Correct trigger, fresh re-quote, re-verify, one submission — but in-process only. Dies with the process; not durable. |
 | Execution stream | DONE | `packages/sdk/src/execution-stream.ts`, `packages/sdk/tests/socket-execution-stream.test.ts` (35) + `execution-stream.test.ts` (13). `executionStream: 'native'` opens the official `socket.io-client` on the server's private namespace with the client's own session; the `ExecutionStream` seam remains for tests and custom transports. The default path still polls, and terminal state is **always** REST-confirmed — see 2.2/2.4. |
-| Quote stream | SEAM | `packages/sdk/src/client.ts:121`. Interface only; default polls `POST /quotes`. |
+| Quote stream | SEAM | `packages/sdk/src/client.ts:121`. Interface only; default polls `POST /quotes`. The **backend** protocol now exists (backend `2aedb8d8`, B3) and its types are vendored in `src/contract.ts`, but no SDK client speaks it — `waitForPriceAndExecute` still polls. A vendored type is not a capability. |
 | Server-side market resolution | DONE | `packages/sdk/src/client.ts` (`searchMarkets`), backend `7ecad3f3`. `?search=` matches published aliases server-side and returns `resolution` (`RESOLVED` / `AMBIGUOUS` / `NOT_FOUND`); `marketId` is non-null only on exactly one match, and `matchCount` is counted before `limit` truncates the page. A server that answers without a `resolution` reads as `NOT_FOUND` — the client withholds an id rather than inferring one (B2). |
 | Agent-readable effective risk limits | DONE | `packages/sdk/src/client.ts` (`getEffectiveLimits`), backend `7ecad3f3`. `GET accounts/:accountId/effective-limits` returns the limits, the rolling-window usage, the allowance, the on-chain delegation and the blockers. **Read-only**: writes stay owner-authenticated (ADR-0003), so an agent credential can see its mandate and cannot raise it. `limits: null` is denial, not an unlimited default; a `null` delegation permission means the chain read failed, not that it was denied (B1). |
 
@@ -187,9 +200,9 @@ gaps are owner-authenticated actions no automation here may take.
 
 | # | Item | Status | Depends on |
 | --- | --- | --- | --- |
-| 2.1 | Backend quote WS | BLOCKED | 0.7 |
+| 2.1 | Backend quote WS | DONE (backend `2aedb8d8`) | Socket.IO on the existing private namespace `/agent-api/v1/predict`: `predict.quotes.subscribe` / `.unsubscribe` → a per-topic `predict.quotes.subscription` ack, a `predict.quotes.v1` SNAPSHOT per accepted topic, UPDATE only when a price moved, and a 15 s `predict.quotes.heartbeat` carrying each topic's `seq` and `stale`. 32 topics per connection, 60 messages per rolling minute, rejection per topic (`INVALID_REQUEST` / `UNKNOWN_MARKET` / `MARKET_CLOSED` / `NOT_QUOTABLE` / `SUBSCRIPTION_LIMIT` / `RATE_LIMITED`). **No replay exists and none is claimed**: this is a state feed, `seq` is per (connection, topic) from 1, the snapshot *is* the recovery, and `resume: true` returns it with `gap: true`. **Not low-latency, and labelled as such**: the server polls an upstream cache every ~2 s behind a publisher on a ~5 s cadence, so every frame carries `POLLED_UPSTREAM` plus `freshness.pollIntervalMs` / `staleAfterMs`, a past-TTL value publishes as `stale` with **null** prices, and an unstamped value reports `sourceAgeMs: null`, never 0. SLO measured as freshness — `value_age_seconds` P95 ≤ 8 s / P99 ≤ 15 s end to end, `delivery_lag_seconds` P99 ≤ 1 s for the WaterX-controlled portion. Tests: `predict-agent-quote-stream.service.spec.ts` (30) + `predict-agent-stream.gateway.spec.ts` (14, four of them the quote delegation and release), on a mock socket seam — no port, no live Socket.IO server. |
 | 2.2 | Native execution stream client (replaces the SEAM) | DONE | `packages/sdk/src/execution-stream.ts`. `socket.io-client@^4.8.3` added as the SDK's only runtime dependency, justified in that file's header and allowlisted in `tests/workspace.test.ts`; loaded with `await import`, so a caller that never streams never loads it, and a pruned dependency degrades to polling instead of crashing at module load. WebSocket-only transport, because the server fans out per pod with no Socket.IO Redis adapter. Note what this buys: the outbox dispatcher publishes on a ~5 s tick, so it saves **requests**, not milliseconds. |
-| 2.3 | Native quote stream client | BLOCKED | 2.1 |
+| 2.3 | Native quote stream client | TODO | Unblocked by 2.1; **not started**. The contract types are vendored, nothing consumes them. When it is built it must subscribe with `resume: true` after a reconnect and treat the returned `gap: true` snapshot as the whole recovery (there is no replay), must not persist `seq` (it is per connection), and must re-quote through `POST /quotes` before acting — a stream price is a trigger, never an order price. |
 | 2.4 | Gap detection, cursor persistence, REST reconciliation | PARTIAL | Implemented in the stream client: the cursor advances monotonically (BigInt, never rewound by a replay), rides every handshake including reconnects, and `gap: true` — plus a plain reconnect, which loses frames just as quietly — wakes every waiter to re-read over REST. `onCursor`/`cursor` expose the resume point for a caller that persists it. The gap: nothing in this repo persists it yet, so a restart resumes from *now* rather than replaying. That needs the durable store (2.5). |
 | 2.5 | SQLite/WAL durable job store behind a store interface | TODO | ADR-0001 §8 |
 | 2.6 | Runner daemon + local IPC | TODO | 2.5, 1.8. Unix domain socket; no Windows fallback in beta (ADR-0002). |
@@ -212,7 +225,7 @@ reconciles independently.
 | 3.1 | Host-neutral agent instructions | TODO |
 | 3.2 | MCP adapter + one other function-calling adapter, same schema | TODO |
 | 3.3 | Server capability advertisement consumed by `describe` | BLOCKED (backend) |
-| 3.4 | Quote-to-fill deviation, WS latency, reject-reason dashboards | BLOCKED (backend) |
+| 3.4 | Quote-to-fill deviation, WS latency, reject-reason dashboards | PARTIAL (backend) — the quote stream now exports freshness (`value_age_seconds`), the WaterX-controlled portion (`delivery_lag_seconds`), frame counts by kind, subscription/stale-topic coverage and rejections by reason (backend `2aedb8d8`). Quote-to-fill deviation and execution reject-reason series are still absent, and no dashboard exists. |
 | 3.5 | Thin-market large-size and high-subscription load tests | TODO |
 | 3.6 | npm provenance, SBOM, upgrade/rollback docs, beta support policy | TODO — also gates publishing `@waterx/predict-agent-cli`, which is `private` today |
 
@@ -224,7 +237,7 @@ Ordered by what blocks the most SDK work.
 | --- | --- | --- | --- |
 | B1 | Agent-readable effective risk limits | DONE (backend `7ecad3f3`) | Unblocked 1.7. `GET agent-api/v1/predict/accounts/:accountId/effective-limits` on the **agent** controller returns limits, rolling-window usage, allowance, on-chain delegation and blockers. Read-only: ADR-0003 stands, and the owner-authenticated controller keeps every write. `order preview` and `account risk-limits` now report the real mandate instead of a reason; absence is still absence (`NOT_READ` / `NO_RISK_PROFILE`), never an unlimited default. |
 | B2 | Market search / aliases for server-side resolution | DONE (backend `7ecad3f3`) | Unblocked natural-language resolution. `ListMarketsQuery.search` matches published `aliases` server-side and `ListMarketsResponseBody.resolution` carries the verdict. Matching is deterministic and purely lexical — every query token must prefix an alias token, no fuzzy distance, no synonym table — so the same text against the same catalog always resolves the same way. Candidate order is a tie-break (specificity, `closesAt`, id), **not** a ranking of which market is worth trading, and it is documented as such at the contract, command and CLI layers. `marketId` is non-null only on a unique match, so ADR-0001 §10 holds: identity is resolved by the server or not at all. |
-| B3 | Quote WS: snapshot + monotonic sequence + gap + SLO | TODO | 2.1, 2.3, 3.3 |
+| B3 | Quote WS: snapshot + monotonic sequence + gap + SLO | DONE (backend `2aedb8d8`) | Unblocked 2.1 and 2.3. Snapshot on every subscribe, `seq` monotonic per (connection, topic), `gap: true` on a resumed snapshot, heartbeat, per-topic rejection, subscription cap and rate limit, and freshness facts on every frame. Two honest limits are part of the capability, not caveats bolted on: there is **no replay** (a state feed writes nothing per tick — the snapshot is the recovery), and it is **not low-latency** (the server polls an upstream cache; the SLO is stated as `value_age_seconds` P95 ≤ 8 s / P99 ≤ 15 s, with `delivery_lag_seconds` P99 ≤ 1 s as the alertable WaterX-controlled portion). Size-aware depth is still B5; a machine-readable tradeability reason is still B4. |
 | B4 | Machine-readable tradeability reason code (closed set) | TODO | 2.9 — ADR-0004 §8. `tradeabilityReason` is free text today. |
 | B5 | Size-aware executable quote | TODO | Honest large-size preview. Today `availableSize`, `expectedFillSize`, `feeAmount` are null and `qualityFlags` carries `TOP_OF_BOOK_ONLY`. |
 | B6 | Cursor pagination for executions / fills / positions | DONE (backend `2e247fc4`) | Unblocked complete history reconstruction. An opaque base64url keyset cursor anchored on a **row id**, not a timestamp — `TIMESTAMPTZ` is microsecond-precision and a JS `Date` is millisecond, so a timestamp cursor loses rows at the boundary. Keyset, not offset: rows arrive at the head mid-walk, and an offset would repeat or skip. `limit` alone still works, so the change is additive. Every cursor is version-tagged, kind-tagged and canonically re-encoded on decode, and is refused as `INVALID_REQUEST` if it is malformed, truncated, non-canonically spelled, minted for a different list, or names a row belonging to another agent — silently ignoring one restarts the page at the newest row and the caller double-counts it. `nextCursor: null` is proven by reading `limit + 1`, never inferred from page length. **`market list` deliberately gets no cursor**: the catalog is a mutable set with no stable insert order to anchor on, so `?cursor=` there is a 400 rather than a no-op, and the CLI rejects the flag before any request. |

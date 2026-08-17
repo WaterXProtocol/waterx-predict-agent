@@ -297,12 +297,19 @@ is no execution to reconcile. Once an order exists, a timeout is returned as
 
 ### Price source
 
-Today it polls `POST /quotes`, which is the only price source an agent can reach.
-Spec §16.1 wants a sequenced quote stream with gap detection instead, but §21.3
-notes the feed behind it is a ~2 s poll that "cannot reliably satisfy the WS P95",
-and fixing that is upstream of this SDK. Supply your own `priceWatcher` to change
-where prices come from — the trigger, re-verify and single-submission logic are
-unaffected:
+Today it polls `POST /quotes`. The server now also publishes a sequenced quote
+stream on the agent socket (`predict.quotes.*`: snapshot on subscribe, `seq` per
+connection and topic, `gap: true` on a resume, 15 s heartbeat) and this package
+vendors its types — but **no client here speaks it yet**, so nothing in this SDK
+gets prices from it.
+
+It would not buy latency in any case. The server has no upstream push: it re-reads
+a cache every ~2 s behind a publisher on a ~5 s cadence, which is why every stream
+frame carries `POLLED_UPSTREAM` and its own freshness facts. What a stream buys is
+*requests* — one connection instead of one quote call per tick — and a value that
+is explicitly `stale` instead of a silently old one. Supply your own `priceWatcher`
+to change where prices come from; the trigger, re-verify and single-submission
+logic are unaffected:
 
 ```ts
 new PredictAgentClient({ baseUrl, signer, priceWatcher: myStreamWatcher });
@@ -365,9 +372,12 @@ already said no is worse than polling.
 
 ## Not implemented yet
 
-- **Quote streaming** — see [Price source](#price-source). Blocked upstream: the
-  feed behind it is a ~2 s poll that cannot satisfy the target latency, and fixing
-  that lives outside this SDK.
+- **Quote streaming** — see [Price source](#price-source). No longer blocked: the
+  server protocol exists and its types are vendored in `src/contract.ts`. It is
+  simply not built here, and a vendored type is not a capability. Note when it is
+  built: the feed keeps no log, so a resumed subscription's snapshot is the entire
+  recovery, `seq` must not be persisted, and a streamed price still has to be
+  re-quoted through `POST /quotes` before it can be traded on.
 
 ## Signer
 

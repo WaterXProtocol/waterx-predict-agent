@@ -11,6 +11,14 @@ import { describe, expect, it } from 'vitest';
 import {
   IDEMPOTENCY_KEY_HEADER,
   PREDICT_AGENT_API_ROUTES,
+  PREDICT_QUOTE_HEARTBEAT,
+  PREDICT_QUOTE_STREAM,
+  PREDICT_QUOTE_STREAM_HEARTBEAT_MS,
+  PREDICT_QUOTE_STREAM_MAX_SUBSCRIBE_RATE,
+  PREDICT_QUOTE_STREAM_MAX_TOPICS,
+  PREDICT_QUOTE_SUBSCRIBE,
+  PREDICT_QUOTE_SUBSCRIPTION,
+  PREDICT_QUOTE_UNSUBSCRIBE,
   RETRYABLE_PREDICT_AGENT_ERROR_CODES,
 } from '../src/contract.ts';
 
@@ -51,5 +59,34 @@ describe('vendored wire contract', () => {
       'SPONSOR_UNAVAILABLE',
       'EXECUTION_TIMEOUT',
     ]);
+  });
+
+  it('pins the quote-stream event names', () => {
+    // No client here speaks this yet (backlog 2.3). The names are pinned anyway:
+    // a Socket.IO event is matched by string, so a typo produces a socket that
+    // connects, subscribes to nothing, and reports no error at all.
+    expect({
+      stream: PREDICT_QUOTE_STREAM,
+      subscribe: PREDICT_QUOTE_SUBSCRIBE,
+      unsubscribe: PREDICT_QUOTE_UNSUBSCRIBE,
+      subscription: PREDICT_QUOTE_SUBSCRIPTION,
+      heartbeat: PREDICT_QUOTE_HEARTBEAT,
+    }).toEqual({
+      stream: 'predict.quotes.v1',
+      subscribe: 'predict.quotes.subscribe',
+      unsubscribe: 'predict.quotes.unsubscribe',
+      subscription: 'predict.quotes.subscription',
+      heartbeat: 'predict.quotes.heartbeat',
+    });
+  });
+
+  it('pins the bounds a future client has to respect', () => {
+    // These are server-enforced. A client that batches past either gets per-topic
+    // rejections it must read, not an exception it can retry.
+    expect(PREDICT_QUOTE_STREAM_MAX_TOPICS).toBe(32);
+    expect(PREDICT_QUOTE_STREAM_MAX_SUBSCRIBE_RATE).toBe(60);
+    // A client that misses two in a row should reconnect, so this value is part
+    // of the liveness contract, not a tuning detail.
+    expect(PREDICT_QUOTE_STREAM_HEARTBEAT_MS).toBe(15_000);
   });
 });

@@ -105,8 +105,20 @@ export type PredictLiquidityTier = 'A' | 'B' | 'C';
  * `TOP_OF_BOOK_ONLY` — priced from the best bid/ask with NO depth information.
  * `availableSize` and `expectedFillSize` are therefore null, and a large order
  * may fail to fill even though its price is protected.
+ *
+ * `INDICATIVE_ONLY` — this price is NOT committable. Only a quote minted through
+ * `POST /quotes` can be executed; anything carrying this flag (every quote-stream
+ * frame) is a decision input, never an order price.
+ *
+ * `POLLED_UPSTREAM` — the value reached this server by polling an upstream cache,
+ * not by an upstream push. Its freshness is bounded by `freshness.pollIntervalMs`
+ * plus the publisher's own cadence; see `PredictQuoteFreshness`.
+ *
+ * `STALE` — no value fresher than `freshness.staleAfterMs` exists. Prices are
+ * null and nothing may be inferred from their absence except "we do not know".
  */
-export type PredictQuoteQualityFlag = 'TOP_OF_BOOK_ONLY' | (string & {});
+export type PredictQuoteQualityFlag =
+  'TOP_OF_BOOK_ONLY' | 'INDICATIVE_ONLY' | 'POLLED_UPSTREAM' | 'STALE' | (string & {});
 
 export interface PredictQuote {
   quoteId: string;
@@ -620,6 +632,187 @@ export interface PredictStreamReadyFrame {
 }
 
 export const PREDICT_STREAM_READY = 'predict.stream.ready';
+
+/* ── Private quote stream ────────────────────────────────────────────────── */
+
+/**
+ * Live indicative prices, on the SAME authenticated namespace as the execution
+ * stream. One socket, one handshake, two feeds.
+ *
+ * HOW THIS DIFFERS FROM THE EXECUTION STREAM, and why the difference is in the
+ * types rather than only in prose:
+ *
+ *   - The execution stream is an EVENT LOG. It has a durable outbox, a per-agent
+ *     cursor, and a genuine replay window, so a reconnect can be told exactly what
+ *     it missed.
+ *   - This is a STATE feed. Nothing durable is written per price tick, so there is
+ *     NO replay: whatever moved while a client was away is unrecoverable. Recovery
+ *     is the SNAPSHOT, which is why every (re)subscribe emits one.
+ *
+ * Consequently `seq` is monotonic per (connection, topic), starting at `1` for a
+ * newly subscribed topic and CONTINUING across a re-subscribe on the same
+ * connection. It exists to detect frames dropped ON a live connection — not to
+ * address history, and it is meaningless on any other connection. Do not persist
+ * it; persist nothing here at all. A trading decision still needs `POST /quotes`
+ * (executable) and a REST read (authoritative).
+ */
+export const PREDICT_QUOTE_STREAM = 'predict.quotes.v1';
+
+/** Client → server. Payload: `PredictQuoteSubscribeMessage`. */
+export const PREDICT_QUOTE_SUBSCRIBE = 'predict.quotes.subscribe';
+
+/** Client → server. Payload: `PredictQuoteSubscribeMessage`. */
+export const PREDICT_QUOTE_UNSUBSCRIBE = 'predict.quotes.unsubscribe';
+
+/** Server → client, answering either of the two above. */
+export const PREDICT_QUOTE_SUBSCRIPTION = 'predict.quotes.subscription';
+
+/** Server → client, on a fixed interval whether or not prices moved. */
+export const PREDICT_QUOTE_HEARTBEAT = 'predict.quotes.heartbeat';
+
+/**
+ * Topics one connection may hold. A quote topic is CLIENT-named (unlike the
+ * execution room, which the server chooses), so it needs a cap: each topic costs
+ * a cache read and a comparison on every tick, for every subscriber.
+ */
+export const PREDICT_QUOTE_STREAM_MAX_TOPICS = 32;
+
+/** Subscribe/unsubscribe messages allowed per connection per rolling minute. */
+export const PREDICT_QUOTE_STREAM_MAX_SUBSCRIBE_RATE = 60;
+
+/** Heartbeat cadence. A client that misses two in a row should reconnect. */
+export const PREDICT_QUOTE_STREAM_HEARTBEAT_MS = 15_000;
+
+/** What a client names to receive prices. */
+export interface PredictQuoteTopic {
+  marketId: string;
+  outcomeId: PredictOutcomeId;
+}
+
+export interface PredictQuoteSubscribeMessage {
+  topics: PredictQuoteTopic[];
+  /**
+   * Set on a RESUME — a reconnect for topics you were already watching. It makes
+   * the answering snapshot carry `gap: true`, because this feed cannot prove what
+   * you missed. Omit it on a first subscribe to distinguish "new" from "resumed".
+   */
+  resume?: boolean;
+}
+
+/**
+ * Why one topic was not accepted.
+ *
+ * `MARKET_CLOSED` and `NOT_QUOTABLE` differ: the first is terminal for the round,
+ * the second is temporary (no live book). A strategy pauses on the second and
+ * stops on the first — never the other way round.
+ */
+export type PredictQuoteRejectionReason =
+  | 'INVALID_REQUEST'
+  | 'UNKNOWN_MARKET'
+  | 'MARKET_CLOSED'
+  | 'NOT_QUOTABLE'
+  | 'SUBSCRIPTION_LIMIT'
+  | 'RATE_LIMITED';
+
+/**
+ * The topic fields are ECHOED from the request rather than typed as a valid
+ * topic: a rejection must be able to name a request that was not a valid topic in
+ * the first place. `null` means the field was missing or unreadable.
+ */
+export interface PredictQuoteRejection {
+  marketId: string | null;
+  outcomeId: PredictOutcomeId | null;
+  reason: PredictQuoteRejectionReason;
+}
+
+/**
+ * The answer to a subscribe/unsubscribe. Per-topic, never all-or-nothing: one
+ * closed market in a batch must not silently drop the other thirty-one.
+ *
+ * On an UNSUBSCRIBE, `accepted` lists every well-formed topic — held or not.
+ * Unsubscribing is idempotent, and a client retrying after a disconnect should
+ * not have to distinguish "removed" from "was never there".
+ */
+export interface PredictQuoteSubscriptionFrame {
+  stream: typeof PREDICT_QUOTE_STREAM;
+  accepted: PredictQuoteTopic[];
+  rejected: PredictQuoteRejection[];
+  /** Topics held on this connection AFTER applying the message. */
+  subscribed: number;
+  limit: typeof PREDICT_QUOTE_STREAM_MAX_TOPICS;
+}
+
+/**
+ * Everything needed to judge whether this price is worth acting on — stated as
+ * facts, not as a latency claim.
+ *
+ * WaterX does not receive an upstream push. A publisher writes prices into a
+ * cache and this server re-reads that cache every `pollIntervalMs`, so a frame
+ * can never be fresher than one poll interval plus the publisher's own cadence.
+ * `sourceAgeMs` is the only end-to-end number, and it is null when the publisher
+ * stamped no origin time — absent, not zero.
+ */
+export interface PredictQuoteFreshness {
+  /** When this server read the value. Null when there is no value at all. */
+  observedAt: Iso8601 | null;
+  /** When the upstream publisher stamped it. Null when it published no stamp. */
+  sourceTimestamp: Iso8601 | null;
+  /** `emittedAt - sourceTimestamp`. Null exactly when `sourceTimestamp` is. */
+  sourceAgeMs: number | null;
+  emittedAt: Iso8601;
+  /** Upstream re-read cadence. A frame cannot be fresher than this. */
+  pollIntervalMs: number;
+  /** A value older than this reads as unavailable, never as its last price. */
+  staleAfterMs: number;
+  /** True ⇒ prices are null and `qualityFlags` carries `STALE`. */
+  stale: boolean;
+}
+
+/**
+ * One price update for one topic.
+ *
+ * Both prices are INDICATIVE and carry `INDICATIVE_ONLY`. They are the same
+ * top-of-book values the market catalog reports, delivered as they change instead
+ * of when polled — they are a trigger, never an execution price. After a target is
+ * observed, mint a fresh quote and re-check the target before ordering.
+ */
+export interface PredictQuoteStreamFrame extends PredictQuoteTopic {
+  stream: typeof PREDICT_QUOTE_STREAM;
+  /**
+   * `SNAPSHOT` is the full current state, emitted on every subscribe. `UPDATE` is
+   * emitted only when the state changed.
+   */
+  kind: 'SNAPSHOT' | 'UPDATE';
+  /** Monotonic per (connection, topic), from `1`. Never an address into history. */
+  seq: string;
+  /**
+   * Only ever true on a `SNAPSHOT` answering a `resume`. It means: you were away,
+   * this feed keeps no log, so treat this snapshot as your whole recovery.
+   */
+  gap: boolean;
+  /** Null when unknown — never `0`, which would assert a real price of zero. */
+  indicativeBid: PriceString | null;
+  indicativeAsk: PriceString | null;
+  /** Mid-market. Null when either side is missing. */
+  impliedProbability: PriceString | null;
+  qualityFlags: PredictQuoteQualityFlag[];
+  freshness: PredictQuoteFreshness;
+}
+
+/**
+ * Proof the feed is alive when nothing is moving.
+ *
+ * Without it a quiet market and a dead socket look identical, and an unattended
+ * strategy cannot tell "no one is trading" from "I stopped receiving prices".
+ * `topics` reports the server's `seq` per subscription so a client can detect a
+ * frame it never received.
+ */
+export interface PredictQuoteHeartbeatFrame {
+  stream: typeof PREDICT_QUOTE_STREAM;
+  serverTime: Iso8601;
+  intervalMs: typeof PREDICT_QUOTE_STREAM_HEARTBEAT_MS;
+  topics: (PredictQuoteTopic & { seq: string; stale: boolean })[];
+}
 
 /* ── Markets ─────────────────────────────────────────────────────────────── */
 
