@@ -101,6 +101,7 @@ export {
   FrameReader,
   isRunnerIpcError,
   MAX_FRAME_BYTES,
+  RUNNER_IPC_PROTOCOL,
   RUNNER_IPC_PROTOCOL_VERSION,
   RunnerIpcError,
   tokensMatch,

@@ -59,6 +59,7 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
+import { RUNNER_IPC_PROTOCOL } from './ipc/protocol.ts';
 import { isIsoInstant } from './strategy/intent.ts';
 
 /**
@@ -66,7 +67,10 @@ import { isIsoInstant } from './strategy/intent.ts';
  * token variable exists is checking the surface rather than a comment.
  */
 export const RUNNER_ENV_KEYS = {
-  runtimeDir: 'WATERX_RUNNER_DIR',
+  // The one variable a client also reads, so it comes from the shared wire
+  // descriptor: an operator who points the daemon somewhere must not have to
+  // discover that the CLI looks somewhere else.
+  runtimeDir: RUNNER_IPC_PROTOCOL.runtimeDirEnv,
   storePath: 'WATERX_RUNNER_STORE',
   configPath: 'WATERX_RUNNER_CONFIG',
   baseUrl: 'WATERX_RUNNER_BASE_URL',
@@ -516,7 +520,7 @@ export const resolveRunnerConfig = (sources: RunnerConfigSources): RunnerConfig 
   const env = sources.env;
   const runtimeDir =
     asString(env[RUNNER_ENV_KEYS.runtimeDir], RUNNER_ENV_KEYS.runtimeDir, 'the environment') ??
-    join(sources.homeDir() ?? '.', '.waterx', 'runner');
+    join(sources.homeDir() ?? '.', ...RUNNER_IPC_PROTOCOL.defaultRuntimeDir);
   const { path, config } = readConfigFile(sources, configPathFor(sources, runtimeDir));
   const where = path ?? 'the config file';
   const warnings: string[] = [];

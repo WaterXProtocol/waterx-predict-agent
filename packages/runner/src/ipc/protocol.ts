@@ -31,6 +31,50 @@ export const RUNNER_IPC_PROTOCOL_VERSION = 1;
  */
 export const MAX_FRAME_BYTES = 1_048_576;
 
+/**
+ * The wire, as data — everything a second implementation needs to speak it.
+ *
+ * The CLI has to reach a Runner to create a strategy, and it cannot depend on
+ * this package: that edge would put a daemon, a SQLite store and a scheduler
+ * inside a one-shot command, and `tests/workspace.test.ts` refuses it outright.
+ * So the CLI carries its own client, and this descriptor is the thing the two
+ * implementations are held to — `tests/workspace.test.ts` asserts the two copies
+ * are equal and then runs the CLI's real frames through `decodeClientFrame`,
+ * which is what makes it a claim about behaviour rather than a comment. It is
+ * the same arrangement as `SIGNER_PROTOCOL`, for the same reason.
+ *
+ * The filenames and the default directory are in here rather than in
+ * `daemon.ts` because they are half of the address: a client that guessed
+ * `runner.socket` would report "no Runner is listening" while one was.
+ */
+export const RUNNER_IPC_PROTOCOL = {
+  version: RUNNER_IPC_PROTOCOL_VERSION,
+  /** Inside the runtime directory. Both are named by the descriptor, not guessed. */
+  socketFile: 'runner.sock',
+  tokenFile: 'runner.token',
+  runtimeDirEnv: 'WATERX_RUNNER_DIR',
+  /** Joined onto the home directory when the environment names none. */
+  defaultRuntimeDir: ['.waterx', 'runner'],
+  maxFrameBytes: MAX_FRAME_BYTES,
+  /** Exact key sets. A frame with more or fewer keys is a different protocol. */
+  clientFrames: [
+    { type: 'hello', fields: ['v', 'type', 'token', 'client'] },
+    { type: 'request', fields: ['v', 'type', 'id', 'command', 'input'] },
+  ],
+  serverFrames: [
+    { type: 'hello-ok', fields: ['v', 'type', 'instanceId', 'driving'] },
+    { type: 'response', fields: ['v', 'type', 'id', 'ok', 'result', 'error'] },
+  ],
+  /** The only family a client outside this package is expected to call. */
+  strategyCommands: [
+    'strategy.create',
+    'strategy.get',
+    'strategy.list',
+    'strategy.cancel',
+    'strategy.events',
+  ],
+} as const;
+
 export type RunnerIpcErrorCode =
   /** The peer speaks a different protocol version. Never negotiated down. */
   | 'PROTOCOL_VERSION'

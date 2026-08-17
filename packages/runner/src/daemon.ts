@@ -53,6 +53,7 @@ import { systemClock, type Clock } from './clock.ts';
 import { newInstanceId } from './ids.ts';
 import type { JobPolicySnapshot } from './job.ts';
 import { dispatch, toErrorBody, type RunnerCommandContext } from './ipc/dispatch.ts';
+import { RUNNER_IPC_PROTOCOL } from './ipc/protocol.ts';
 import { RunnerIpcServer } from './ipc/server.ts';
 import {
   ensureRuntimeDir,
@@ -308,12 +309,15 @@ export class RunnerDaemon {
     return await this.scheduler.tick();
   }
 
+  // Both names come from the shared descriptor rather than from a literal here,
+  // because a client that guessed the wrong filename would report "no Runner is
+  // listening" while one was.
   get socketPath(): string {
-    return join(this.options.runtimeDir, 'runner.sock');
+    return join(this.options.runtimeDir, RUNNER_IPC_PROTOCOL.socketFile);
   }
 
   get tokenPath(): string {
-    return join(this.options.runtimeDir, 'runner.token');
+    return join(this.options.runtimeDir, RUNNER_IPC_PROTOCOL.tokenFile);
   }
 
   async start(): Promise<RunnerDaemonHandle> {
