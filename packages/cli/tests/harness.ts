@@ -96,6 +96,15 @@ export type RunnerReply =
 /** Short enough to stay under the `sun_path` limit the client enforces. */
 export const RUNNER_DIR = '/tmp/waterx-test-runner';
 
+/**
+ * The bearer token a Runner mints into its runtime directory.
+ *
+ * Long enough for the redactor to watch (it ignores short strings, on the theory
+ * that a four-character "secret" would blank half the output), and named here so
+ * a test can assert it reached the socket and reached neither stream.
+ */
+export const RUNNER_TOKEN = 'runner-token-abc';
+
 const UID = process.getuid?.() ?? 0;
 const PRIVATE_DIR: PathFacts = { kind: 'directory', uid: UID, mode: 0o700 };
 const PRIVATE_FILE: PathFacts = { kind: 'file', uid: UID, mode: 0o600 };
@@ -288,7 +297,7 @@ export async function invoke(
   // A Runner mints this at every start; the CLI reads it out of the runtime
   // directory. Merged under `files` so a test can still blank it.
   const files: Record<string, string> = {
-    ...(script !== undefined ? { [`${RUNNER_DIR}/runner.token`]: 'runner-token-abc\n' } : {}),
+    ...(script !== undefined ? { [`${RUNNER_DIR}/runner.token`]: `${RUNNER_TOKEN}\n` } : {}),
     ...options.files,
   };
 

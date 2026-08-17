@@ -180,6 +180,7 @@ function readRunnerToken(
   runtimeDir: string,
   stat: PathStat,
   readFile: (path: string) => string | null,
+  onSecret: ((secret: string) => void) | undefined,
 ): string {
   const dir = stat(runtimeDir);
   if (dir === null) {
@@ -210,6 +211,8 @@ function readRunnerToken(
       { runtimeDir },
     );
   }
+  // Before the caller can hold it, and well before it is written to a socket.
+  onSecret?.(token);
   return token;
 }
 
@@ -257,6 +260,18 @@ export interface OpenRunnerSessionOptions {
   readonly timeoutMs: number;
   /** Free-form, for `runner status`. Not identity — the token is. */
   readonly client: string;
+  /**
+   * Called with the bearer token the moment it is read, before it is written to
+   * any socket, so the output redactor is watching it for the whole invocation.
+   *
+   * This module is careful not to echo the token — no message here quotes a
+   * frame it wrote — but that care is exactly what the redactor exists to stop
+   * depending on. The token is a live credential for a process that holds a
+   * signer, and the path that leaks one is always the path nobody audited: an
+   * error from a dependency, a stack trace, a Runner that helpfully includes
+   * what it was sent in its own refusal.
+   */
+  onSecret?(secret: string): void;
 }
 
 export async function openRunnerSession(
@@ -265,7 +280,7 @@ export async function openRunnerSession(
   const { runtimeDir } = options;
   // Everything that can fail without touching the network fails here, so a
   // refusal for a missing or world-readable directory costs zero socket traffic.
-  const token = readRunnerToken(runtimeDir, options.stat, options.readFile);
+  const token = readRunnerToken(runtimeDir, options.stat, options.readFile, options.onSecret);
   const socketPath = runnerSocketPath(runtimeDir);
   if (Buffer.byteLength(socketPath, 'utf8') > MAX_SOCKET_PATH_BYTES) {
     throw new RunnerRefusal(

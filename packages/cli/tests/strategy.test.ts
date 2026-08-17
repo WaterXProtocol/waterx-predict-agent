@@ -29,7 +29,14 @@ import { describe, expect, it } from 'vitest';
 
 import { EXIT_CODES } from '../src/index.ts';
 import { RUNNER_IPC_PROTOCOL } from '../src/runner-ipc.ts';
-import { ACCOUNT_ID, AGENT_WALLET, CONFIGURED_ENV, invoke, RUNNER_DIR } from './harness.ts';
+import {
+  ACCOUNT_ID,
+  AGENT_WALLET,
+  CONFIGURED_ENV,
+  invoke,
+  RUNNER_DIR,
+  RUNNER_TOKEN,
+} from './harness.ts';
 
 const OWNER = `0x${'d'.repeat(63)}3`;
 
@@ -396,5 +403,76 @@ describe('reading one', () => {
     expect(result.exit).toBe(EXIT_CODES.OK);
     expect(result.fetches).toEqual([]);
     expect(result.envelope.data).toMatchObject({ strategies: [] });
+  });
+});
+
+/**
+ * The Runner's bearer token, which this CLI is the only thing that reads.
+ *
+ * It is not the session token: it authenticates to the process that HOLDS the
+ * signer, on the same machine, and anyone who has it can arm a strategy that
+ * trades. The daemon has had a checked absence for it since it was written; this
+ * is the client's half. The point of the assertions below is that they do not
+ * depend on this module's own care — the token goes into the redactor the moment
+ * it comes off disk, so the leak paths nobody enumerated are covered too.
+ */
+describe('the Runner token', () => {
+  it('reaches the socket and neither stream', async () => {
+    const result = await invoke(['strategy', 'list', ...AT_RUNNER], {
+      env: CONFIGURED_ENV,
+      runner: { replies: { 'strategy.list': { result: { strategies: [] } } } },
+    });
+
+    expect(result.exit).toBe(EXIT_CODES.OK);
+    // It authenticated: the handshake carried it.
+    expect(result.runnerFrames[0]).toMatchObject({ type: 'hello', token: RUNNER_TOKEN });
+    expect(result.stdout).not.toContain(RUNNER_TOKEN);
+    expect(result.stderr).not.toContain(RUNNER_TOKEN);
+  });
+
+  it('is blanked even when the Runner quotes it back inside a refusal', async () => {
+    // A daemon that echoes what it was sent is not hypothetical — an argument
+    // dump in an error path is the ordinary way this happens, and the CLI prints
+    // a Runner's message verbatim by design.
+    const result = await invoke(['strategy', 'get', ...AT_RUNNER, '--jobId', 'job_01'], {
+      env: CONFIGURED_ENV,
+      runner: {
+        replies: {
+          'strategy.get': {
+            error: {
+              code: 'UNKNOWN_JOB',
+              message: `no job job_01 for token ${RUNNER_TOKEN}.`,
+              detail: { token: RUNNER_TOKEN },
+            },
+          },
+        },
+      },
+    });
+
+    expect(result.exit).toBe(EXIT_CODES.NOT_FOUND);
+    expect(result.envelope.error?.code).toBe('UNKNOWN_JOB');
+    expect(result.stdout).not.toContain(RUNNER_TOKEN);
+    expect(result.stderr).not.toContain(RUNNER_TOKEN);
+    // Blanked, not dropped: the operator still sees that a message was there.
+    expect(result.envelope.error?.message).toContain('[redacted]');
+  });
+
+  it('is blanked in a diagnostic, which is where an armed-and-asleep create prints', async () => {
+    const result = await invoke(create(), {
+      env: CONFIGURED_ENV,
+      runner: {
+        driving: false,
+        replies: {
+          'strategy.create': {
+            result: { ...CREATED, driving: false, driverGaps: [`signer (${RUNNER_TOKEN})`] },
+          },
+        },
+      },
+    });
+
+    expect(result.exit).toBe(EXIT_CODES.UNAVAILABLE);
+    expect(result.stderr).toContain('NOT being watched');
+    expect(result.stdout).not.toContain(RUNNER_TOKEN);
+    expect(result.stderr).not.toContain(RUNNER_TOKEN);
   });
 });

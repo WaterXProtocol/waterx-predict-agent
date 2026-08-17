@@ -313,6 +313,7 @@ export async function run(io: CliIo): Promise<number> {
       approval: requireFlagValue(parsed.flags, 'approve'),
       runnerDir: requireFlagValue(parsed.flags, 'runner-dir'),
       exitAs,
+      onSecret: (secret) => redactor.register(secret),
     });
     const context = invocation.context;
     // Registered before the handler runs, so a socket opened by a command that
@@ -392,6 +393,7 @@ function createContext(
     approval: string | undefined;
     runnerDir: string | undefined;
     exitAs: (code: ExitCode) => void;
+    onSecret: (secret: string) => void;
   },
 ): { context: CommandContext; close: () => void } {
   let session: Promise<PredictAgentClient> | undefined;
@@ -423,6 +425,11 @@ function createContext(
    * Everything that can refuse without touching the socket — an absent runtime
    * directory, one another local account can reach — happens inside
    * `openRunnerSession`, before a dial.
+   *
+   * `onSecret` puts the Runner's bearer token under the same redactor as the
+   * session token the moment it is read off disk. The token is a live credential
+   * for the process that holds the signer, so nothing this command prints —
+   * envelope or diagnostic, ours or a Runner's — may carry it back out.
    */
   const openRunner = (): Promise<RunnerSession> =>
     openRunnerSession({
@@ -436,6 +443,7 @@ function createContext(
       readFile: io.readFile,
       timeoutMs: config.timeoutMs,
       client: `${CLI_NAME}/${CLI_VERSION}`,
+      onSecret: options.onSecret,
     });
 
   return {
