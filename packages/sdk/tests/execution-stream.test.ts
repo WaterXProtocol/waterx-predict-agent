@@ -9,7 +9,9 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 
-import { type ExecutionStream, PredictAgentClient } from '../src/client.ts';
+import { PredictAgentClient } from '../src/client.ts';
+import { PREDICT_EXECUTION_STREAM, PREDICT_STREAM_READY } from '../src/contract.ts';
+import type { ExecutionStream, StreamConnector, StreamSocket } from '../src/execution-stream.ts';
 import type { AgentSigner } from '../src/signer.ts';
 
 const signer: AgentSigner = {
@@ -50,7 +52,8 @@ const intent = {
 /** create → submit → then one GET per queued read. */
 function makeClient(
   reads: unknown[],
-  executionStream?: ExecutionStream,
+  executionStream?: ExecutionStream | 'native',
+  streamConnector?: StreamConnector,
 ): { client: PredictAgentClient; getCount: () => number } {
   let getIndex = 0;
   const fetch = ((url: URL | string, init?: RequestInit) => {
@@ -69,6 +72,7 @@ function makeClient(
     token: 'tok',
     retry: { maxAttempts: 1, baseDelayMs: 0 },
     ...(executionStream !== undefined ? { executionStream } : {}),
+    ...(streamConnector !== undefined ? { streamConnector } : {}),
   });
   return { client, getCount: () => getIndex };
 }
@@ -80,7 +84,7 @@ describe('ExecutionStream', () => {
     // test would fire into the void and then sleep out the whole interval.
     let fire: (() => void) | undefined;
     const stream: ExecutionStream = {
-      onExecutionUpdate: (_id, listener) => {
+      onExecutionUpdate: (_id: string, listener: () => void) => {
         fire = listener;
         return () => undefined;
       },
@@ -104,7 +108,7 @@ describe('ExecutionStream', () => {
     // test would fire into the void and then sleep out the whole interval.
     let fire: (() => void) | undefined;
     const stream: ExecutionStream = {
-      onExecutionUpdate: (_id, listener) => {
+      onExecutionUpdate: (_id: string, listener: () => void) => {
         fire = listener;
         return () => undefined;
       },
@@ -165,5 +169,194 @@ describe('ExecutionStream', () => {
 
     // Two reads: the pending one and the terminal one.
     expect(getCount()).toBe(2);
+  });
+});
+
+/**
+ * The `executionStream: 'native'` wiring — that asking for the shipped stream
+ * actually reaches the transport, using this client's own base URL and session,
+ * and that the socket it opens belongs to the client and can be released.
+ * `socket-execution-stream.test.ts` covers the protocol behind the seam.
+ */
+describe('the native execution stream option', () => {
+  /** Captures the socket the client opens without connecting to anything. */
+  function fakeTransport(): {
+    connect: StreamConnector;
+    urls: string[];
+    tokens: string[];
+    socket: () => FakeSocket | undefined;
+    fire: (executionId: string, cursor?: string) => void;
+  } {
+    const urls: string[] = [];
+    const tokens: string[] = [];
+    let opened: FakeSocket | undefined;
+    return {
+      urls,
+      tokens,
+      socket: () => opened,
+      fire: (executionId, cursor = '1') => {
+        opened?.handlers.get(PREDICT_EXECUTION_STREAM)?.({ cursor, executionId });
+      },
+      connect: async ({ url, handshake }) => {
+        urls.push(url);
+        tokens.push((await handshake()).token);
+        opened = new FakeSocket();
+        return opened;
+      },
+    };
+  }
+
+  class FakeSocket implements StreamSocket {
+    readonly handlers = new Map<string, (payload: unknown) => void>();
+    disconnects = 0;
+    on(event: string, listener: (payload: unknown) => void): void {
+      this.handlers.set(event, listener);
+    }
+    disconnect(): void {
+      this.disconnects += 1;
+    }
+  }
+
+  it('streams over the client session and still settles from REST', async () => {
+    const transport = fakeTransport();
+    const { client } = makeClient([PENDING, FILLED], 'native', transport.connect);
+
+    const promise = client.executeMarketOrder(intent, {
+      waitFor: 'TERMINAL',
+      pollIntervalMs: 30_000,
+    });
+    await vi.waitFor(() => expect(transport.socket()).toBeDefined());
+    // A ready frame first, exactly as the server sends it, then the update.
+    transport.socket()?.handlers.get(PREDICT_STREAM_READY)?.({ cursor: '1', gap: false });
+    transport.fire('exec-1');
+
+    // FILLED comes from the REST read the frame provoked, never from the frame.
+    await expect(promise).resolves.toMatchObject({ status: 'FILLED' });
+    // The stream's namespace hangs off the same base URL as the REST calls, and
+    // the handshake presents the same session token.
+    expect(transport.urls[0]).toBe('https://api.test/agent-api/v1/predict');
+    expect(transport.tokens).toEqual(['tok']);
+
+    client.close();
+  });
+
+  it('releases the socket when the wait ends rather than holding the process open', async () => {
+    const transport = fakeTransport();
+    const { client } = makeClient([FILLED], 'native', transport.connect);
+
+    await client.waitForExecution('exec-1', { pollIntervalMs: 1 });
+    const first = transport.socket();
+
+    // The default is to drop the socket with the last waiter, so a one-shot CLI
+    // exits the moment its trade settles instead of waiting on a live handle.
+    expect(first?.disconnects).toBe(1);
+
+    await client.waitForExecution('exec-2', { pollIntervalMs: 1 });
+
+    // …and the next wait reconnects, on the same stream object.
+    expect(transport.urls).toHaveLength(2);
+    expect(transport.socket()).not.toBe(first);
+  });
+
+  it('closes a socket that is still mid-wait, and stays safe when called twice', async () => {
+    const transport = fakeTransport();
+    const { client } = makeClient([PENDING], 'native', transport.connect);
+
+    const promise = client.waitForExecution('exec-1', { pollIntervalMs: 5, timeoutMs: 100 });
+    await vi.waitFor(() => expect(transport.socket()).toBeDefined());
+
+    client.close();
+
+    expect(transport.socket()?.disconnects).toBe(1);
+    // Closing the accelerator does not fail the wait: it falls back to the poll
+    // interval and still reports what it last saw.
+    await expect(promise).resolves.toMatchObject({ timedOut: true, status: 'PENDING_FILL' });
+    // Idempotent: a `finally { client.close() }` that runs twice is not a bug.
+    expect(() => client.close()).not.toThrow();
+  });
+
+  it('holds nothing to close when no stream was asked for', () => {
+    const { client } = makeClient([FILLED]);
+
+    expect(() => client.close()).not.toThrow();
+  });
+});
+
+/**
+ * The wait's own bounds. A stream changes when the loop looks; it must not change
+ * whether the loop can be stopped, or how long past its deadline it may run.
+ */
+describe('wait loop timeout and abort', () => {
+  it('stops within the timeout even when the poll interval is far longer', async () => {
+    const { client } = makeClient([PENDING]);
+
+    const startedAt = Date.now();
+    const result = await client.waitForExecution('exec-1', {
+      timeoutMs: 20,
+      pollIntervalMs: 30_000,
+    });
+
+    // Sleeping the whole interval would overshoot the caller's deadline by 30 s —
+    // a strategy that asked to give up in 20 ms would be blocked past its next
+    // decision. Timing out is not an error; it reports the last status to
+    // reconcile from.
+    expect(result).toMatchObject({ timedOut: true, status: 'PENDING_FILL' });
+    expect(Date.now() - startedAt).toBeLessThan(5_000);
+  });
+
+  it('gives up promptly when aborted mid-interval', async () => {
+    const { client } = makeClient([PENDING]);
+    const controller = new AbortController();
+
+    const startedAt = Date.now();
+    const promise = client.waitForExecution('exec-1', {
+      timeoutMs: 60_000,
+      pollIntervalMs: 30_000,
+      signal: controller.signal,
+    });
+    // Once the loop is asleep on its interval, not before.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    controller.abort();
+
+    await expect(promise).rejects.toThrow();
+    expect(Date.now() - startedAt).toBeLessThan(5_000);
+  });
+
+  it('wakes an aborted wait that is parked on a stream, not just on a timer', async () => {
+    const stream: ExecutionStream = { onExecutionUpdate: () => () => undefined };
+    const { client } = makeClient([PENDING], stream);
+    const controller = new AbortController();
+
+    const startedAt = Date.now();
+    const promise = client.waitForExecution('exec-1', {
+      timeoutMs: 60_000,
+      pollIntervalMs: 30_000,
+      signal: controller.signal,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    controller.abort();
+
+    await expect(promise).rejects.toThrow();
+    expect(Date.now() - startedAt).toBeLessThan(5_000);
+  });
+
+  it('does not accumulate abort listeners across a long-running wait', async () => {
+    // A signal reused for hundreds of poll cycles, each adding a listener it never
+    // removes, is a leak that ends in a MaxListeners warning and a retained
+    // closure per cycle.
+    const stream: ExecutionStream = { onExecutionUpdate: () => () => undefined };
+    const { client } = makeClient([PENDING, PENDING, PENDING, FILLED], stream);
+    const controller = new AbortController();
+    const added = vi.spyOn(controller.signal, 'addEventListener');
+    const removed = vi.spyOn(controller.signal, 'removeEventListener');
+
+    await client.waitForExecution('exec-1', {
+      timeoutMs: 60_000,
+      pollIntervalMs: 1,
+      signal: controller.signal,
+    });
+
+    expect(added.mock.calls.length).toBeGreaterThan(1);
+    expect(removed.mock.calls.length).toBe(added.mock.calls.length);
   });
 });

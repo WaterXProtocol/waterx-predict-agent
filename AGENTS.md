@@ -123,6 +123,9 @@ Inside `packages/sdk`:
 - `src/client.ts` — agent-facing client and orchestration helpers.
 - `src/transport.ts` — URL construction, auth headers, error decoding, and safe
   retries.
+- `src/execution-stream.ts` — the `ExecutionStream` seam and the shipped
+  Socket.IO client behind it: cursor, gap and reconnect reconciliation, a bounded
+  handshake-failure budget, and the lazy import of the one runtime dependency.
 - `src/signer.ts` — structural Sui signer boundary and auth-message signing.
 - `src/decimal.ts` — exact fixed-scale comparisons for prices and sizes.
 - `src/errors.ts` — stable API and transport error surfaces.
@@ -360,6 +363,12 @@ Streaming correctness is more important than merely opening a socket:
 - Runtime dependencies are allowed when they make a core feature complete and
   reliable. For each addition, justify its purpose, maintenance/security posture,
   package cost, and Node.js compatibility.
+- The SDK currently has exactly one: `socket.io-client`, for the execution
+  stream. The argument is at the top of `src/execution-stream.ts`, the allowlist
+  is enforced by `tests/workspace.test.ts`, and it is loaded with `await import`
+  so a caller that never streams never loads it. `@waterx/predict-agent-schema`
+  has none and must keep it that way. Adding a second one means editing that test,
+  which means writing the argument down.
 - Do not add the full Sui SDK or Move bindings merely to satisfy types. Keep the
   structural signer interface unless transaction ownership genuinely moves into
   this package.

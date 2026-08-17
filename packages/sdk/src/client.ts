@@ -39,6 +39,11 @@ import { targetReached } from './decimal.ts';
 import { pageQuery } from './pagination.ts';
 import { PredictAgentApiError } from './errors.ts';
 import {
+  type ExecutionStream,
+  SocketExecutionStream,
+  type StreamConnector,
+} from './execution-stream.ts';
+import {
   type ExecutionOutcome,
   isTerminalExecutionStatus,
   toExecutionOutcome,
@@ -68,12 +73,26 @@ export interface PredictAgentClientOptions extends TransportOptions {
   /** Override how prices are observed. Defaults to polling `POST /quotes`. */
   priceWatcher?: PriceWatcher;
   /**
-   * Push source for execution updates. Supplied, waits react to frames instead of
-   * sleeping a fixed interval; omitted, they poll. Either way the terminal state
-   * is confirmed over REST, so a gapped or dead stream degrades to the poll path
-   * rather than hanging.
+   * Push source for execution updates. Waits then react to frames instead of
+   * sleeping out a fixed interval; omitted, they poll. Either way the terminal
+   * state is confirmed over REST, so a gapped or dead stream degrades to the poll
+   * path rather than hanging.
+   *
+   * `'native'` opens the official Socket.IO stream against this client's base URL
+   * and session — zero configuration, and this client owns the socket, so call
+   * {@link PredictAgentClient.close} when you are done with it. It connects on the
+   * first wait and disconnects when the last one ends, and its cursor lives only
+   * as long as the object: to make a RESTART replay the window it missed,
+   * construct a {@link SocketExecutionStream} yourself with `cursor`/`onCursor`
+   * and pass it here instead.
    */
-  executionStream?: ExecutionStream;
+  executionStream?: ExecutionStream | 'native';
+  /**
+   * Injectable socket transport for `executionStream: 'native'`. Exists so this
+   * package's tests never open a real connection; production callers leave it
+   * unset and get `socket.io-client`.
+   */
+  streamConnector?: StreamConnector;
 }
 
 export interface ExecuteMarketOrderIntent
@@ -125,30 +144,6 @@ export interface ExecuteMarketOrderResult extends ExecutionOutcome {
 export interface PriceWatcher {
   /** The current side-appropriate price, or null when there is none right now. */
   currentPrice(request: CreateQuoteRequestBody, signal?: AbortSignal): Promise<string | null>;
-}
-
-/**
- * A push source for execution state (spec §16.2), so a wait costs one connection
- * instead of one request per second per execution.
- *
- * A SEAM for the same reason PriceWatcher is one: this SDK has no runtime
- * dependencies, and the server's stream is Socket.IO. Supplying an adapter is the
- * caller's choice; without one, waits poll exactly as before.
- *
- * Two properties any adapter MUST preserve, because the wait logic relies on them:
- *  - frames may be LOST. The server's ready frame carries `gap: true` when the
- *    replay cursor was too old, and a dropped connection loses frames silently.
- *    So a stream can only ever ACCELERATE a wait, never be its sole source of
- *    truth — `waitForTerminal` still confirms over REST before returning.
- *  - `onExecutionUpdate` must not throw; a listener error must not strand a wait.
- */
-export interface ExecutionStream {
-  /**
-   * Invoke `listener` whenever this execution may have moved. The payload is a
-   * hint, not a value: an adapter that knows only "something changed" may call
-   * with no argument. Returns an unsubscribe function.
-   */
-  onExecutionUpdate(executionId: string, listener: () => void): () => void;
 }
 
 export interface WaitForPriceIntent {
@@ -203,11 +198,16 @@ export class PredictAgentClient {
   private readonly transport: Transport;
   private readonly signer: AgentSigner;
   private readonly watcher: PriceWatcher;
-  private readonly executionStream: ExecutionStream | undefined;
+  private readonly baseUrl: string;
+  private readonly streamOption: ExecutionStream | 'native' | undefined;
+  private readonly streamConnector: StreamConnector | undefined;
+  /** Only set for `executionStream: 'native'` — the socket this client must close. */
+  private ownedStream: SocketExecutionStream | undefined;
   private readonly session: AuthSession;
 
   constructor(options: PredictAgentClientOptions) {
     this.signer = options.signer;
+    this.baseUrl = options.baseUrl;
     // The session is constructed first because the transport asks it for a token
     // on every authenticated attempt; `mint` closes over the transport lazily and
     // runs only once a request needs a session.
@@ -217,7 +217,8 @@ export class PredictAgentClient {
       mint: async () => await this.mintSession(),
     });
     this.transport = new Transport(options, this.session);
-    this.executionStream = options.executionStream;
+    this.streamOption = options.executionStream;
+    this.streamConnector = options.streamConnector;
     // Defaults to polling the quote endpoint — the only price source an agent can
     // reach today. See PriceWatcher for why this is a seam.
     this.watcher = options.priceWatcher ?? {
@@ -458,7 +459,10 @@ export class PredictAgentClient {
           retryable: false,
         });
       }
-      await new Promise((resolve) => setTimeout(resolve, interval));
+      // Clamped to the deadline and cut short by an abort. A price wait defaults
+      // to an hour, so sleeping past either one strands a cancelled strategy for
+      // a full interval and reports the timeout late.
+      await sleep(Math.max(0, Math.min(interval, deadline - Date.now())), options.signal);
     }
   }
 
@@ -668,17 +672,54 @@ export class PredictAgentClient {
     const wake = this.subscribeToUpdates(executionId);
     try {
       for (;;) {
+        options.signal?.throwIfAborted();
         const current = await this.getExecution(executionId, options.signal);
         if (isTerminalExecutionStatus(current.status)) return toExecutionOutcome(current, false);
         if (Date.now() >= deadline) return toExecutionOutcome(current, true);
-        // Whichever comes first: a pushed hint, or the poll interval. The
-        // interval is retained as a FLOOR on liveness even when a stream is
-        // supplied — that is what makes a dead stream degrade instead of hang.
-        await wake.next(interval);
+        // Whichever comes FIRST: a pushed hint, an abort, the poll interval, or
+        // the deadline. The interval is retained as a floor on liveness even when
+        // a stream is supplied — that is what makes a dead stream degrade instead
+        // of hang. Clamping to the deadline is what stops a 30 s interval from
+        // overshooting a 5 s timeout by 25 s.
+        await wake.next(Math.max(0, Math.min(interval, deadline - Date.now())), options.signal);
       }
     } finally {
       wake.stop();
     }
+  }
+
+  /**
+   * Release the socket opened for `executionStream: 'native'`.
+   *
+   * Only needed for that option — a caller-supplied stream is the caller's to
+   * close, and a client with no stream holds nothing. Safe to call repeatedly; a
+   * later wait simply opens a new socket.
+   */
+  close(): void {
+    this.ownedStream?.close();
+    this.ownedStream = undefined;
+  }
+
+  /**
+   * The stream backing a wait, opening the native one on first use.
+   *
+   * Constructed lazily rather than in the constructor so that building a client
+   * costs nothing, and so the session exists to mint a handshake token by the
+   * time one is asked for.
+   */
+  private resolveStream(): ExecutionStream | undefined {
+    const option = this.streamOption;
+    if (option === undefined) return undefined;
+    if (option !== 'native') return option;
+    this.ownedStream ??= new SocketExecutionStream({
+      baseUrl: this.baseUrl,
+      // The socket authenticates with the SAME session as the REST calls, so a
+      // token rolled over mid-wait is the one the next reconnect presents.
+      token: async () => await this.session.require(),
+      refreshToken: async (rejected) => await this.session.refresh(rejected),
+      ...(this.streamConnector !== undefined ? { connect: this.streamConnector } : {}),
+    });
+    return this.ownedStream;
   }
 
   /**
@@ -689,37 +730,45 @@ export class PredictAgentClient {
    * through an update that already happened.
    */
   private subscribeToUpdates(executionId: string): {
-    next: (timeoutMs: number) => Promise<void>;
+    next: (timeoutMs: number, signal?: AbortSignal) => Promise<void>;
     stop: () => void;
   } {
-    const stream = this.executionStream;
+    const stream = this.resolveStream();
     if (stream === undefined) {
-      return {
-        next: async (timeoutMs) => {
-          await new Promise((resolve) => setTimeout(resolve, timeoutMs));
-        },
-        stop: () => undefined,
-      };
+      return { next: sleep, stop: () => undefined };
     }
 
     let pending = false;
     let notify: (() => void) | undefined;
-    const unsubscribe = stream.onExecutionUpdate(executionId, () => {
-      pending = true;
-      notify?.();
-    });
+    // A stream whose subscribe throws is a stream that does not exist. The wait
+    // still has its poll interval, so it degrades rather than failing a trade.
+    let unsubscribe: () => void;
+    try {
+      unsubscribe = stream.onExecutionUpdate(executionId, () => {
+        pending = true;
+        notify?.();
+      });
+    } catch {
+      return { next: sleep, stop: () => undefined };
+    }
 
     return {
-      next: async (timeoutMs) => {
+      next: async (timeoutMs, signal) => {
         if (pending) {
           pending = false;
           return;
         }
         await new Promise<void>((resolve) => {
           const timer = setTimeout(finish, timeoutMs);
+          // An abort must not wait out the interval: with a 30 s poll a cancelled
+          // strategy would otherwise stay resident half a minute after it was
+          // told to stop. Removed again below, so a signal reused across many
+          // waits does not accumulate listeners.
+          signal?.addEventListener('abort', finish, { once: true });
           notify = finish;
           function finish(): void {
             clearTimeout(timer);
+            signal?.removeEventListener('abort', finish);
             notify = undefined;
             resolve();
           }
@@ -738,6 +787,24 @@ export class PredictAgentClient {
       },
     };
   }
+}
+
+/**
+ * An abortable sleep that RESOLVES on abort rather than rejecting — the callers
+ * here re-check their own abort condition at the top of the loop, and rejecting
+ * from a timer would bypass the cleanup that runs around it.
+ */
+async function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted === true) return;
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(finish, ms);
+    signal?.addEventListener('abort', finish, { once: true });
+    function finish(): void {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', finish);
+      resolve();
+    }
+  });
 }
 
 /**

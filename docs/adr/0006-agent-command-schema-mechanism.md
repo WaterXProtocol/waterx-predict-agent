@@ -21,7 +21,10 @@ Three facts constrain the choice:
    been erased by then. On `order.execute` the cost of a missed check is a wrong
    trade, not a confusing error.
 3. The SDK ships with zero runtime dependencies, and the plan's dependency policy
-   treats a new one as a decision rather than a convenience.
+   treats a new one as a decision rather than a convenience. *(The SDK has since
+   taken exactly one, `socket.io-client`, argued for in `execution-stream.ts`;
+   `@waterx/predict-agent-schema` still has none, which is what this decision is
+   about.)*
 
 The default answer — define schemas in a validation library such as zod, then
 generate JSON Schema from them — satisfies (2) and (3) badly and (1) partially:

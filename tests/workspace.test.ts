@@ -112,10 +112,32 @@ describe('dependency direction', () => {
     expect(workspaceEdges('schema')).toEqual([]);
   });
 
-  it('keeps the published packages free of runtime dependencies', () => {
+  it('lets a published package take only a runtime dependency that was argued for', () => {
+    // Every dependency here is installed into every consumer of this library, so
+    // the list is an allowlist rather than a limit: adding one means editing this
+    // test, which means saying why. `socket.io-client` is the official client for
+    // the protocol the server's stream actually speaks, and re-implementing it
+    // over raw `ws` would be a second, worse copy of it — the argument is written
+    // out at the top of `packages/sdk/src/execution-stream.ts`.
+    const ALLOWED = new Map([['sdk', ['socket.io-client']]]);
     for (const dir of PUBLISHED) {
-      expect(manifest(dir).dependencies, dir).toBeUndefined();
+      expect(Object.keys(manifest(dir).dependencies ?? {}).sort(), dir).toEqual(
+        ALLOWED.get(dir) ?? [],
+      );
     }
+  });
+
+  it('keeps the one runtime dependency behind a lazy import', () => {
+    // A top-level `import 'socket.io-client'` would load the transport for every
+    // caller — including a CLI that only reads a market — and would turn a pruned
+    // or unavailable dependency into a crash at module load instead of a stream
+    // that degrades to polling.
+    for (const file of sourceFiles('packages/sdk/src')) {
+      expect(read(file), file).not.toMatch(/^import .*'socket\.io-client'/mu);
+    }
+    expect(read('packages/sdk/src/execution-stream.ts')).toContain(
+      "await import('socket.io-client')",
+    );
   });
 
   it('points the CLI at both published packages and nothing else', () => {

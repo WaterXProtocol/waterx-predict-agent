@@ -3,10 +3,13 @@
 TypeScript client for the **WaterX Predict Agent Trading API** — quotes, protected
 market orders, positions and allowance for autonomous strategies.
 
-**Zero runtime dependencies.** Global `fetch` for HTTP, `node:crypto` for
+**One runtime dependency.** Global `fetch` for HTTP, `node:crypto` for
 idempotency keys, and a structural signer interface a Sui `Keypair` already
 satisfies. Nothing here touches the chain: the backend builds every PTB, so you
-are not pulling Move bindings or a protocol SDK into your process.
+are not pulling Move bindings or a protocol SDK into your process. The one
+dependency is `socket.io-client`, which the server's stream protocol requires — it
+is loaded lazily, so nothing but [the execution stream](#execution-stream) pays
+for it.
 
 > Status: **0.1.0, pre-release.** The API it targets is gated off by default on
 > the server side. See [Not implemented yet](#not-implemented-yet) before planning
@@ -307,22 +310,58 @@ new PredictAgentClient({ baseUrl, signer, priceWatcher: myStreamWatcher });
 
 ## Execution stream
 
-`waitFor: 'TERMINAL'` polls `getExecution` by default. Supply an `executionStream`
-adapter and a wait reacts to pushed frames instead — one connection instead of a
-request per second per execution:
+`waitFor: 'TERMINAL'` polls `getExecution` by default. Ask for the stream and a
+wait reacts to pushed frames instead — one connection instead of a request per
+second per execution:
 
 ```ts
-new PredictAgentClient({ baseUrl, signer, executionStream: mySocketAdapter });
+const client = new PredictAgentClient({ baseUrl, signer, executionStream: 'native' });
+try {
+  await client.executeMarketOrder(intent, { waitFor: 'TERMINAL' });
+} finally {
+  client.close(); // the client owns this socket
+}
 ```
 
-The seam exists because this package has no runtime dependencies and the server's
-stream is Socket.IO; the adapter is yours to supply.
+`'native'` opens the official `socket.io-client` against this client's base URL and
+session — the one runtime dependency this package has, loaded with `await import`
+so a caller that never streams never loads it. The seam is still there:
+`executionStream` also accepts anything implementing `ExecutionStream`, and
+`SocketExecutionStream` is exported for direct construction.
 
-**A stream can only ever make a wait faster — it is never the answer.** Frames get
-lost (the server's ready frame says `gap: true` when its replay cursor was too old)
-and a socket can die without saying so, so the terminal state is always confirmed
-with a REST read, and the poll interval stays a floor on liveness. A dead stream
-therefore degrades to plain polling instead of hanging a strategy.
+**A stream can only ever make a wait cheaper — it is never the answer, and it is
+not necessarily faster.** The server publishes frames from a transactional outbox
+on a ~5 s dispatcher tick, so a frame can arrive *later* than a 1 s poll would
+have. Frames also get lost: the ready frame says `gap: true` when the replay cursor
+was too old, and a socket can die without saying so. So the terminal state is
+always confirmed with a REST read, the poll interval stays a floor on liveness, and
+a dead stream degrades to plain polling instead of hanging a strategy.
+
+### Surviving a restart
+
+`executionStream: 'native'` keeps its replay cursor in memory, so a restart resumes
+from *now* and the window it was down is covered by the REST poll. To replay that
+window instead, construct the stream yourself and persist the cursor:
+
+```ts
+const stream = new SocketExecutionStream({
+  baseUrl,
+  token: () => session.token(),
+  cursor: await store.readCursor(), // resume point from the last run
+  onCursor: (cursor) => store.writeCursor(cursor),
+  idleDisconnectMs: 30_000, // hold the socket between back-to-back waits
+  onDegraded: (reason) => log.warn({ reason }, 'streaming stopped; polling'),
+});
+new PredictAgentClient({ baseUrl, signer, executionStream: stream });
+```
+
+The cursor only ever moves forward, so a replay that redelivers older frames cannot
+rewind it. When the missed window is longer than the server's replay bound the
+server serves nothing and flags `gap: true`; every waiter is woken to re-read over
+REST, and so is every waiter on a plain reconnect, which loses frames just as
+quietly without announcing it. After a bounded number of refused handshakes the
+stream stops trying and calls `onDegraded` — a login loop against a server that has
+already said no is worse than polling.
 
 ## Not implemented yet
 

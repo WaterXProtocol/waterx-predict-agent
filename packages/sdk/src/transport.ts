@@ -1,7 +1,8 @@
 /**
  * The HTTP layer: one place that knows about base URLs, the bearer token, the
- * flat error envelope, and the retry policy. Uses global `fetch`, so this package
- * has no runtime dependencies at all.
+ * flat error envelope, and the retry policy. Uses global `fetch`, so nothing on
+ * the REST path pulls in a dependency — the package's only one is the stream
+ * transport, which is loaded lazily and never reached from here.
  *
  * THE RETRY RULE, because it is the part that can lose money if it is wrong:
  * a request is only ever retried when the caller passed `idempotent: true`. That

@@ -6,11 +6,12 @@ implemented**. The plan describes the intended system; an ADR constrains how it
 gets built; neither is evidence that anything works.
 
 - Verified: 2026-08-17
-- SDK: `codex/waterx-predict-agent-runtime` @ `4071a10` plus this commit
-- Backend: `codex/waterx-predict-agent-runtime` @ `2e247fc4` (**changed** — see
-  "Contract sync"; the wire surface moved first, then was vendored here)
-- SDK verification: `pnpm typecheck` clean, `pnpm test` 380/380 in 24 files
-  (78 SDK, 71 schema, 149 CLI, 59 E2E harness, 23 workspace), `pnpm build`
+- SDK: `codex/waterx-predict-agent-runtime` @ `e990823` plus this commit
+- Backend: `codex/waterx-predict-agent-runtime` @ `2e247fc4` (**unchanged** by
+  this commit — the stream gateway, dispatcher and outbox already implement the
+  wire surface the SDK now speaks, and `src/contract.ts` still matches it)
+- SDK verification: `pnpm typecheck` clean, `pnpm test` 423/423 in 25 files
+  (120 SDK, 71 schema, 149 CLI, 59 E2E harness, 24 workspace), `pnpm build`
   clean, `pnpm schema:generate` reproduces the committed artifact byte-for-byte.
 - **No end-to-end run against a live server has happened.** Nothing on this
   machine is provisioned — no `WATERX_PREDICT_*` variable, no config file — so
@@ -97,7 +98,7 @@ signing gate are **local** constructs that never appear on the wire.
 | Allowance / positions / executions / fills reads | DONE | `packages/sdk/src/client.ts:474`–`:531`. The three history reads take `{ limit?, cursor? }` and return `nextCursor` (B6). |
 | Keyset paging over account history | DONE | `packages/sdk/src/pagination.ts`, backend `2e247fc4`. Opaque row-anchored cursor over `(created_at, id)` for executions, `(filled_at, id)` for fills, `(created_at, id)` for positions, so a page boundary holds while new rows land at the head. `hasMorePages` is three-valued — `true` / `false` / `null` for "the server did not say" — and `isExhausted` is true only on an explicit `null` cursor, which the server proves by reading one row past the page. A malformed, edited, foreign-list or unowned cursor is refused as `INVALID_INPUT`, never ignored (B6). |
 | `waitForPriceAndExecute` in-process trigger | PARTIAL | `packages/sdk/src/client.ts:396`. Correct trigger, fresh re-quote, re-verify, one submission — but in-process only. Dies with the process; not durable. |
-| Execution stream | SEAM | `packages/sdk/src/client.ts:141`. Interface only; caller supplies a Socket.IO adapter. Default path polls. |
+| Execution stream | DONE | `packages/sdk/src/execution-stream.ts`, `packages/sdk/tests/socket-execution-stream.test.ts` (35) + `execution-stream.test.ts` (13). `executionStream: 'native'` opens the official `socket.io-client` on the server's private namespace with the client's own session; the `ExecutionStream` seam remains for tests and custom transports. The default path still polls, and terminal state is **always** REST-confirmed — see 2.2/2.4. |
 | Quote stream | SEAM | `packages/sdk/src/client.ts:121`. Interface only; default polls `POST /quotes`. |
 | Server-side market resolution | DONE | `packages/sdk/src/client.ts` (`searchMarkets`), backend `7ecad3f3`. `?search=` matches published aliases server-side and returns `resolution` (`RESOLVED` / `AMBIGUOUS` / `NOT_FOUND`); `marketId` is non-null only on exactly one match, and `matchCount` is counted before `limit` truncates the page. A server that answers without a `resolution` reads as `NOT_FOUND` — the client withholds an id rather than inferring one (B2). |
 | Agent-readable effective risk limits | DONE | `packages/sdk/src/client.ts` (`getEffectiveLimits`), backend `7ecad3f3`. `GET accounts/:accountId/effective-limits` returns the limits, the rolling-window usage, the allowance, the on-chain delegation and the blockers. **Read-only**: writes stay owner-authenticated (ADR-0003), so an agent credential can see its mandate and cannot raise it. `limits: null` is denial, not an unlimited default; a `null` delegation permission means the chain read failed, not that it was denied (B1). |
@@ -187,9 +188,9 @@ gaps are owner-authenticated actions no automation here may take.
 | # | Item | Status | Depends on |
 | --- | --- | --- | --- |
 | 2.1 | Backend quote WS | BLOCKED | 0.7 |
-| 2.2 | Native execution stream client (replaces the SEAM) | TODO | Backend gateway exists (`predict-agent-stream.gateway.ts`, Socket.IO namespace, cursor + `gap` flag). Needs a Socket.IO runtime dependency — justify per `AGENTS.md`. |
+| 2.2 | Native execution stream client (replaces the SEAM) | DONE | `packages/sdk/src/execution-stream.ts`. `socket.io-client@^4.8.3` added as the SDK's only runtime dependency, justified in that file's header and allowlisted in `tests/workspace.test.ts`; loaded with `await import`, so a caller that never streams never loads it, and a pruned dependency degrades to polling instead of crashing at module load. WebSocket-only transport, because the server fans out per pod with no Socket.IO Redis adapter. Note what this buys: the outbox dispatcher publishes on a ~5 s tick, so it saves **requests**, not milliseconds. |
 | 2.3 | Native quote stream client | BLOCKED | 2.1 |
-| 2.4 | Gap detection, cursor persistence, REST reconciliation | PARTIAL | Contract carries `cursor` and `gap` (`packages/sdk/src/contract.ts:450`–`:475`) and terminal state is always REST-confirmed. Cursor persistence across restart needs the durable store. |
+| 2.4 | Gap detection, cursor persistence, REST reconciliation | PARTIAL | Implemented in the stream client: the cursor advances monotonically (BigInt, never rewound by a replay), rides every handshake including reconnects, and `gap: true` — plus a plain reconnect, which loses frames just as quietly — wakes every waiter to re-read over REST. `onCursor`/`cursor` expose the resume point for a caller that persists it. The gap: nothing in this repo persists it yet, so a restart resumes from *now* rather than replaying. That needs the durable store (2.5). |
 | 2.5 | SQLite/WAL durable job store behind a store interface | TODO | ADR-0001 §8 |
 | 2.6 | Runner daemon + local IPC | TODO | 2.5, 1.8. Unix domain socket; no Windows fallback in beta (ADR-0002). |
 | 2.7 | Policy engine: `interactive` / `delegated-auto` / `read-only` | PARTIAL | ADR-0001 §9. Implemented and enforced for **one-shot CLI writes**: `packages/cli/src/policy.ts`, `packages/cli/tests/write-plane.test.ts` (34) + `signer.test.ts`. `--policy` may only narrow, never widen; `read-only` is enforced inside the signer; `delegated-auto` requires a file-only scope with mandatory per-order and per-run ceilings, an allow-listed account, side and market, and an unexpired `notAfter`, and every local check runs **before** any network read so an out-of-scope order costs nothing. The gap: no daemon-side policy and no policy evaluated across a durable job's lifetime (2.5, 2.6) — a scope is checked at invocation, and there is nothing yet that could check it an hour later. |
