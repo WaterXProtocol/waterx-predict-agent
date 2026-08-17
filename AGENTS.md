@@ -109,6 +109,7 @@ orchestrates.
 | `packages/cli` | `@waterx/predict-agent-cli` | Implemented, reads **and writes** behind an enforced execution policy; `private`, so nothing is published |
 | `packages/runner` | `@waterx/predict-agent-runner` | Reserved boundary, **not implemented** |
 | `packages/mcp` | `@waterx/predict-agent-mcp` | Reserved boundary, **not implemented** |
+| `packages/e2e` | `@waterx/predict-agent-e2e` | Harness that drives the installed CLI as a subprocess; `private`, never shipped. The end-to-end has **not run** — nothing here is evidence that it passes |
 
 Dependency direction is one-way and enforced by `tests/workspace.test.ts`: the
 SDK depends on nothing else here, the schema depends on nothing else here, and
@@ -165,6 +166,28 @@ Inside `packages/cli`:
   unchanged, with caveats attached alongside rather than merged in.
 - `tests/harness.ts` — every test invokes the CLI end to end through it; none
   opens a socket, spawns a process or reads a real file.
+
+Inside `packages/e2e` — the only place in this repository that spawns processes
+and opens sockets, and the only place allowed to:
+
+- `src/steps.ts` — the plan, declared: what each step would PROVE, which
+  provisioning gaps it needs, which steps it reads from, whether it writes.
+- `src/gaps.ts` — the seven provisioning gaps and who supplies each. Two are
+  owner-authenticated (`delegation`, `ownerRiskProfile`) and this repository
+  **must not attempt** them: an agent runtime that could grant its own mandate
+  would make the mandate meaningless (ADR-0003 §1).
+- `src/report.ts` — the honesty rules, as types. A `NOT_RUN` step carries no
+  evidence field, so "passed without running" cannot be written down; any step
+  whose evidence came from a `STUB` makes the whole report `INVALID`.
+- `src/run.ts` — the gates. A write needs an explicit `--allow-write` **and** an
+  environment label on the non-production allowlist. Unlabelled counts as
+  production and is never traded on.
+- `src/lint.ts` — every published invocation, including the examples and the
+  READMEs, checked against the command contract without running it. This exists
+  because a printed recovery instruction once used a flag spelling that exits
+  `USAGE`.
+- `examples/` — executable, and executed by the suite with nothing provisioned to
+  prove they refuse with a named supplier rather than a stack trace.
 
 Elsewhere:
 

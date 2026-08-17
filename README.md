@@ -24,6 +24,7 @@ scope an operator wrote down. See
 | [`packages/cli`](packages/cli) | The `waterx-predict` CLI: the universal agent surface. Discovery, doctor, market and account reads, and the market-order write plane, in one JSON envelope with stable exit codes. | Implemented and unpublished |
 | [`packages/runner`](packages/runner) | The self-hosted local Runner: durable jobs, conditional orders, scheduling. | Reserved, **not implemented** |
 | [`packages/mcp`](packages/mcp) | Optional MCP adapter. | Reserved, **not implemented** |
+| [`packages/e2e`](packages/e2e) | Test harness. Drives the installed CLI end to end against a real non-production server, and reports what could not run. Never shipped. | Implemented; **the end-to-end itself has not run** — no environment is provisioned |
 
 `schemas/v1/agent-commands.json` is generated from `packages/schema` and
 committed, so a surface that cannot import a Node module reads the same contract.
@@ -57,6 +58,10 @@ pnpm schema:generate   # rewrite schemas/v1/agent-commands.json from source
 
 # What the CLI is, with no configuration and no network.
 node packages/cli/dist/src/main.js describe
+
+# What is still missing before an end-to-end can run, and who supplies each.
+# Reads only; exits non-zero until every step has actually run.
+node packages/e2e/dist/src/main.js
 ```
 
 Node.js 20+ and ESM. macOS and Linux; Windows is not verified (ADR-0002).
@@ -68,6 +73,9 @@ Node.js 20+ and ESM. macOS and Linux; Windows is not verified (ADR-0002).
 - [`packages/cli/README.md`](packages/cli/README.md) — the envelope, the exit
   codes, the execution policy, the write plane, the signer protocol, and what
   the CLI refuses to do.
+- [`packages/e2e/README.md`](packages/e2e/README.md) — what a real end-to-end run
+  would prove, and the named list of what an operator and an account owner must
+  each supply before one can happen.
 - [`docs/IMPLEMENTATION_BACKLOG.md`](docs/IMPLEMENTATION_BACKLOG.md) — the only
   implementation-status tracker.
 - [`docs/adr/`](docs/adr) — binding architecture decisions.
