@@ -280,25 +280,43 @@ describe('the Runner package', () => {
   });
 
   it('says in its README which half of the Runner exists', () => {
-    // The daemon, its socket and `driveJob` are all built; the loop that would
-    // call `driveJob` is not, and neither is a price source to call it with. A
-    // README that described this package as "the Runner" would be claiming a job
-    // progresses on its own, which is the one thing it still cannot do — so the
-    // absence has to survive in prose as well as in `driving: false`.
+    // The daemon, its socket, `driveJob` and the loop that calls it are all
+    // built. What is not built is a price source or a signer to call it with, so
+    // a shipped `runnerd` still advances nothing. A README that described this
+    // package as "the Runner" would be claiming a job progresses on its own, so
+    // the absence has to survive in prose as well as in `driving: false`.
     const readme = read('packages/runner/README.md');
     expect(readme).toContain('**not implemented**');
     expect(readme.toLowerCase()).toContain('daemon');
     expect(readme).toContain('driving: false');
     expect(readme).toContain(
-      'Scheduler that calls `driveJob` on a schedule, inside the daemon | **not implemented**',
+      'Price watcher supplying a `PriceObserver` from a live stream | **not implemented**',
+    );
+    expect(readme).toContain(
+      'Signer inside the Runner trust boundary | **not implemented**',
     );
   });
 
   it('keeps the honest `driving` flag out of reach of a typo', () => {
-    // The one field a client reads to tell reachable from running. If the
-    // daemon ever computed it from something, this assertion is the reminder
-    // that "there is an executor" is a decision, not an inference.
-    expect(read('packages/runner/src/daemon.ts')).toContain('driving: false');
+    // The one field a client reads to tell reachable from running. It is now
+    // computed — but from exactly one thing, whether a scheduler is ticking, and
+    // never written as a literal beside a `driving:` key. Constructing a
+    // scheduler is still a decision the caller makes by supplying a driver; this
+    // assertion is the reminder that it must not become an inference from
+    // anything else.
+    const daemon = read('packages/runner/src/daemon.ts');
+    expect(daemon).toContain('return this.scheduler?.started ?? false;');
+    expect(daemon).not.toMatch(/driving:\s*(true|false)/);
+  });
+
+  it('ships a `runnerd` that builds no driver, and therefore promises nothing', () => {
+    // The binary an operator actually starts. It has no way to construct a
+    // signer or a price source, so it must not pass a `driver` — and it must
+    // print what the daemon reports rather than a literal that would keep saying
+    // `false` after this file learned how.
+    const bin = read('packages/runner/src/bin/runnerd.ts');
+    expect(bin).not.toMatch(/^\s*driver:/m);
+    expect(bin).toContain('driving: handle.driving');
   });
 });
 

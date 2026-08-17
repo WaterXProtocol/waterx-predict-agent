@@ -3,13 +3,16 @@
  * with the jobs the last process left behind, and what it tells a client about
  * how much of a Runner it actually is.
  *
- * The load-bearing assertion in this file is the boring one — `driving: false`.
- * A reachable Runner looks exactly like a working one until you ask, and this
- * daemon runs no scheduler, holds no signer and watches no prices, so a recovered
- * job sits where recovery put it — `driveJob` existing elsewhere in the package
- * changes nothing a client of *this* process can observe. Everything else here is the trust boundary: a runtime
- * directory that must be private, a token minted per start, and a cancellation
- * that reports what was applied rather than what was asked for.
+ * The load-bearing assertions in this file are the boring ones — `driving: false`
+ * and `driving: true`. A reachable Runner looks exactly like a working one until
+ * you ask. Started with no `driver` this daemon runs no scheduler, holds no signer
+ * and watches no prices, so a recovered job sits where recovery put it, and both
+ * the handshake and `runner.status` say so; started with all three, the same job
+ * goes all the way to a fill. Whether it drives is a decision the caller made, and
+ * these tests assert the daemon reports the one that was actually made rather than
+ * the one the package is capable of. Everything else here is the trust boundary: a
+ * runtime directory that must be private, a token minted per start, and a
+ * cancellation that reports what was applied rather than what was asked for.
  */
 import { chmodSync, existsSync, mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -25,8 +28,17 @@ import {
 } from '../src/daemon.ts';
 import { RunnerIpcClient } from '../src/ipc/client.ts';
 import { readIpcToken } from '../src/ipc/runtime-dir.ts';
+import type { SchedulerDriver } from '../src/scheduler.ts';
 import { SqliteJobStore } from '../src/sqlite/store.ts';
 import { jobInput, later, LEG, T0, tempRuntimeDir, type TempRuntimeDir } from './harness.ts';
+import {
+  created,
+  gatewayOf,
+  pricesAt,
+  quote,
+  signer,
+  TRIGGER as FAKE_TRIGGER,
+} from './strategy-fakes.ts';
 
 const KEY = '4c1c9d2e-0000-4000-8000-000000000001';
 /** Late enough that the crashed instance's lease has long since expired. */
@@ -204,6 +216,78 @@ describe('starting', () => {
         RunnerIpcClient.connect({ socketPath: second.socketPath, token: first.token }),
       ),
     ).toBe('UNAUTHENTICATED');
+  });
+});
+
+describe('a daemon that was given a driver', () => {
+  /**
+   * The other half of `driving: false`. The flag is a decision — supply the three
+   * collaborators and it flips, and so does everything a client reads off it.
+   * Without them the daemon says so, and `tick` refuses rather than pretending a
+   * pass happened.
+   */
+  const driver = (): SchedulerDriver => ({
+    gateway: gatewayOf({
+      // The shared fakes are minted around their own clock; this daemon's is ten
+      // minutes later, and a stale quote is refused rather than executed.
+      quotes: [quote({ asOf: NOW, expiresAt: later(NOW, 30_000) })],
+      creates: [{ ...created('exe_1'), signatureExpiresAt: later(NOW, 120_000) }],
+      submits: [{ executionId: 'exe_1', status: 'SUBMITTED' }],
+      executions: { exe_1: { executionId: 'exe_1', status: 'FILLED' } },
+    }),
+    signer,
+    prices: pricesAt('0.900000'),
+  });
+
+  it('reports that it is driving, and actually drives a recovered job', async () => {
+    await store.createJob(jobInput({ at: T0, trigger: FAKE_TRIGGER, expiresAt: later(NOW, 86_400_000) }));
+    // A long interval: every pass below is asked for explicitly, so the assertion
+    // is about the daemon's decision to drive rather than about timing.
+    const handle = await startDaemon({ driver: driver(), tickIntervalMs: 3_600_000 });
+
+    expect(handle.driving).toBe(true);
+    const client = await connect(handle);
+    expect(client.driving).toBe(true);
+    const status = (await client.request('runner.status')) as Record<string, unknown>;
+    expect(status['driving']).toBe(true);
+    expect(status['driverGaps']).toEqual([]);
+
+    // Recovery already claimed the job, so a single pass arms it and the next one
+    // takes it all the way through the server.
+    await daemons[0]?.tick();
+    await daemons[0]?.tick();
+    expect((await store.getJob('job_1'))?.state).toBe('FILLED');
+  });
+
+  it('still refuses an agent command on the socket, and says why differently', async () => {
+    const handle = await startDaemon({ driver: driver(), tickIntervalMs: 3_600_000 });
+    const client = await connect(handle);
+
+    const error = await client.request('order.execute', {}).then(
+      () => undefined,
+      (caught: unknown) => caught as { code?: string; message?: string },
+    );
+    expect(error?.code).toBe('NOT_IMPLEMENTED');
+    // Not "missing a signer" — it has one. The refusal is about surface, not gaps.
+    expect(error?.message).toContain('drives durable jobs, not one-shot intents');
+  });
+
+  it('refuses a tick when nothing was given to drive with', async () => {
+    await startDaemon();
+    await expect(daemons[0]?.tick()).rejects.toThrow(/without a driver/);
+  });
+
+  it('stops the loop before it hands the leases back', async () => {
+    await store.createJob(jobInput({ at: T0, trigger: FAKE_TRIGGER, expiresAt: later(NOW, 86_400_000) }));
+    const handle = await startDaemon({ driver: driver(), tickIntervalMs: 3_600_000 });
+    expect(handle.driving).toBe(true);
+
+    await daemons[0]?.stop();
+
+    expect(daemons[0]?.driving).toBe(false);
+    // Stopped cleanly: the job is where the last completed pass left it, not
+    // half-written by a pass that was abandoned.
+    expect((await store.getJob('job_1'))?.state).toBe('DRAFT');
   });
 });
 

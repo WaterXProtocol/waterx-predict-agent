@@ -6,6 +6,13 @@
  * testable in-process. This file only decides where the store and the runtime
  * directory live, and hands the signals over.
  *
+ * It also starts the daemon with **no `driver`**, which is why it prints
+ * `driving: false`. A driver is a gateway, a price source and a signer supplied
+ * together; the last two are local configuration and key material this file has
+ * no way to build, and constructing a half-driver here would be a Runner that
+ * claims to be watching a market it cannot see. Backlog 2.6 carries the config
+ * surface that would let it.
+ *
  * It runs in the foreground and it does not daemonize. That is not an omission —
  * the Runner is self-hosted, and a process that detached itself would be a
  * strategy still "running" after the terminal that owned it went away, which is
@@ -43,7 +50,9 @@ process.stderr.write(
     socketPath: handle.socketPath,
     tokenPath: handle.tokenPath,
     // The one thing a reader must not misunderstand about a Runner that just
-    // said it is listening.
-    driving: false,
+    // said it is listening. Read from the handle rather than written as `false`,
+    // so this line cannot go on claiming the old answer after this file learns
+    // how to build a driver.
+    driving: handle.driving,
   })}\n`,
 );

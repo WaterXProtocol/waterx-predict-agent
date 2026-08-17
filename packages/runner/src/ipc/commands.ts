@@ -6,13 +6,14 @@
  *
  * - **Agent command contract names** (`order.execute`, `market.quote`, …) are
  *   recognized by `@waterx/predict-agent-schema` — the same registry the CLI and
- *   every adapter validate against (ADR-0001 §5, ADR-0006). This build cannot
- *   perform any of them through the daemon, because the executor that would drive
- *   a job through the SDK does not exist yet, so each is refused with
- *   `NOT_IMPLEMENTED` naming the missing piece. That refusal is the point: a
- *   client asking a connected Runner to place an order must be told no, loudly,
- *   rather than told the command is unknown — which reads as a typo — or, worse,
- *   given a plausible-looking reply.
+ *   every adapter validate against (ADR-0001 §5, ADR-0006). None of them is served
+ *   here, and the reason depends on the Runner. Without a driver it can execute
+ *   nothing at all, so the refusal names what is missing; with one it executes
+ *   *durable jobs*, and a one-shot agent command is not one, so the refusal says
+ *   that instead. That refusal is the point either way: a client asking a
+ *   connected Runner to place an order must be told no, loudly, rather than told
+ *   the command is unknown — which reads as a typo — or, worse, given a
+ *   plausible-looking reply.
  * - **Runner control commands** (`runner.*`) are declared here, because they are
  *   about *this process* rather than about trading, and the trading contract must
  *   not grow entries for a local daemon's lifecycle. They are still validated by
@@ -91,14 +92,23 @@ export const listRunnerIpcCommands = (): readonly string[] =>
 export const validateRunnerCommand = (
   name: string,
   input: unknown,
+  context?: { readonly driverGaps?: readonly string[] },
 ): Readonly<Record<string, unknown>> => {
   const schema = RUNNER_IPC_COMMANDS[name];
   if (schema === undefined) {
     if (getCommand(name) !== undefined) {
+      // Refused whether or not this Runner drives, and for different reasons.
+      // Without a driver it cannot execute anything at all; with one it executes
+      // *durable jobs*, and a one-shot agent command is not one — answering it
+      // here would be a second execution surface with its own quoting, retry and
+      // policy, which ADR-0001 §5 exists to prevent.
+      const gaps = context?.driverGaps ?? ['scheduler', 'signer', 'price-watcher'];
       throw new RunnerIpcError(
         'NOT_IMPLEMENTED',
-        `"${name}" is a real agent command and this Runner cannot perform it: the daemon runs no scheduler, holds no signer and watches no prices yet (docs/IMPLEMENTATION_BACKLOG.md 2.6). Run it through the CLI, which executes in-process and dies with the process.`,
-        { command: name, missing: ['scheduler', 'signer', 'price-watcher'] },
+        gaps.length > 0
+          ? `"${name}" is a real agent command and this Runner cannot perform it: it is missing ${gaps.join(', ')} (docs/IMPLEMENTATION_BACKLOG.md 2.6). Run it through the CLI, which executes in-process and dies with the process.`
+          : `"${name}" is a real agent command and this socket does not serve one: this Runner drives durable jobs, not one-shot intents (docs/IMPLEMENTATION_BACKLOG.md 2.6). Run it through the CLI, or create a strategy so the Runner owns it.`,
+        { command: name, missing: [...gaps] },
       );
     }
     throw new RunnerIpcError(

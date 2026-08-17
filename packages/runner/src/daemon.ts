@@ -23,12 +23,20 @@
  * leases are handed back and the instance is marked stopped, so the next Runner
  * does not have to wait out a TTL for jobs nobody is running.
  *
- * **This daemon does not drive jobs.** `driveJob` exists and would advance one,
- * but nothing here schedules it, no signer lives in this process yet and no price
- * source feeds a trigger — so a recovered job sits in the state recovery assigned
- * it. That is reported as `driving: false` on the IPC handshake and in
- * `runner.status`, because a reachable Runner that isn't executing looks exactly
- * like one that is until you ask.
+ * **Whether this daemon drives jobs is a decision, not an inference.** Give it a
+ * `driver` — a gateway, a signer and a price observer, supplied together — and it
+ * starts a {@link JobScheduler} that claims runnable jobs and calls `driveJob` on
+ * them every tick; omit it and the process recovers, supervises and answers,
+ * while every job sits in the state recovery assigned it. The two are reported
+ * apart, on the IPC handshake and in `runner.status`: `driving` is true only when
+ * a scheduler is actually ticking, and `driverGaps` names what is missing when it
+ * is not. A reachable Runner that isn't executing looks exactly like one that is
+ * until you ask (ADR-0001 §6), so the answer has to be a field rather than an
+ * impression.
+ *
+ * Nothing in *this package* constructs a driver. `runnerd` starts a daemon with
+ * no `driver`, because a signer and a price source are configuration this build
+ * has no file format for yet; an embedding application supplies them.
  */
 import { hostname } from 'node:os';
 import { join } from 'node:path';
@@ -43,16 +51,23 @@ import {
   writeIpcToken,
 } from './ipc/runtime-dir.ts';
 import { recoverJobs, type RecoveryReport } from './recovery.ts';
+import {
+  JobScheduler,
+  type SchedulerDriver,
+  type SchedulerEvent,
+  type SchedulerTickReport,
+} from './scheduler.ts';
 import type { JobStore } from './store.ts';
 import { LeaseKeeper, type LeaseLossReason } from './supervisor.ts';
 
 /**
- * The pieces this process would need to make a job progress, and does not have.
+ * The pieces a daemon started with no `driver` is missing.
  *
- * `driveJob` and `reconcileJob` are no longer on this list — they exist, and a
- * caller holding a lease can advance a job with them. What is absent is anything
- * inside *this* process that calls them, and the two collaborators such a caller
- * would have to supply.
+ * `scheduler` is no longer on this list unconditionally: {@link JobScheduler}
+ * exists and the daemon starts one whenever it is given the collaborators a pass
+ * needs. What a bare daemon lacks is those collaborators — a signer inside the
+ * trust boundary, and a source of observed prices — and, consequently, the loop,
+ * because starting one that could not act would be worse than not starting it.
  */
 export const RUNNER_DRIVER_GAPS: readonly string[] = ['scheduler', 'signer', 'price-watcher'];
 
@@ -69,6 +84,16 @@ export interface RunnerDaemonOptions {
   /** How long a silent instance may be presumed alive during recovery. */
   readonly staleAfterMs?: number;
   readonly authTimeoutMs?: number;
+  /**
+   * Supply this and the daemon drives. Its presence is the whole difference
+   * between a Runner that answers and a Runner that runs, so it is one option
+   * carrying all three collaborators rather than three that can be half-given.
+   */
+  readonly driver?: SchedulerDriver;
+  /** Only meaningful with a `driver`. How often each held job gets a pass. */
+  readonly tickIntervalMs?: number;
+  /** Only meaningful with a `driver`. The most jobs this instance holds at once. */
+  readonly maxJobs?: number;
   /** Diagnostics. Never given a token, a signature or transaction bytes. */
   readonly onEvent?: (event: RunnerDaemonEvent) => void;
 }
@@ -77,6 +102,8 @@ export type RunnerDaemonEvent =
   | { readonly kind: 'started'; readonly instanceId: string; readonly socketPath: string }
   | { readonly kind: 'recovered'; readonly report: RecoveryReport }
   | { readonly kind: 'lease-lost'; readonly jobId: string; readonly reason: LeaseLossReason }
+  /** One scheduler event, forwarded verbatim. Absent when nothing drives. */
+  | { readonly kind: 'scheduler'; readonly event: SchedulerEvent }
   | { readonly kind: 'shutdown-requested'; readonly reason: string }
   | { readonly kind: 'stopped'; readonly instanceId: string }
   | { readonly kind: 'error'; readonly context: string; readonly message: string };
@@ -86,6 +113,10 @@ const DEFAULTS = {
   renewIntervalMs: 5_000,
   safetyMarginMs: 10_000,
   staleAfterMs: 60_000,
+  // A pass costs one market read per involved market plus, at the trigger, a
+  // quote per leg. One second would be a read bill nobody asked for; two is the
+  // server's own quote-cache poll interval, so a faster tick buys nothing.
+  tickIntervalMs: 2_000,
 } as const;
 
 export interface RunnerDaemonHandle {
@@ -99,12 +130,15 @@ export interface RunnerDaemonHandle {
    */
   readonly token: string;
   readonly recovery: RecoveryReport;
+  /** Whether a scheduler is ticking. The one field that means "running". */
+  readonly driving: boolean;
 }
 
 export class RunnerDaemon {
   private readonly instanceIdValue: string;
   private readonly now: Clock;
   private readonly leases: LeaseKeeper;
+  private readonly scheduler: JobScheduler | undefined;
   private server: RunnerIpcServer | undefined;
   private recovery: RecoveryReport | undefined;
   private startedAt: string | undefined;
@@ -132,10 +166,57 @@ export class RunnerDaemon {
         });
       },
     });
+
+    this.scheduler =
+      options.driver === undefined
+        ? undefined
+        : new JobScheduler({
+            store: options.store,
+            leases: this.leases,
+            instanceId: this.instanceIdValue,
+            now: this.now,
+            driver: options.driver,
+            leaseTtlMs: options.leaseTtlMs ?? DEFAULTS.leaseTtlMs,
+            tickIntervalMs: options.tickIntervalMs ?? DEFAULTS.tickIntervalMs,
+            ...(options.maxJobs === undefined ? {} : { maxJobs: options.maxJobs }),
+            onEvent: (event) => {
+              this.emit({ kind: 'scheduler', event });
+            },
+          });
   }
 
   get instanceId(): string {
     return this.instanceIdValue;
+  }
+
+  /**
+   * Whether this process is advancing jobs *right now*.
+   *
+   * Read from the scheduler rather than from the constructor argument: between
+   * `stop` and the next `start` a daemon that was configured to drive is not
+   * driving, and a client that read a configured flag would be told a strategy
+   * is running while the loop is stopped.
+   */
+  get driving(): boolean {
+    return this.scheduler?.started ?? false;
+  }
+
+  /**
+   * Advance every held job by one pass, now, without waiting for a tick.
+   *
+   * For a caller that wants a deterministic Runner — a test, or a one-shot
+   * "catch up" — and it is the same guarded tick the timer calls, so invoking it
+   * beside a running loop joins the pass in flight rather than starting a second.
+   * Absent a `driver` there is nothing to run, and this says so rather than
+   * silently succeeding.
+   */
+  async tick(): Promise<SchedulerTickReport> {
+    if (this.scheduler === undefined) {
+      throw new Error(
+        'this Runner was started without a driver: it holds leases and answers, but nothing advances a job',
+      );
+    }
+    return await this.scheduler.tick();
   }
 
   get socketPath(): string {
@@ -175,6 +256,10 @@ export class RunnerDaemon {
     this.emit({ kind: 'recovered', report });
 
     this.leases.start();
+    // After the keeper, before the socket. A pass must never run for a lease
+    // nothing is renewing, and a client must never reach a Runner that has begun
+    // driving before it could be told what state its jobs are in.
+    this.scheduler?.start();
 
     const token = mintIpcToken();
     // Rewritten every start: a token a crashed Runner left behind must stop
@@ -185,7 +270,7 @@ export class RunnerDaemon {
       socketPath: this.socketPath,
       token,
       instanceId: this.instanceIdValue,
-      driving: false,
+      driving: this.driving,
       handle: async (command, input) => dispatch(command, input, this.context()),
       toErrorBody,
       ...(this.options.authTimeoutMs === undefined
@@ -203,8 +288,11 @@ export class RunnerDaemon {
       await server.start();
     } catch (error) {
       // The socket is the last thing to come up, so a failure here leaves a
-      // registered instance holding leases nobody can reach. Undo it rather than
-      // leaving a half-started Runner that looks alive to the next one.
+      // registered instance holding leases nobody can reach — and, worse, a
+      // scheduler placing orders for a Runner nobody can inspect or cancel
+      // through. Undo both rather than leaving a half-started Runner that looks
+      // alive to the next one.
+      await this.scheduler?.stop();
       await this.leases.stop();
       await this.options.store.stopInstance(this.instanceIdValue, this.now());
       throw error;
@@ -219,6 +307,7 @@ export class RunnerDaemon {
       tokenPath: this.tokenPath,
       token,
       recovery: report,
+      driving: this.driving,
     };
   }
 
@@ -239,6 +328,10 @@ export class RunnerDaemon {
     }
     await this.server?.stop();
     this.server = undefined;
+    // The loop before the leases, and awaited: a pass in flight owns a lease it
+    // is writing under, and handing that lease back underneath it would be this
+    // process fencing itself out mid-order.
+    await this.scheduler?.stop();
     // Leases first, then the instance: `stopInstance` also clears this
     // instance's leases, but going through the keeper is what aborts anything
     // still holding a `HeldLease.signal`.
@@ -256,8 +349,12 @@ export class RunnerDaemon {
       startedAt: this.startedAt ?? this.now(),
       now: this.now,
       leases: this.leases,
-      driving: false,
-      driverGaps: RUNNER_DRIVER_GAPS,
+      driving: this.driving,
+      // Empty only when a loop is actually ticking. This is read only while the
+      // socket is up, and the socket's lifetime sits strictly inside the
+      // scheduler's, so `driving` false here means no driver was ever supplied —
+      // which is exactly the list below.
+      driverGaps: this.driving ? [] : RUNNER_DRIVER_GAPS,
       recovery: this.recovery,
       requestShutdown: (reason) => {
         this.emit({ kind: 'shutdown-requested', reason });

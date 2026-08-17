@@ -25,7 +25,7 @@
 import { JobStoreError } from './errors.ts';
 import type { JobLease, RunnerInstance } from './job.ts';
 import type { JobStore } from './store.ts';
-import { JOB_STATES, type JobState } from './state-machine.ts';
+import { JOB_STATES, NON_TERMINAL_JOB_STATES, type JobState } from './state-machine.ts';
 
 export type RecoveryDisposition =
   /** An external request may have been sent and nothing observed the reply. */
@@ -82,10 +82,6 @@ export interface RecoveryOptions {
   readonly staleAfterMs: number;
 }
 
-const NON_TERMINAL: readonly JobState[] = (
-  Object.keys(JOB_STATES) as JobState[]
-).filter((state) => !JOB_STATES[state].terminal);
-
 export const recoverJobs = async (options: RecoveryOptions): Promise<RecoveryReport> => {
   const { store, instanceId, at, leaseTtlMs } = options;
   const nowMs = Date.parse(at);
@@ -101,7 +97,7 @@ export const recoverJobs = async (options: RecoveryOptions): Promise<RecoveryRep
   // Runner holds still belongs in the report — "someone else is running this" is
   // the answer to the duplicate-instance question, and silently omitting it
   // would read as "there was nothing to recover".
-  const candidates = await store.listJobs({ states: NON_TERMINAL });
+  const candidates = await store.listJobs({ states: NON_TERMINAL_JOB_STATES });
   const jobs: RecoveredJob[] = [];
 
   for (const candidate of candidates) {

@@ -10,17 +10,21 @@
  * expiry, frozen-share percentage SELLs and an explicit dynamic fraction mode,
  * and — new — `driveJob`, which advances one job by one pass: watch, pause,
  * fresh authorization/market/position/quote checks at the trigger, independent
- * multi-leg create/sign/submit under per-leg idempotency keys, and reconcile.
+ * multi-leg create/sign/submit under per-leg idempotency keys, and reconcile —
+ * and, new, `JobScheduler`, the loop that claims runnable jobs and calls
+ * `driveJob` on each of them on a tick, so a job finally moves without anyone
+ * asking it to.
  *
- * What is still missing is the part that makes a job move *by itself*. Nothing
- * calls `driveJob` on a schedule; there is no price watcher behind
- * `PriceObserver` and no signer behind `StrategySigner`, only the interfaces a
- * caller supplies. So inside this process a created strategy is a durable record
- * that nothing advances and a recovered job sits in the state recovery assigned
- * it. The daemon says so rather than implying otherwise
- * — `driving: false` on the IPC handshake and in `runner.status`, and every agent
- * command contract name is refused `NOT_IMPLEMENTED`. See the README and
- * `docs/IMPLEMENTATION_BACKLOG.md` 2.6.
+ * What is still missing is the two collaborators a pass cannot happen without:
+ * there is no price watcher behind `PriceObserver` and no signer behind
+ * `StrategySigner` in this package, only the interfaces. So a daemon started
+ * from `runnerd` supplies no `driver`, starts no scheduler and advances nothing;
+ * an embedding application that supplies all three gets a Runner that does. The
+ * daemon reports which it is rather than implying — `driving` is read from
+ * whether a scheduler is ticking, and `driverGaps` names what is absent when it
+ * is not. Every agent command contract name is refused `NOT_IMPLEMENTED` on the
+ * socket either way: this Runner drives durable jobs, not one-shot intents. See
+ * the README and `docs/IMPLEMENTATION_BACKLOG.md` 2.6.
  *
  * The Runner is local and self-hosted. The device and the process must stay
  * awake, online and running; nothing here is a managed service (ADR-0001 §6).
@@ -119,6 +123,13 @@ export {
   type RecoveryReport,
   recoverJobs,
 } from './recovery.ts';
+export {
+  JobScheduler,
+  type JobSchedulerOptions,
+  type SchedulerDriver,
+  type SchedulerEvent,
+  type SchedulerTickReport,
+} from './scheduler.ts';
 export { assertNoSecrets, FORBIDDEN_STORE_KEYS } from './secrets.ts';
 export {
   canEndLocally,

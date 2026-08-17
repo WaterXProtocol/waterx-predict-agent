@@ -3,15 +3,22 @@
 The self-hosted local Runner. Private to this workspace; nothing here is
 published, and the SDK does not depend on it (ADR-0001 §4).
 
-**There is now a process, and something that knows how to move a job — and the
-two are not yet connected.** The daemon starts, recovers the jobs it finds, holds
-their leases and answers a local socket. Separately, `driveJob` takes a held lease
-and walks one job one step: watch, pause, trigger, quote, create, sign, submit,
-reconcile. What does not exist is the loop that calls it, or a price source to
-call it with, so inside the daemon a job still sits in the state recovery left it
-in. `runner.status` reports this as `driving: false` with the missing pieces
-named, and any real agent command sent over the socket is refused
-`NOT_IMPLEMENTED` rather than answered.
+**There is now a process, a thing that moves a job, and a loop that calls it — and
+what is still missing is what the loop needs to call it *with*.** The daemon
+starts, recovers the jobs it finds, holds their leases and answers a local socket.
+`driveJob` takes a held lease and walks one job one step: watch, pause, trigger,
+quote, create, sign, submit, reconcile. `JobScheduler` claims runnable jobs and
+calls it on a tick, one pass per job, never overlapping itself, and stops driving a
+job the instant this instance is fenced out of it.
+
+The scheduler needs three collaborators supplied together — a gateway, a
+`PriceObserver` and a `StrategySigner` — and this package implements only the
+first. So **whether a daemon drives is a decision, not a property of the build**:
+an embedding application that supplies all three gets a Runner that takes a
+strategy to a fill, and `runnerd`, which supplies none, starts no scheduler and
+advances nothing. `runner.status` reports which one it is — `driving`, plus
+`driverGaps` naming what is absent — and any real agent command sent over the
+socket is refused `NOT_IMPLEMENTED` either way.
 
 | | status |
 | --- | --- |
@@ -35,15 +42,16 @@ named, and any real agent command sent over the socket is refused
 | Fresh delegation / market / position / quote checks at trigger | implemented |
 | Independent multi-leg execution under per-leg keys | implemented |
 | Exactly one logical submission across a crash at any boundary | implemented, tested |
-| Scheduler that calls `driveJob` on a schedule, inside the daemon | **not implemented** |
+| Scheduler that calls `driveJob` on a schedule, inside the daemon | implemented |
 | Price watcher supplying a `PriceObserver` from a live stream | **not implemented** (interface only) |
 | Signer inside the Runner trust boundary | **not implemented** (interface only, backlog 1.x) |
+| A driver `runnerd` can construct from local configuration | **not implemented** (backlog 2.6) |
 | Cursor persistence wired back into a live stream | **not implemented** (backlog 2.4) |
 
 Synthetic limit orders therefore still run in-process via the SDK's
 `waitForPriceAndExecute` and die with the process — see `packages/sdk/README.md`.
-Starting `runnerd` does not change that yet: `driveJob` is a function this
-package exports, not something the process runs.
+Starting `runnerd` does not change that yet: it can construct no signer and no
+price source, so it starts with no driver and reports `driving: false`.
 
 ## Requirements
 
@@ -98,8 +106,11 @@ shared contract (`order.execute`, `market.quote`, …) is recognized and then re
 Runner to place an order must be told no loudly, rather than told the command is
 unknown, which reads as a typo.
 
-Two fields exist so a caller cannot mistake reachable for running: `driving` is
-`false`, and `driverGaps` names what is absent. `runner.cancel-job` separates
+Two fields exist so a caller cannot mistake reachable for running: `driving` says
+whether a scheduler is ticking *in this process right now*, and `driverGaps` names
+what is absent when it is not. Both are read from the scheduler rather than from
+configuration, so a daemon that was told to drive but whose loop is stopped reports
+`false`. `runner.cancel-job` separates
 `recorded` from `applied` for the same reason — only the lease holder may end a
 job, and only from a state that has not started a write, so a cancel arriving
 during a submit reports `pending: 'IN_FLIGHT'` rather than a stop that did not
@@ -110,12 +121,11 @@ happen.
 `StrategyService` is the command core — one implementation of what a strategy
 *is*, so the CLI, the IPC surface and any adapter cannot drift into a second set
 of rules about sizing, expiry or cancellation. `create` normalizes an intent and
-writes a durable job in `DRAFT`. Nothing in this process advances it: `driveJob`
-exists but nothing calls it on a schedule, so a created strategy is a record, not
-a running order. `create` returns the job's state rather than a word like "armed"
-for that reason, and it is deliberately not exposed over the IPC socket yet —
-advertising a strategy command from a process that reports `driving: false` would
-claim execution that does not exist.
+writes a durable job in `DRAFT`. Whether anything then advances it depends on
+whether *this* Runner was given a driver, which is why `create` returns the job's
+state rather than a word like "armed". It is deliberately not exposed over the IPC
+socket yet — advertising a strategy command from a process that may report
+`driving: false` would claim execution that does not exist.
 
 What it refuses is the interesting part. `normalizeStrategy` will not guess a
 size, an expiry or a market:
@@ -216,9 +226,9 @@ the job back in `UNKNOWN_PENDING` rather than downgrading "I cannot tell" to
 "nothing happened".
 
 `driveJob` calls it at the end of every executing pass and on any pass that finds
-a job already in `RECONCILING` or `UNKNOWN_PENDING`. What still does not exist is
-anything calling *either* of them on a schedule, so a job only advances while a
-caller is driving it.
+a job already in `RECONCILING` or `UNKNOWN_PENDING`, and `JobScheduler` calls
+`driveJob` on a tick — so in a daemon with a driver, a job left `RECONCILING`
+keeps being read back until the server says something terminal.
 
 One case it cannot resolve, and neither can anything else today: a crash *during*
 the create leaves an idempotency key with no execution id, and this API has no read

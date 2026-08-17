@@ -128,6 +128,18 @@ export const JOB_TRANSITIONS: Readonly<Record<JobState, readonly JobState[]>> = 
 
 export const isTerminalJobState = (state: JobState): boolean => JOB_STATES[state].terminal;
 
+/**
+ * Every state a job can still be moved out of.
+ *
+ * Derived from the table rather than listed, and shared by the two callers that
+ * ask "which jobs is somebody responsible for?" — start-up recovery and the
+ * scheduler's claim. A hand-written copy that missed a state would be a job no
+ * Runner ever picks up: durable, non-terminal, and silently unwatched.
+ */
+export const NON_TERMINAL_JOB_STATES: readonly JobState[] = (
+  Object.keys(JOB_STATES) as JobState[]
+).filter((state) => !JOB_STATES[state].terminal);
+
 export const isInFlightJobState = (state: JobState): boolean => JOB_STATES[state].inFlight;
 
 export const canTransition = (from: JobState, to: JobState): boolean =>

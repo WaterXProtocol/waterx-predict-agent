@@ -4,11 +4,12 @@
  * The dispatcher is where the Runner's honesty rules become machine-readable
  * rather than documentary:
  *
- * - `runner.status` reports `driving: false` while nothing in this process calls
- *   the driver on a schedule — an exported `driveJob` is not a loop. A client
- *   that treats a reachable Runner as a running strategy is making exactly the
- *   mistake ADR-0001 §6 is about, and a boolean in the reply is the only form of
- *   that warning a program can act on.
+ * - `runner.status` reports `driving` from whether a scheduler is actually
+ *   ticking in *this* process — not from whether the package contains a loop,
+ *   and not from whether one was configured. A client that treats a reachable
+ *   Runner as a running strategy is making exactly the mistake ADR-0001 §6 is
+ *   about, and a boolean in the reply is the only form of that warning a program
+ *   can act on. `driverGaps` names what is absent when the answer is no.
  * - `runner.cancel-job` distinguishes *recorded* from *applied*. Only the lease
  *   holder may end a job, and only from a state that has not started a write —
  *   replying "cancelled" while a submit may be in flight would report a stop that
@@ -46,7 +47,7 @@ export const dispatch = async (
   rawInput: unknown,
   context: RunnerCommandContext,
 ): Promise<unknown> => {
-  const input = validateRunnerCommand(command, rawInput);
+  const input = validateRunnerCommand(command, rawInput, { driverGaps: context.driverGaps });
 
   switch (command) {
     case 'runner.status':
