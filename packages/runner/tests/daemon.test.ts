@@ -458,6 +458,217 @@ describe('the commands a client may actually run', () => {
   });
 });
 
+/**
+ * The strategy surface, which is the first thing on this socket that writes
+ * something a person would call a trade.
+ *
+ * Two properties carry the weight here. The mandate is *configuration*: a peer
+ * cannot send one, and a daemon nobody configured refuses to arm anything, so the
+ * failure mode of an unfinished install is a Runner that says no rather than one
+ * that signs. And the answers are the service's own — the refusals a client sees
+ * are `EXPIRY_REQUIRED` and `SIZE_AMBIGUOUS`, not a schema violation, because the
+ * socket delegates to `StrategyService` instead of re-deciding what a strategy is.
+ */
+describe('strategies over the socket', () => {
+  const DELEGATED = {
+    mode: 'delegated-auto',
+    source: 'file:/etc/waterx/runner.json',
+    maxOrderNotional: '250.00',
+  } as const;
+
+  const buyLeg = {
+    marketId: 'mkt_btts_yes',
+    outcomeId: 'YES',
+    side: 'BUY',
+    buyAmount: '25.000000',
+    maxSlippageBps: 50,
+  } as const;
+
+  const createBody = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
+    ownerAddress: '0xowner',
+    accountId: 'acct_1',
+    agentWallet: '0xagent',
+    legs: [buyLeg],
+    trigger: { kind: 'PRICE', targetPrice: '0.450000' },
+    expiresAt: later(NOW, 3_600_000),
+    ...overrides,
+  });
+
+  it('refuses to arm anything when nobody configured a mandate', async () => {
+    // The default is `interactive`: a durable strategy fires while nobody is being
+    // asked, so an unconfigured Runner must not accept one.
+    const client = await connect(await startDaemon());
+
+    expect(await rejectsCode(client.request('strategy.create', createBody()))).toBe(
+      'POLICY_REQUIRES_DELEGATION',
+    );
+    expect(await store.listJobs()).toEqual([]);
+  });
+
+  it('admits a strategy under the host policy, ignoring anything the client sends', async () => {
+    const client = await connect(await startDaemon({ policy: DELEGATED }));
+
+    // There is no `policy` input at all, so this is refused before it reaches the
+    // service — a peer able to name its own mode would be granting itself the
+    // authority to sign unattended.
+    expect(
+      await rejectsCode(
+        client.request(
+          'strategy.create',
+          createBody({ policy: { mode: 'delegated-auto', source: 'the client said so' } }),
+        ),
+      ),
+    ).toBe('INVALID_INPUT');
+
+    const reply = (await client.request('strategy.create', createBody())) as {
+      strategy: { jobId: string; state: string; expiry: { expiresAt: string } };
+      policy: { mode: string; source: string };
+      driving: boolean;
+      driverGaps: string[];
+    };
+
+    expect(reply.strategy.state).toBe('DRAFT');
+    expect(reply.policy).toEqual({ mode: 'delegated-auto', source: DELEGATED.source });
+    // A durable job now exists that nothing in this process will ever advance, and
+    // the reply says so in the same breath as the job id.
+    expect(reply.driving).toBe(false);
+    expect(reply.driverGaps).toEqual([...RUNNER_DRIVER_GAPS]);
+
+    const stored = await store.getJob(reply.strategy.jobId);
+    expect(stored?.policy).toEqual(DELEGATED);
+    expect(stored?.expiresAt).toBe(later(NOW, 3_600_000));
+  });
+
+  it('answers with the strategy rule that was broken, not with a schema violation', async () => {
+    const client = await connect(await startDaemon({ policy: DELEGATED }));
+
+    // Mandatory, and there is no permanent watcher to fall back on (ADR-0005).
+    expect(
+      await rejectsCode(client.request('strategy.create', createBody({ expiresAt: undefined }))),
+    ).toBe('EXPIRY_REQUIRED');
+    expect(
+      await rejectsCode(
+        client.request('strategy.create', createBody({ expiresAt: later(NOW, 8 * 86_400_000) })),
+      ),
+    ).toBe('EXPIRY_TOO_FAR');
+    // Ambiguity stops before a write: a BUY carrying a share count is not resolved
+    // by picking one.
+    expect(
+      await rejectsCode(
+        client.request(
+          'strategy.create',
+          createBody({ legs: [{ ...buyLeg, sellShares: '10.000000' }] }),
+        ),
+      ),
+    ).toBe('SIZE_AMBIGUOUS');
+    // A percentage SELL freezes shares at creation, which takes a position read —
+    // and a driverless daemon has no server to read one from. Named, not guessed.
+    expect(
+      await rejectsCode(
+        client.request(
+          'strategy.create',
+          createBody({
+            legs: [
+              {
+                marketId: 'mkt_btts_yes',
+                outcomeId: 'YES',
+                side: 'SELL',
+                sellFractionOfPosition: '0.5',
+                positionId: 'pos_1',
+                maxSlippageBps: 50,
+              },
+            ],
+          }),
+        ),
+      ),
+    ).toBe('POSITION_READ_UNAVAILABLE');
+
+    expect(await store.listJobs()).toEqual([]);
+  });
+
+  it('reads back, lists, follows and cancels the job it created', async () => {
+    const client = await connect(await startDaemon({ policy: DELEGATED }));
+    const { strategy } = (await client.request('strategy.create', createBody())) as {
+      strategy: { jobId: string; strategyId: string };
+    };
+
+    const got = (await client.request('strategy.get', { jobId: strategy.jobId })) as {
+      strategy: {
+        state: string;
+        job: { intent: unknown[] };
+        legs: unknown[];
+        openSideEffects: unknown[];
+      };
+      leasedHere: boolean;
+    };
+    expect(got.strategy.state).toBe('DRAFT');
+    expect(got.strategy.job.intent).toHaveLength(1);
+    // Empty, and that is the answer: a row appears here when a leg is *reserved*
+    // under an idempotency key, so nothing has been committed to on the server.
+    expect(got.strategy.legs).toEqual([]);
+    expect(got.strategy.openSideEffects).toEqual([]);
+    // Created after recovery, so this instance never claimed it. Honest rather
+    // than flattering: nothing is running this job.
+    expect(got.leasedHere).toBe(false);
+
+    const listed = (await client.request('strategy.list', {
+      strategyId: strategy.strategyId,
+    })) as { strategies: { jobId: string }[] };
+    expect(listed.strategies.map((entry) => entry.jobId)).toEqual([strategy.jobId]);
+    expect(
+      ((await client.request('strategy.list', { accountId: 'nobody' })) as { strategies: unknown[] })
+        .strategies,
+    ).toEqual([]);
+
+    const feed = (await client.request('strategy.events', { jobId: strategy.jobId })) as {
+      state: string;
+      events: { kind: string }[];
+    };
+    expect(feed.state).toBe('DRAFT');
+    expect(feed.events.map((event) => event.kind)).toEqual(['TRANSITION']);
+
+    const cancelled = (await client.request('strategy.cancel', {
+      jobId: strategy.jobId,
+      reason: 'user asked',
+    })) as Record<string, unknown>;
+    // No lease here, so the request is durable and unapplied — the same answer
+    // `runner.cancel-job` gives, because it is the same implementation.
+    expect(cancelled).toMatchObject({
+      jobId: strategy.jobId,
+      recorded: true,
+      applied: false,
+      pending: 'NOT_LEASED_BY_THIS_RUNNER',
+    });
+    expect((await store.getJob(strategy.jobId))?.cancelRequestedAt).toBe(NOW);
+  });
+
+  it('refuses an unknown job rather than answering an empty feed', async () => {
+    const client = await connect(await startDaemon({ policy: DELEGATED }));
+    // `StrategyService.events` answers `[]` for a job it has never heard of, which
+    // over a socket would let a typo'd id read as a job that has done nothing yet.
+    expect(await rejectsCode(client.request('strategy.events', { jobId: 'job_absent' }))).toBe(
+      'UNKNOWN_JOB',
+    );
+    expect(await rejectsCode(client.request('strategy.get', { jobId: 'job_absent' }))).toBe(
+      'UNKNOWN_JOB',
+    );
+  });
+
+  it('serves the socket from the same service an embedder gets', async () => {
+    // Not two services over one store: a second one would be a second set of
+    // sizing and expiry rules reachable from the same process.
+    const handle = await startDaemon({ policy: DELEGATED });
+    const client = await connect(handle);
+    const { strategy } = (await client.request('strategy.create', createBody())) as {
+      strategy: { jobId: string };
+    };
+
+    const direct = await daemons[0]?.strategies.get(strategy.jobId);
+    expect(direct?.jobId).toBe(strategy.jobId);
+    expect(daemons[0]?.admissionPolicy).toEqual(DELEGATED);
+  });
+});
+
 describe('stopping', () => {
   it('answers the shutdown request before it closes the socket', async () => {
     await store.createJob(jobInput({ at: T0 }));

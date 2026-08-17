@@ -53,15 +53,18 @@ is absent, rather than a half-driver that could create an order it cannot sign.
 | Refusal to sign for an `interactive` or `read-only` job, before spawning | implemented, tested |
 | A driver `runnerd` builds from local configuration, or refuses to | implemented, tested |
 | Per-topic price-feed health in `runner.status` | implemented, tested |
+| `strategy.create` / `get` / `list` / `cancel` / `events` on the socket | implemented, tested |
+| The mandate a socket-created job is admitted under, from local configuration | implemented, tested |
 | Keystore-file, OS-keychain and KMS signer providers | **not implemented** (backlog 1.8) |
-| Strategy commands over the IPC socket / CLI | **not implemented** (backlog 2.8) |
+| Strategy commands in the CLI | **not implemented** (backlog 2.8) |
 | Cursor persistence wired back into a live stream | **not applicable here** (backlog 2.4) |
 
 Synthetic limit orders still run in-process via the SDK's `waitForPriceAndExecute`
 and die with the process — see `packages/sdk/README.md`. A configured `runnerd` is
-the durable alternative for a strategy that was *created* through
-`StrategyService`; what is not there yet is a way to create one over the socket
-(backlog 2.8), so today that means an embedding application, not a command.
+the durable alternative, and a strategy now reaches it over the socket. What is
+not there yet is a *command*: nothing in the CLI speaks this protocol (backlog
+2.8), so today the client is an embedding application or a script that opens the
+socket itself.
 
 The stream-cursor row deserves its wording. The store persists cursors and the
 recovery path reads them, but there is nothing in this process to hand one back
@@ -181,12 +184,29 @@ can read back, not by an argv nobody can recover after the terminal is gone.
 | `WATERX_RUNNER_SIGNER_TIMEOUT_MS` | `signerTimeoutMs` | default 15000 |
 | `WATERX_RUNNER_TICK_INTERVAL_MS` | `tickIntervalMs` | scheduler cadence |
 | `WATERX_RUNNER_MAX_JOBS` | `maxJobs` | jobs claimed per tick |
+| `WATERX_RUNNER_POLICY_MODE` | `policy.mode` | the mandate; default `interactive` |
+| — | `policy.maxOrderNotional` | a decimal **string**, recorded per job |
+| — | `policy.notAfter` | when the mandate itself ends |
 
 ```json
 { "baseUrl": "https://predict.example/api",
   "agentWallet": "0x…",
-  "signerCommand": ["/opt/keystore/bin/waterx-sign", "--slot", "3"] }
+  "signerCommand": ["/opt/keystore/bin/waterx-sign", "--slot", "3"],
+  "policy": { "mode": "delegated-auto", "maxOrderNotional": "250.000000" } }
 ```
+
+**The mandate is configuration, never a request.** `strategy.create` has no
+`policy` field at all, and a peer that sent one is refused: a socket client able
+to name its own mode would be granting itself the authority to sign while nobody
+is watching. The default is `interactive`, which is the mode a durable strategy is
+*refused* under — so a Runner nobody has finished configuring answers, recovers
+and arms nothing, rather than signing. A mode this build does not recognize is
+refused at start-up rather than at the first trigger. The caps are file-only, on
+purpose: a ceiling is the part an operator should be able to read back afterwards,
+and an environment variable nobody can inspect later is not a reviewable mandate.
+`maxRunNotional` is deliberately not a setting — nothing in this build enforces
+one, and a limit an operator believes is in force while it is not is worse than
+its absence.
 
 The signer command is argv and is never run through a shell, so a bare executable
 name is fine and anything with arguments must be an array — splitting on spaces
@@ -224,13 +244,24 @@ const client = await RunnerIpcClient.connect({
 const status = await client.request('runner.status');
 ```
 
-`runner.status`, `runner.jobs`, `runner.job`, `runner.cancel-job` and
-`runner.shutdown` are the whole surface. This socket is **not** a second command
-surface: `runner.*` names are about this process, and an agent command from the
-shared contract (`order.execute`, `market.quote`, …) is recognized and then refused
-`NOT_IMPLEMENTED` naming the missing executor — because a client asking a connected
-Runner to place an order must be told no loudly, rather than told the command is
-unknown, which reads as a typo.
+`runner.status`, `runner.jobs`, `runner.job`, `runner.cancel-job`,
+`runner.shutdown` and the five `strategy.*` commands are the whole surface. This
+socket is **not** a second command surface: `runner.*` names are about this
+process, `strategy.*` names are about the durable jobs it owns, and an agent
+command from the shared contract (`order.execute`, `market.quote`, …) is
+recognized and then refused `NOT_IMPLEMENTED` naming the missing executor —
+because a client asking a connected Runner to place an order must be told no
+loudly, rather than told the command is unknown, which reads as a typo.
+
+The `strategy.*` handlers delegate to the same `StrategyService` an embedding
+application gets from `daemon.strategies`. The socket therefore has no sizing
+rule, no expiry cap and no cancellation rule of its own, and the refusals a client
+reads are the named ones — `EXPIRY_REQUIRED`, `EXPIRY_TOO_FAR`, `SIZE_AMBIGUOUS`,
+`POSITION_READ_UNAVAILABLE`, `POLICY_REQUIRES_DELEGATION` — rather than a schema
+violation. `strategy.create` answers with `driving` and `driverGaps` beside the
+job it wrote, because on an unconfigured Runner that job is real, durable, and
+never going to move. `strategy.cancel` is `runner.cancel-job` under the other
+name and the same implementation.
 
 Two fields exist so a caller cannot mistake reachable for running: `driving` says
 whether a scheduler is ticking *in this process right now*, and `driverGaps` names
@@ -260,11 +291,10 @@ happen.
 of rules about sizing, expiry or cancellation. `create` normalizes an intent and
 writes a durable job in `DRAFT`. Whether anything then advances it depends on
 whether *this* Runner was given a driver, which is why `create` returns the job's
-state rather than a word like "armed". It is not exposed over the IPC socket yet
-(backlog 2.8); a configured `runnerd` now reports `driving: true`, so the reason
-that held it back is gone, but the socket surface and the schema entry for it are
-not written. Until they are, `create` is reachable from an embedding application
-and not from a command.
+state rather than a word like "armed". It is reachable two ways — `daemon.strategies`
+in-process, and `strategy.*` on the socket — and they are the same object, so
+there is nowhere for a second rule to live. What is still missing is a command:
+no CLI speaks this protocol yet (backlog 2.8).
 
 What it refuses is the interesting part. `normalizeStrategy` will not guess a
 size, an expiry or a market:

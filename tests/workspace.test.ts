@@ -283,18 +283,22 @@ describe('the Runner package', () => {
 
   it('says in its README which half of the Runner exists', () => {
     // The daemon, its socket, `driveJob`, the loop that calls it, the price
-    // source, the signer and now the configuration that assembles them are all
-    // built, so a configured `runnerd` really does advance a job. What is *not*
-    // built is any way to give that process a strategy: no `strategy.*` on the
-    // socket, none in the CLI. A README that described this package as "the
-    // Runner" would let a reader conclude an operator can start a durable
-    // strategy, so the remaining absence has to survive in prose — and so does
+    // source, the signer, the configuration that assembles them and now the
+    // `strategy.*` commands are all built, so a configured `runnerd` really does
+    // take a strategy and advance it. What is *not* built is a command: no CLI
+    // speaks this protocol. A README that described this package as "the Runner"
+    // would let a reader conclude an operator can start a durable strategy from a
+    // terminal, so the remaining absence has to survive in prose — and so does
     // `driving: false`, which is what an unconfigured process still reports.
     const readme = read('packages/runner/README.md');
     expect(readme).toContain('**not implemented**');
     expect(readme.toLowerCase()).toContain('daemon');
     expect(readme).toContain('driving: false');
-    expect(readme).toContain('Strategy commands over the IPC socket / CLI | **not implemented**');
+    expect(readme).toContain('Strategy commands in the CLI | **not implemented**');
+    // The mandate is the load-bearing one now that a socket peer can arm a job:
+    // it comes from this host, and the default refuses.
+    expect(readme).toContain('The mandate is configuration, never a request');
+    expect(readme).toContain('default is `interactive`');
     // The configuration's two load-bearing refusals, which an operator reads the
     // README to learn: it holds no token at all, and it will not build half a
     // driver. Both are the difference between a Runner that authenticates itself
@@ -335,6 +339,28 @@ describe('the Runner package', () => {
     const daemon = read('packages/runner/src/daemon.ts');
     expect(daemon).toContain('return this.scheduler?.started ?? false;');
     expect(daemon).not.toMatch(/driving:\s*(true|false)/);
+  });
+
+  it('serves strategies over the socket from the one implementation, under a mandate from this host', () => {
+    // Two rules, both structural rather than documentary.
+    //
+    // The socket must not acquire its own idea of what a strategy is: it holds a
+    // `StrategyService` and calls it. A dispatcher that imported `normalizeStrategy`
+    // or `resolveExpiry` would be a second sizing/expiry implementation reachable
+    // from a different surface, which is how a socket client and an embedder end
+    // up disagreeing about what "sell half" means.
+    const dispatch = read('packages/runner/src/ipc/dispatch.ts');
+    expect(dispatch).toContain('context.strategies.create');
+    expect(dispatch).not.toContain('normalizeStrategy');
+    expect(dispatch).not.toContain('resolveExpiry');
+    expect(dispatch).not.toContain('BETA_MAX_EXPIRY_MS');
+
+    // And the mandate is never the caller's. A `policy` read off the request would
+    // let a socket peer grant itself the authority to sign unattended, so the
+    // input schema has no such field and the dispatcher reads only the context.
+    expect(dispatch).toContain('policy: context.admissionPolicy');
+    expect(dispatch).not.toContain("input['policy']");
+    expect(read('packages/runner/src/ipc/commands.ts')).not.toMatch(/^\s*policy:/m);
   });
 
   it('ships a `runnerd` that builds no driver, and therefore promises nothing', () => {

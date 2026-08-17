@@ -15,14 +15,25 @@
  *   replying "cancelled" while a submit may be in flight would report a stop that
  *   did not happen (ADR-0001 §15). The store already refuses to apply it; this
  *   layer refuses to describe it as applied.
+ * - `strategy.*` delegates to the **same** {@link StrategyService} an embedding
+ *   application would construct. Not a re-implementation over the store: a second
+ *   copy of sizing, expiry or cancellation here is how a socket client and a
+ *   library client end up disagreeing about what "sell half" means.
+ * - `strategy.create` takes its policy snapshot from `context.admissionPolicy` —
+ *   this machine's configuration — and never from the request, which carries no
+ *   `policy` field at all. A peer that could name its own mode would be granting
+ *   itself the mandate.
  */
 import type { Clock } from '../clock.ts';
 import { isJobStoreError, JobStoreError } from '../errors.ts';
+import type { JobPolicySnapshot } from '../job.ts';
 import type { PriceTopicStatus } from '../prices.ts';
 import type { RecoveryReport } from '../recovery.ts';
 import type { JobState } from '../state-machine.ts';
 import type { JobStore } from '../store.ts';
-import { cancelStrategy } from '../strategy/service.ts';
+import { isStrategyError } from '../strategy/errors.ts';
+import type { StrategyRequest } from '../strategy/intent.ts';
+import { cancelStrategy, type StrategyService } from '../strategy/service.ts';
 import type { LeaseKeeper } from '../supervisor.ts';
 import { validateRunnerCommand } from './commands.ts';
 import { isRunnerIpcError, RUNNER_IPC_PROTOCOL_VERSION, type ResponseErrorBody } from './protocol.ts';
@@ -35,6 +46,16 @@ export interface RunnerCommandContext {
   readonly startedAt: string;
   readonly now: Clock;
   readonly leases: LeaseKeeper;
+  /**
+   * The one strategy implementation this process has. Shared with any embedder,
+   * so the socket cannot acquire its own rules.
+   */
+  readonly strategies: StrategyService;
+  /**
+   * The mandate a job created over this socket is admitted under, resolved from
+   * local configuration at start-up. Requests never contribute to it.
+   */
+  readonly admissionPolicy: JobPolicySnapshot;
   /** Whether anything in this build actually advances a job. */
   readonly driving: boolean;
   /** Named, so a client can report which pieces are absent rather than guessing. */
@@ -69,6 +90,18 @@ export const dispatch = async (
       context.requestShutdown(reason);
       return { stopping: true, instanceId: context.instanceId, reason };
     }
+    case 'strategy.create':
+      return createStrategy(input, context);
+    case 'strategy.get':
+      return getStrategy(input, context);
+    case 'strategy.list':
+      return listStrategies(input, context);
+    // Two names, one implementation. `runner.cancel-job` is the lifecycle-shaped
+    // name and this is the strategy-shaped one; they must not diverge.
+    case 'strategy.cancel':
+      return cancelJob(input, context);
+    case 'strategy.events':
+      return strategyEvents(input, context);
     /* c8 ignore next 3 -- unreachable: validateRunnerCommand rejects every other name */
     default:
       throw new Error(`unhandled runner command ${command}`);
@@ -213,14 +246,112 @@ const cancelJob = async (
   );
 
 /**
+ * Arm a durable strategy, under this machine's mandate.
+ *
+ * The reply carries `driving` and `driverGaps` beside the job, because a Runner
+ * that is not driving accepts this call and writes a real, durable job that
+ * nothing will ever advance. A client that printed only the job id would be
+ * telling its user a strategy is watching the market when no part of this process
+ * is watching anything.
+ */
+const createStrategy = async (
+  input: Readonly<Record<string, unknown>>,
+  context: RunnerCommandContext,
+): Promise<unknown> => {
+  const expiresAt = input['expiresAt'];
+  const strategyId = input['strategyId'];
+  const request: StrategyRequest = {
+    ...(typeof strategyId === 'string' ? { strategyId } : {}),
+    ownerAddress: input['ownerAddress'] as string,
+    accountId: input['accountId'] as string,
+    agentWallet: input['agentWallet'] as string,
+    legs: input['legs'] as StrategyRequest['legs'],
+    trigger: input['trigger'] as StrategyRequest['trigger'],
+    ...(expiresAt === undefined
+      ? // Passed through absent rather than defaulted, so the service answers
+        // `EXPIRY_REQUIRED` — the rule, named — instead of this layer inventing a
+        // horizon nobody asked for.
+        {}
+      : { expiresAt: expiresAt as NonNullable<StrategyRequest['expiresAt']> }),
+    // Deliberately not read from the request — there is no such input. The
+    // mandate is configuration on this host; see the file header.
+    policy: context.admissionPolicy,
+  };
+
+  const strategy = await context.strategies.create(request);
+  return {
+    strategy,
+    policy: { mode: context.admissionPolicy.mode, source: context.admissionPolicy.source },
+    driving: context.driving,
+    driverGaps: [...context.driverGaps],
+  };
+};
+
+const getStrategy = async (
+  input: Readonly<Record<string, unknown>>,
+  context: RunnerCommandContext,
+): Promise<unknown> => {
+  const jobId = input['jobId'] as string;
+  const strategy = await context.strategies.get(jobId);
+  if (strategy === undefined) {
+    throw new JobStoreError('UNKNOWN_JOB', `unknown job ${jobId}`, { jobId });
+  }
+  return { strategy, leasedHere: context.leases.isHeld(jobId) };
+};
+
+const listStrategies = async (
+  input: Readonly<Record<string, unknown>>,
+  context: RunnerCommandContext,
+): Promise<unknown> => {
+  const accountId = input['accountId'];
+  const strategyId = input['strategyId'];
+  const state = input['state'];
+  const strategies = await context.strategies.list({
+    ...(typeof accountId === 'string' ? { accountId } : {}),
+    ...(typeof strategyId === 'string' ? { strategyId } : {}),
+    ...(typeof state === 'string' ? { states: [state as JobState] } : {}),
+  });
+  return { strategies };
+};
+
+/**
+ * The transition and side-effect feed for one job.
+ *
+ * The presence check is here rather than in the service, which answers `[]` for
+ * a job it has never heard of — correct for a library caller merging feeds, and
+ * wrong for a socket, where an empty list would let a typo'd id read as a job
+ * that simply has not done anything yet.
+ */
+const strategyEvents = async (
+  input: Readonly<Record<string, unknown>>,
+  context: RunnerCommandContext,
+): Promise<unknown> => {
+  const jobId = input['jobId'] as string;
+  const record = await context.store.getJob(jobId);
+  if (record === undefined) {
+    throw new JobStoreError('UNKNOWN_JOB', `unknown job ${jobId}`, { jobId });
+  }
+  return { jobId, state: record.state, events: await context.strategies.events(jobId) };
+};
+
+/**
  * Maps a thrown value onto the wire error body.
  *
  * Store refusals keep their own codes — `ILLEGAL_TRANSITION`, `LEASE_LOST`,
  * `NO_IDEMPOTENCY_KEY` — because those name rules a caller must branch on, and
  * flattening them into `INTERNAL` would turn a refusal that protects funds into
- * an unexplained failure.
+ * an unexplained failure. Strategy refusals are the same argument twice over:
+ * `SIZE_AMBIGUOUS`, `EXPIRY_TOO_FAR` and `POLICY_REQUIRES_DELEGATION` each tell
+ * the caller what to change, and none of them is fixed by retrying.
  */
 export const toErrorBody = (error: unknown): ResponseErrorBody => {
+  if (isStrategyError(error)) {
+    return {
+      code: error.code,
+      message: error.message,
+      ...(error.detail === undefined ? {} : { detail: error.detail }),
+    };
+  }
   if (isRunnerIpcError(error)) {
     return {
       code: error.code,

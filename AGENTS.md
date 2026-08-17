@@ -107,7 +107,7 @@ orchestrates.
 | `packages/sdk` | `@waterx/predict-agent-sdk` | Published surface, implemented |
 | `packages/schema` | `@waterx/predict-agent-schema` | Published surface, implemented |
 | `packages/cli` | `@waterx/predict-agent-cli` | Implemented, reads **and writes** behind an enforced execution policy; `private`, so nothing is published |
-| `packages/runner` | `@waterx/predict-agent-runner` | SQLite/WAL job store, state machine, lease fencing, crash recovery, `UNKNOWN_PENDING` reconciliation, a daemon with authenticated local IPC (ADR-0008) and lease supervision, the one-job/one-pass `driveJob`, the scheduler that calls it on a tick, a price observer over the SDK's indicative quote stream, a signer inside the trust boundary, and the local configuration `runnerd` builds all three from — so a configured process reports `driving: true` and an unconfigured one reports `false` with `driverGaps` naming what to set. **No strategy command is exposed over the socket** (backlog 2.8): a durable strategy is created from an embedding application, not from a command. `private`, Node 24 floor (ADR-0007) |
+| `packages/runner` | `@waterx/predict-agent-runner` | SQLite/WAL job store, state machine, lease fencing, crash recovery, `UNKNOWN_PENDING` reconciliation, a daemon with authenticated local IPC (ADR-0008) and lease supervision, the one-job/one-pass `driveJob`, the scheduler that calls it on a tick, a price observer over the SDK's indicative quote stream, a signer inside the trust boundary, and the local configuration `runnerd` builds all three from — so a configured process reports `driving: true` and an unconfigured one reports `false` with `driverGaps` naming what to set. `strategy.create` / `get` / `list` / `cancel` / `events` are served over that socket by the same `StrategyService` an embedder holds, under a mandate resolved from **local configuration and never from the request**. **No strategy command exists in the CLI** (backlog 2.8): today the client is an embedding application or a script that opens the socket. `private`, Node 24 floor (ADR-0007) |
 | `packages/mcp` | `@waterx/predict-agent-mcp` | Reserved boundary, **not implemented** |
 | `packages/e2e` | `@waterx/predict-agent-e2e` | Harness that drives the installed CLI as a subprocess; `private`, never shipped. The end-to-end has **not run** — nothing here is evidence that it passes |
 
@@ -207,6 +207,9 @@ Inside `packages/runner`:
   token from anywhere**, because a seven-day mandate outlives any token. The three
   driver settings are all-or-nothing — a partial driver would create an order it
   cannot sign — and a credential-shaped key is refused by path, never by value.
+  The `policy` block is the mandate a socket-created strategy is admitted under;
+  it is configuration precisely so no request can name one, and its default,
+  `interactive`, is the mode a durable strategy is refused under.
 - `src/runtime.ts` — the only place a `SchedulerDriver` is constructed. One client,
   its own quote stream so REST and WS share a session, two signers over one
   keystore command where the authentication one throws on `signTransaction`, and a
@@ -218,7 +221,10 @@ Inside `packages/runner`:
   boundary: a `0700` uid-owned directory, asserted rather than repaired, plus a
   reminted `0600` bearer token. `commands.ts` refuses a real agent command with
   `NOT_IMPLEMENTED` naming the missing executor rather than letting it read as a
-  typo. This socket is not a second command surface.
+  typo. This socket is not a second command surface: its `strategy.*` schemas
+  describe shape only and every sizing, expiry and cancellation *rule* stays in
+  `strategy/`, so a client is refused by name (`SIZE_AMBIGUOUS`,
+  `EXPIRY_REQUIRED`) rather than by an anonymous schema violation.
 - `src/bin/runnerd.ts` — the entry point. Foreground only; it does not
   daemonize, and it writes diagnostics to stderr, never the token, the signature,
   the transaction bytes or the keystore argv (the executable appears by base name).

@@ -34,6 +34,12 @@
  * until you ask (ADR-0001 §6), so the answer has to be a field rather than an
  * impression.
  *
+ * The socket serves `strategy.*` from the same {@link StrategyService} this class
+ * exposes to an embedder, under a mandate the *host* supplies — never the caller.
+ * Creating a strategy therefore succeeds on a Runner that is not driving, and the
+ * reply carries that same `driving` answer beside the job it just wrote — because
+ * the job is real and durable and nothing is going to advance it.
+ *
  * Nothing in *this package* constructs a driver. `runnerd` starts a daemon with
  * no `driver`: `QuoteStreamPriceObserver` and `createExternalCommandSigner` both
  * exist, but opening the stream behind one takes credentials and an endpoint, and
@@ -45,6 +51,7 @@ import { join } from 'node:path';
 
 import { systemClock, type Clock } from './clock.ts';
 import { newInstanceId } from './ids.ts';
+import type { JobPolicySnapshot } from './job.ts';
 import { dispatch, toErrorBody, type RunnerCommandContext } from './ipc/dispatch.ts';
 import { RunnerIpcServer } from './ipc/server.ts';
 import {
@@ -61,6 +68,7 @@ import {
   type SchedulerTickReport,
 } from './scheduler.ts';
 import type { JobStore } from './store.ts';
+import { StrategyService } from './strategy/service.ts';
 import { LeaseKeeper, type LeaseLossReason } from './supervisor.ts';
 
 /**
@@ -99,6 +107,17 @@ export interface RunnerDaemonOptions {
    * carrying all three collaborators rather than three that can be half-given.
    */
   readonly driver?: SchedulerDriver;
+  /**
+   * The mandate every strategy created *through this daemon* is admitted under.
+   *
+   * Resolved from local configuration by the caller (`runnerd` passes
+   * `config.policy`) and never from an IPC request, which carries no policy field:
+   * a socket peer able to name its own mode would be granting itself the authority
+   * to sign while nobody is watching. The default is `interactive`, the mode
+   * `requirePolicyThatCanSignUnattended` refuses — so a daemon nobody configured
+   * accepts connections and arms nothing.
+   */
+  readonly policy?: JobPolicySnapshot;
   /**
    * What to report when this instance is not driving. Defaults to
    * {@link RUNNER_DRIVER_GAPS}.
@@ -148,6 +167,18 @@ const DEFAULTS = {
   tickIntervalMs: 2_000,
 } as const;
 
+/**
+ * What a daemon admits strategies under when nobody said.
+ *
+ * `interactive` is the refusing mode, and the source names where it came from so
+ * an audit of a job created under it can tell "the operator chose interactive"
+ * from "no one chose anything".
+ */
+const UNCONFIGURED_POLICY: JobPolicySnapshot = {
+  mode: 'interactive',
+  source: 'runner-default',
+} as const;
+
 export interface RunnerDaemonHandle {
   readonly instanceId: string;
   readonly socketPath: string;
@@ -167,6 +198,7 @@ export class RunnerDaemon {
   private readonly instanceIdValue: string;
   private readonly now: Clock;
   private readonly leases: LeaseKeeper;
+  private readonly strategyService: StrategyService;
   private readonly scheduler: JobScheduler | undefined;
   private server: RunnerIpcServer | undefined;
   private recovery: RecoveryReport | undefined;
@@ -196,6 +228,18 @@ export class RunnerDaemon {
       },
     });
 
+    // One service for the socket and for anything embedding this daemon. The
+    // positions reader is the driver's own gateway, so a frozen-fraction SELL is
+    // resolved against the same server the order would be placed on; without a
+    // driver there is none, and such a leg is refused by name
+    // (`POSITION_READ_UNAVAILABLE`) rather than sized from a guess.
+    this.strategyService = new StrategyService({
+      store: options.store,
+      now: this.now,
+      leases: this.leases,
+      ...(options.driver === undefined ? {} : { positions: options.driver.gateway }),
+    });
+
     this.scheduler =
       options.driver === undefined
         ? undefined
@@ -216,6 +260,22 @@ export class RunnerDaemon {
 
   get instanceId(): string {
     return this.instanceIdValue;
+  }
+
+  /**
+   * The strategy command core, for an embedding application.
+   *
+   * Exposed rather than duplicated: an application that built its own service over
+   * the same store would be a second set of sizing and expiry rules reachable in
+   * the same process as the socket's.
+   */
+  get strategies(): StrategyService {
+    return this.strategyService;
+  }
+
+  /** The mandate this daemon admits strategies under. Configuration, not request. */
+  get admissionPolicy(): JobPolicySnapshot {
+    return this.options.policy ?? UNCONFIGURED_POLICY;
   }
 
   /**
@@ -378,6 +438,8 @@ export class RunnerDaemon {
       startedAt: this.startedAt ?? this.now(),
       now: this.now,
       leases: this.leases,
+      strategies: this.strategyService,
+      admissionPolicy: this.admissionPolicy,
       driving: this.driving,
       // Empty only when a loop is actually ticking. This is read only while the
       // socket is up, and the socket's lifetime sits strictly inside the

@@ -18,6 +18,31 @@
  *   about *this process* rather than about trading, and the trading contract must
  *   not grow entries for a local daemon's lifecycle. They are still validated by
  *   the contract package's validator rather than by a second one written here.
+ * - **Strategy commands** (`strategy.*`) are the one family this socket *does*
+ *   serve, because a durable job is exactly what this process owns. They are
+ *   declared here for the same reason: a strategy is a thing a Runner holds, and
+ *   nothing places one on a server.
+ *
+ * ## What the strategy schemas do and do not say
+ *
+ * They describe **shape only**: which fields exist, and what type each one is, so
+ * a peer that sent `maxSlippageBps: "50"` is refused at the socket instead of
+ * reaching normalization as something that has to be guessed about.
+ *
+ * They deliberately do NOT restate a single *rule*. The four sizing fields are all
+ * optional here even though exactly one is required; `expiresAt` is optional here
+ * even though a strategy without one is refused; the seven-day cap appears
+ * nowhere. Every one of those lives in `strategy/intent.ts`, and a schema that
+ * re-encoded them would be a second implementation of the rules that decide how
+ * much gets traded — which is how two surfaces end up disagreeing about what "sell
+ * half" means. The refusal a client sees is therefore the *named* one —
+ * `SIZE_AMBIGUOUS`, `EXPIRY_REQUIRED`, `EXPIRY_TOO_FAR` — with the explanation
+ * attached, rather than an anonymous `INVALID_INPUT`.
+ *
+ * There is also no `policy` field on `strategy.create`, and that absence is a
+ * security property rather than an omission: the mandate comes from this machine's
+ * configuration (`config.ts`), so a socket peer cannot widen its own authority by
+ * asking for a different one.
  *
  * Every schema below is checked by `assertSupportedSchema` at module load, so a
  * keyword the shared validator cannot enforce is an import-time failure rather
@@ -48,6 +73,54 @@ const object = (
 
 const nonEmptyString: JsonSchema = { type: 'string', minLength: 1, maxLength: 512 };
 
+/**
+ * A decimal as a string, unanchored to any scale.
+ *
+ * Wide on purpose: the precision rules belong to the wire contract and to
+ * `intent.ts`, and a pattern here that was stricter than either would refuse a
+ * size the server accepts. What it does enforce is that money never arrives as a
+ * JSON number, which no amount of downstream care can undo.
+ */
+const decimalString: JsonSchema = { type: 'string', pattern: '^\\d+(\\.\\d+)?$', maxLength: 40 };
+
+/**
+ * One leg, as asked for. Every sizing field is optional here; exactly one is
+ * required, and `normalizeStrategy` is the single place that says so.
+ */
+const legSchema: JsonSchema = object(
+  {
+    marketId: nonEmptyString,
+    outcomeId: nonEmptyString,
+    side: { type: 'string', enum: ['BUY', 'SELL'] },
+    buyAmount: decimalString,
+    sellShares: decimalString,
+    sellFractionOfPosition: decimalString,
+    /** The distinct, explicit mode: re-read the position at the trigger (D-15). */
+    dynamicSellFractionOfPosition: decimalString,
+    positionId: nonEmptyString,
+    maxSlippageBps: { type: 'integer', minimum: 0, maximum: 10_000 },
+    worstAcceptablePrice: decimalString,
+  },
+  ['marketId', 'outcomeId', 'side', 'maxSlippageBps'],
+);
+
+/**
+ * `observe` is absent, and must stay absent: which side of the book a target is
+ * read against is *derived* from the leg's side — a BUY ceiling watches the ask, a
+ * SELL floor watches the bid — and accepting it would let a caller arm a strategy
+ * that triggers off the wrong half of the market.
+ */
+const triggerSchema: JsonSchema = object(
+  {
+    kind: { type: 'string', enum: ['IMMEDIATE', 'PRICE'] },
+    targetPrice: decimalString,
+    marketId: nonEmptyString,
+    outcomeId: nonEmptyString,
+    side: { type: 'string', enum: ['BUY', 'SELL'] },
+  },
+  ['kind'],
+);
+
 export const RUNNER_IPC_COMMANDS: Readonly<Record<string, JsonSchema>> = {
   /**
    * What this Runner is, what it is holding, and — the field that matters —
@@ -69,6 +142,35 @@ export const RUNNER_IPC_COMMANDS: Readonly<Record<string, JsonSchema>> = {
     'reason',
   ]),
   'runner.shutdown': object({ reason: nonEmptyString }),
+
+  /**
+   * Arm a durable strategy. Note what is not here: `policy`. See the header.
+   *
+   * `expiresAt` is not `required` even though it is mandatory, so the caller gets
+   * `EXPIRY_REQUIRED` and the sentence explaining that there is no permanent
+   * watcher, rather than a schema violation naming a missing property.
+   */
+  'strategy.create': object(
+    {
+      strategyId: nonEmptyString,
+      ownerAddress: nonEmptyString,
+      accountId: nonEmptyString,
+      agentWallet: nonEmptyString,
+      legs: { type: 'array', items: legSchema, minItems: 1, maxItems: 20 },
+      trigger: triggerSchema,
+      expiresAt: nonEmptyString,
+    },
+    ['ownerAddress', 'accountId', 'agentWallet', 'legs', 'trigger'],
+  ),
+  'strategy.get': object({ jobId: nonEmptyString }, ['jobId']),
+  'strategy.list': object({
+    accountId: nonEmptyString,
+    strategyId: nonEmptyString,
+    state: { type: 'string', enum: [...JOB_STATE_NAMES] },
+  }),
+  /** The same recorded/applied rule as `runner.cancel-job`, and the same code. */
+  'strategy.cancel': object({ jobId: nonEmptyString, reason: nonEmptyString }, ['jobId', 'reason']),
+  'strategy.events': object({ jobId: nonEmptyString }, ['jobId']),
 };
 
 for (const [name, schema] of Object.entries(RUNNER_IPC_COMMANDS)) {

@@ -38,8 +38,16 @@
  * not, and `runner.status` carries per-topic price health so a feed that has given
  * up cannot pass for a quiet market. Every agent command contract name is refused
  * `NOT_IMPLEMENTED` on the socket either way: this Runner drives durable jobs, not
- * one-shot intents. Strategy commands are not on the socket yet — see the README
- * and `docs/IMPLEMENTATION_BACKLOG.md` 2.8.
+ * one-shot intents.
+ *
+ * and, new, `strategy.create`, `strategy.get`, `strategy.list`, `strategy.cancel`
+ * and `strategy.events` on that socket, served by the very `StrategyService` the
+ * library exposes — one set of sizing, expiry and cancellation rules for a socket
+ * client and an embedder alike. The mandate a job is admitted under comes from
+ * this host's `policy` configuration and never from the request, which has no such
+ * field: a peer that could name its own mode would be granting itself the
+ * authority to sign unattended. The default is `interactive`, which refuses.
+ * There is still no CLI for any of it (`docs/IMPLEMENTATION_BACKLOG.md` 2.8).
  *
  * The Runner is local and self-hosted. The device and the process must stay
  * awake, online and running; nothing here is a managed service (ADR-0001 §6).
@@ -52,6 +60,8 @@ export {
   resolveRunnerConfig,
   RUNNER_ENV_KEYS,
   RUNNER_FILE_KEYS,
+  RUNNER_POLICY_KEYS,
+  RUNNER_POLICY_MODES,
   RunnerConfigError,
   type RunnerConfig,
   type RunnerConfigDiagnostics,
@@ -60,6 +70,8 @@ export {
   type RunnerDriverConfig,
   type RunnerDriverGap,
   type RunnerEnv,
+  type RunnerPolicyConfig,
+  type RunnerPolicyMode,
 } from './config.ts';
 export {
   installShutdownHandlers,
@@ -243,6 +255,7 @@ export {
 } from './strategy/gateway.ts';
 export {
   BETA_MAX_EXPIRY_MS,
+  isIsoInstant,
   normalizeStrategy,
   requirePolicyThatCanSignUnattended,
   resolveExpiry,

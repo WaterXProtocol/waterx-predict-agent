@@ -66,6 +66,10 @@ const store = new SqliteJobStore({ path: config.storePath });
 const daemon = new RunnerDaemon({
   store,
   runtimeDir: config.runtimeDir,
+  // The mandate, from this host's configuration. A socket peer never contributes
+  // to it, and an operator who set nothing gets `interactive`, which refuses to
+  // arm anything.
+  policy: config.policy,
   ...(bundle === undefined
     ? // Named configuration, not absent collaborators: `signer-command` tells an
       // operator what to set; `signer` would only restate that nothing was passed.

@@ -17,7 +17,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { RunnerIpcClient } from '../src/ipc/client.ts';
-import { listRunnerIpcCommands, validateRunnerCommand } from '../src/ipc/commands.ts';
+import {
+  listRunnerIpcCommands,
+  RUNNER_IPC_COMMANDS,
+  validateRunnerCommand,
+} from '../src/ipc/commands.ts';
 import { toErrorBody } from '../src/ipc/dispatch.ts';
 import {
   decodeClientFrame,
@@ -400,14 +404,81 @@ describe('what the IPC surface accepts as a command', () => {
     expect(validateRunnerCommand('runner.status', undefined)).toEqual({});
   });
 
-  it('lists only the runner-local commands', () => {
+  it('lists only the runner-local and strategy commands', () => {
     expect(listRunnerIpcCommands()).toEqual([
       'runner.cancel-job',
       'runner.job',
       'runner.jobs',
       'runner.shutdown',
       'runner.status',
+      'strategy.cancel',
+      'strategy.create',
+      'strategy.events',
+      'strategy.get',
+      'strategy.list',
     ]);
+  });
+
+  it('takes no policy on a create, so a peer cannot name its own mandate', () => {
+    const properties = RUNNER_IPC_COMMANDS['strategy.create']?.properties ?? {};
+    expect(Object.keys(properties)).not.toContain('policy');
+    expect(
+      throwsCode(() =>
+        validateRunnerCommand('strategy.create', {
+          ownerAddress: '0xowner',
+          accountId: 'acct_1',
+          agentWallet: '0xagent',
+          legs: [],
+          trigger: { kind: 'IMMEDIATE' },
+          policy: { mode: 'delegated-auto', source: 'me' },
+        }),
+      ),
+    ).toBe('INVALID_INPUT');
+  });
+
+  it('leaves every strategy rule to normalization rather than restating it', () => {
+    // Shape only: a create with no expiry and no sizing passes the schema, so the
+    // caller is refused by name (`EXPIRY_REQUIRED`, `SIZE_MISSING`) rather than by
+    // a schema violation that says a property is missing.
+    expect(() =>
+      validateRunnerCommand('strategy.create', {
+        ownerAddress: '0xowner',
+        accountId: 'acct_1',
+        agentWallet: '0xagent',
+        legs: [{ marketId: 'mkt_1', outcomeId: 'YES', side: 'BUY', maxSlippageBps: 50 }],
+        trigger: { kind: 'IMMEDIATE' },
+      }),
+    ).not.toThrow();
+    // But money never arrives as a number, which no later care could undo.
+    expect(
+      throwsCode(() =>
+        validateRunnerCommand('strategy.create', {
+          ownerAddress: '0xowner',
+          accountId: 'acct_1',
+          agentWallet: '0xagent',
+          legs: [
+            { marketId: 'mkt_1', outcomeId: 'YES', side: 'BUY', buyAmount: 10, maxSlippageBps: 50 },
+          ],
+          trigger: { kind: 'IMMEDIATE' },
+        }),
+      ),
+    ).toBe('INVALID_INPUT');
+  });
+
+  it('refuses a trigger that names which side of the book to watch', () => {
+    // Derived from the leg, never accepted: a caller able to send `observe` could
+    // arm a SELL floor that fires off the ask.
+    expect(
+      throwsCode(() =>
+        validateRunnerCommand('strategy.create', {
+          ownerAddress: '0xowner',
+          accountId: 'acct_1',
+          agentWallet: '0xagent',
+          legs: [{ marketId: 'mkt_1', outcomeId: 'YES', side: 'SELL', maxSlippageBps: 50 }],
+          trigger: { kind: 'PRICE', targetPrice: '0.60', observe: 'ASK' },
+        }),
+      ),
+    ).toBe('INVALID_INPUT');
   });
 });
 
