@@ -1,16 +1,77 @@
 /**
  * @waterx/predict-agent-runner — the self-hosted local Runner.
  *
- * What ships here today is the durable half: the SQLite/WAL job store behind a
- * store interface, the job state machine, leases and heartbeats, and crash
- * recovery into `UNKNOWN_PENDING`. There is **no daemon and no IPC yet**, so
- * nothing in this package makes a job progress on its own — see the README and
- * `docs/IMPLEMENTATION_BACKLOG.md` 2.5/2.6 for exactly what is and is not built.
+ * What ships here today: the SQLite/WAL job store behind a store interface, the
+ * job state machine, crash recovery into `UNKNOWN_PENDING`, and — new — the
+ * daemon process, its authenticated local IPC socket, and the heartbeat/lease
+ * supervisor that stops a fenced-out Runner from writing.
+ *
+ * What is still missing is the part that makes a job *move*: there is no
+ * executor, no signer and no live reconciler, so a recovered job sits in the
+ * state recovery assigned it. The daemon says so rather than implying otherwise
+ * — `driving: false` on the IPC handshake and in `runner.status`, and every agent
+ * command contract name is refused `NOT_IMPLEMENTED`. See the README and
+ * `docs/IMPLEMENTATION_BACKLOG.md` 2.6.
  *
  * The Runner is local and self-hosted. The device and the process must stay
  * awake, online and running; nothing here is a managed service (ADR-0001 §6).
  */
+export { systemClock, type Clock } from './clock.ts';
+export {
+  installShutdownHandlers,
+  RUNNER_DRIVER_GAPS,
+  RunnerDaemon,
+  type RunnerDaemonEvent,
+  type RunnerDaemonHandle,
+  type RunnerDaemonOptions,
+} from './daemon.ts';
 export { isJobStoreError, JobStoreError, type JobStoreErrorCode } from './errors.ts';
+export { RunnerIpcClient, type RunnerIpcClientOptions } from './ipc/client.ts';
+export {
+  listRunnerIpcCommands,
+  RUNNER_IPC_COMMANDS,
+  validateRunnerCommand,
+} from './ipc/commands.ts';
+export { dispatch, toErrorBody, type RunnerCommandContext } from './ipc/dispatch.ts';
+export {
+  decodeClientFrame,
+  decodeServerFrame,
+  encodeFrame,
+  FrameReader,
+  isRunnerIpcError,
+  MAX_FRAME_BYTES,
+  RUNNER_IPC_PROTOCOL_VERSION,
+  RunnerIpcError,
+  tokensMatch,
+  UNSOLICITED_FRAME_ID,
+  type ClientFrame,
+  type HelloFrame,
+  type HelloOkFrame,
+  type RequestFrame,
+  type ResponseErrorBody,
+  type ResponseFrame,
+  type RunnerIpcErrorCode,
+  type ServerFrame,
+} from './ipc/protocol.ts';
+export {
+  assertPrivatePath,
+  assertSocketPathLength,
+  assertUnixPlatform,
+  ensureRuntimeDir,
+  MAX_SOCKET_PATH_BYTES,
+  mintIpcToken,
+  readIpcToken,
+  RUNTIME_DIR_MODE,
+  SECRET_FILE_MODE,
+  writeIpcToken,
+} from './ipc/runtime-dir.ts';
+export { RunnerIpcServer, type RunnerIpcServerOptions } from './ipc/server.ts';
+export {
+  LeaseKeeper,
+  type HeldLease,
+  type LeaseKeeperOptions,
+  type LeaseLossReason,
+} from './supervisor.ts';
 export {
   fingerprintRequest,
   newAttemptId,

@@ -62,3 +62,28 @@ export const tempStoreDir = (): TempStoreDir => {
     },
   };
 };
+
+export interface TempRuntimeDir {
+  /** The runtime directory itself: the socket and the token file live here. */
+  readonly dir: string;
+  readonly storePath: string;
+  cleanup(): void;
+}
+
+/**
+ * A private runtime directory under the OS temp dir.
+ *
+ * `mkdtemp` already creates at `0700`, which is what the daemon asserts. Tests
+ * that need a *loose* directory relax it explicitly, so the assertion under test
+ * is never accidentally satisfied by the default.
+ */
+export const tempRuntimeDir = (): TempRuntimeDir => {
+  const directory = mkdtempSync(join(tmpdir(), 'wx-run-'));
+  return {
+    dir: directory,
+    storePath: join(directory, 'jobs.sqlite'),
+    cleanup: () => {
+      rmSync(directory, { recursive: true, force: true });
+    },
+  };
+};

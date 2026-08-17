@@ -18,6 +18,7 @@ wins and the plan should be corrected.
 | [0005](0005-strategy-expiry.md) | Mandatory strategy expiry | Accepted | D-22 |
 | [0006](0006-agent-command-schema-mechanism.md) | How the agent command schema is authored and enforced | Accepted | ADR-0001 §5 |
 | [0007](0007-runner-job-store-engine.md) | The Runner's job store engine, and the Node floor it costs | Accepted | ADR-0001 §8, ADR-0002 |
+| [0008](0008-runner-local-ipc.md) | How a local client authenticates to the Runner | Accepted | ADR-0001 §4, §6, ADR-0002 |
 
 ## Status vocabulary
 

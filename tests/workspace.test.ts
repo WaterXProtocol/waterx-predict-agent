@@ -244,7 +244,17 @@ describe('the Runner package', () => {
     const pkg = manifest('runner');
     expect(pkg.private).toBe(true);
     expect(pkg.type).toBe('module');
-    expect(Object.keys(pkg.dependencies ?? {})).toEqual(['@waterx/predict-agent-sdk']);
+    // Both are workspace packages with no external dependency of their own, so
+    // neither widens what runs inside the process that holds the keys. The schema
+    // is here so the IPC socket validates against the SAME command contract every
+    // other surface does, rather than becoming a second command surface.
+    expect(Object.keys(pkg.dependencies ?? {}).sort()).toEqual([
+      '@waterx/predict-agent-schema',
+      '@waterx/predict-agent-sdk',
+    ]);
+    for (const specifier of Object.values(pkg.dependencies ?? {})) {
+      expect(specifier).toBe('workspace:*');
+    }
     for (const script of ['build', 'typecheck', 'test']) {
       expect(pkg.scripts?.[script], script).toBeTypeOf('string');
     }
@@ -270,12 +280,22 @@ describe('the Runner package', () => {
   });
 
   it('says in its README which half of the Runner exists', () => {
-    // The daemon and the IPC are not built. A README that described this package
-    // as "the Runner" would be claiming a job progresses on its own, which is the
-    // one thing it cannot yet do.
+    // The daemon and its socket are built; the executor is not. A README that
+    // described this package as "the Runner" would be claiming a job progresses
+    // on its own, which is the one thing it still cannot do — so the absence has
+    // to survive in prose as well as in `driving: false`.
     const readme = read('packages/runner/README.md');
     expect(readme).toContain('**not implemented**');
     expect(readme.toLowerCase()).toContain('daemon');
+    expect(readme).toContain('driving: false');
+    expect(readme).toContain('Executor that drives a job through the SDK | **not implemented**');
+  });
+
+  it('keeps the honest `driving` flag out of reach of a typo', () => {
+    // The one field a client reads to tell reachable from running. If the
+    // daemon ever computed it from something, this assertion is the reminder
+    // that "there is an executor" is a decision, not an inference.
+    expect(read('packages/runner/src/daemon.ts')).toContain('driving: false');
   });
 });
 

@@ -3,9 +3,12 @@
 The self-hosted local Runner. Private to this workspace; nothing here is
 published, and the SDK does not depend on it (ADR-0001 §4).
 
-**What exists today is the durable half, not the daemon.** This package can hold
-a job's state safely across a crash. It cannot yet make a job progress on its
-own.
+**There is now a process, and it still drives nothing.** The daemon starts,
+recovers the jobs it finds, holds their leases and answers a local socket. What it
+does not have is the executor that would turn a held lease into an order, so a job
+sits in the state recovery left it in. `runner.status` reports this as
+`driving: false` with the missing pieces named, and any real agent command sent
+over the socket is refused `NOT_IMPLEMENTED` rather than answered.
 
 | | status |
 | --- | --- |
@@ -17,13 +20,18 @@ own.
 | Side-effect ledger, and replay under the original key | implemented |
 | Stream cursor persistence, monotonic | implemented |
 | Crash recovery, including `UNKNOWN_PENDING` classification | implemented |
-| Daemon process and authenticated local IPC | **not implemented** (backlog 2.6) |
+| Daemon process, recovery at start-up, ordered shutdown | implemented |
+| Authenticated local IPC over a Unix socket (ADR-0008) | implemented |
+| Lease renewal and heartbeat supervision, with abort on loss | implemented |
 | Executor that drives a job through the SDK | **not implemented** |
 | Live reconciliation of `UNKNOWN_PENDING` against REST | **not implemented** |
+| Price watcher feeding a job's trigger | **not implemented** |
 | Signer inside the Runner trust boundary | **not implemented** (backlog 1.x) |
+| Cursor persistence wired back into a live stream | **not implemented** (backlog 2.4) |
 
-Until the daemon lands, synthetic limit orders still run in-process via the SDK's
+Synthetic limit orders therefore still run in-process via the SDK's
 `waitForPriceAndExecute` and die with the process — see `packages/sdk/README.md`.
+Starting `runnerd` does not change that yet.
 
 ## Requirements
 
@@ -34,7 +42,56 @@ cost. The published SDK and the CLI keep their Node 20 floor. ADR-0007 records t
 trade and what it forbids.
 
 macOS and Linux (ADR-0002). Windows is not supported and must not be claimed:
-SQLite file locking there is unverified.
+SQLite file locking there is unverified, and the IPC is a Unix domain socket with
+no Windows fallback (ADR-0008).
+
+## Running it
+
+```
+node packages/runner/dist/src/bin/runnerd.js
+```
+
+It runs in the foreground and does not daemonize. That is deliberate: a process
+that detached itself would look like a strategy still running after the terminal
+that owned it went away, and the whole point of ADR-0001 §6 is that a local Runner
+makes no such promise. Backgrounding it, and keeping the device awake, are the
+operator's decisions to make explicitly.
+
+`WATERX_RUNNER_DIR` (default `~/.waterx/runner`) is the runtime directory;
+`WATERX_RUNNER_STORE` overrides where the database lives. Start-up order is fixed:
+assert the runtime directory, open the store, run recovery, *then* listen — so no
+client can observe a Runner that has not yet decided what its jobs are. Diagnostics
+go to stderr as one JSON object per line, never stdout, and never the token.
+
+## Talking to it
+
+`runner.sock` and `runner.token` are created inside the runtime directory at
+`0600`. Authentication is the token; the isolation is the directory, which must be
+`0700` and owned by this uid or the Runner refuses to start. ADR-0008 records why
+that is the boundary and what it does not cover.
+
+```ts
+const client = await RunnerIpcClient.connect({
+  socketPath: join(runtimeDir, 'runner.sock'),
+  token: readIpcToken(join(runtimeDir, 'runner.token')),
+});
+const status = await client.request('runner.status');
+```
+
+`runner.status`, `runner.jobs`, `runner.job`, `runner.cancel-job` and
+`runner.shutdown` are the whole surface. This socket is **not** a second command
+surface: `runner.*` names are about this process, and an agent command from the
+shared contract (`order.execute`, `market.quote`, …) is recognized and then refused
+`NOT_IMPLEMENTED` naming the missing executor — because a client asking a connected
+Runner to place an order must be told no loudly, rather than told the command is
+unknown, which reads as a typo.
+
+Two fields exist so a caller cannot mistake reachable for running: `driving` is
+`false`, and `driverGaps` names what is absent. `runner.cancel-job` separates
+`recorded` from `applied` for the same reason — only the lease holder may end a
+job, and only from a state that has not started a write, so a cancel arriving
+during a submit reports `pending: 'IN_FLIGHT'` rather than a stop that did not
+happen.
 
 ## The three properties everything else follows from
 
@@ -58,6 +115,13 @@ on the same store cannot interleave writes with the first: whichever one was
 superseded fails `LEASE_LOST` on its next call. An expired lease nobody reclaimed
 keeps its fence, so its holder may still finish an order safely.
 
+`LeaseKeeper` turns that into something a job can be stopped by. It renews without
+bumping the fence — bumping would invalidate the lease its own executor is holding
+— and it aborts a job's `AbortSignal` in two cases: the lease was fenced out, or it
+could not be renewed and is now inside the safety margin before expiry. The second
+matters as much as the first, because a Runner that cannot reach its store also
+cannot prove it still owns the job for longer than a request takes.
+
 ## Not a managed service
 
 The Runner is local and self-hosted. The agent device and this process must stay
@@ -79,6 +143,10 @@ src/store.ts          the JobStore interface — engine-free
 src/sqlite/           the SQLite/WAL implementation and its migrations
 src/recovery.ts       what a Runner does with the jobs it finds at start-up
 src/secrets.ts        the refusal list applied at the store boundary
+src/daemon.ts         start-up order, shutdown, and what the process admits to
+src/supervisor.ts     lease renewal, heartbeat, and the two aborts they cause
+src/ipc/              the socket: framing, auth, dispatch, and the client
+src/bin/runnerd.ts    the process entry point
 ```
 
 Tests use a real database file in a temporary directory, never `:memory:` — the

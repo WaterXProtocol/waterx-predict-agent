@@ -16,7 +16,8 @@
     // `pnpm typecheck` says anything, and a stale `dist` must not be able to
     // make a broken change look clean.
     "paths": {
-      "@waterx/predict-agent-sdk": ["../sdk/src/index.ts"]
+      "@waterx/predict-agent-sdk": ["../sdk/src/index.ts"],
+      "@waterx/predict-agent-schema": ["../schema/src/index.ts"]
     }
   },
   "include": ["src", "tests"],

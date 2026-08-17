@@ -2,19 +2,21 @@
   "name": "@waterx/predict-agent-runner",
   "version": "0.1.0",
   "private": true,
-  "description": "The self-hosted local Runner: a durable SQLite/WAL job store behind a store interface, the job state machine, leases and heartbeats, and crash recovery into UNKNOWN_PENDING. Not a managed service.",
+  "description": "The self-hosted local Runner: a daemon with an authenticated local IPC socket over a durable SQLite/WAL job store, the job state machine, lease fencing, heartbeats and crash recovery into UNKNOWN_PENDING. Not a managed service, and it does not execute orders yet.",
   "license": "MIT",
   "type": "module",
   "main": "dist/src/index.js",
   "types": "dist/src/index.d.ts",
+  "bin": { "waterx-predict-runnerd": "dist/src/bin/runnerd.js" },
   "engines": { "node": ">=24" },
   "scripts": {
-    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json && node -e \"require('node:fs').chmodSync('dist/src/bin/runnerd.js',0o755)\"",
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@waterx/predict-agent-schema": "workspace:*",
     "@waterx/predict-agent-sdk": "workspace:*"
   },
   "devDependencies": {

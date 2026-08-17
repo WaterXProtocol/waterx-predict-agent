@@ -107,7 +107,7 @@ orchestrates.
 | `packages/sdk` | `@waterx/predict-agent-sdk` | Published surface, implemented |
 | `packages/schema` | `@waterx/predict-agent-schema` | Published surface, implemented |
 | `packages/cli` | `@waterx/predict-agent-cli` | Implemented, reads **and writes** behind an enforced execution policy; `private`, so nothing is published |
-| `packages/runner` | `@waterx/predict-agent-runner` | Durable half only: SQLite/WAL job store, state machine, lease fencing, crash recovery. The **daemon, IPC, executor and signer are not implemented**, so no job progresses on its own. `private`, Node 24 floor (ADR-0007) |
+| `packages/runner` | `@waterx/predict-agent-runner` | SQLite/WAL job store, state machine, lease fencing, crash recovery, plus a daemon with authenticated local IPC (ADR-0008) and lease supervision. The **executor, signer, reconciler and price-watcher are not implemented**, so the process runs but no job progresses on its own — `runner.status` reports `driving: false`. `private`, Node 24 floor (ADR-0007) |
 | `packages/mcp` | `@waterx/predict-agent-mcp` | Reserved boundary, **not implemented** |
 | `packages/e2e` | `@waterx/predict-agent-e2e` | Harness that drives the installed CLI as a subprocess; `private`, never shipped. The end-to-end has **not run** — nothing here is evidence that it passes |
 
@@ -186,6 +186,21 @@ Inside `packages/runner`:
   rule is *only evidence ends a job; absence of evidence ends nothing.*
 - `src/secrets.ts` — refusal, not redaction, at the store boundary: a
   secret-shaped field is rejected rather than written and masked.
+- `src/daemon.ts` — the process. Start-up order is load-bearing: assert the
+  runtime directory, open the store, recover, *then* listen, so no client can
+  observe a Runner that has not yet decided what its jobs are. `driving: false`
+  and a named `driverGaps` list are in every status reply, because a reachable
+  Runner is not a running strategy (ADR-0001 §6).
+- `src/supervisor.ts` — `LeaseKeeper`. Renews without bumping the fence, and
+  aborts a job's signal both when the lease was fenced out and when it could not
+  be renewed inside the safety margin before expiry.
+- `src/ipc/` — the local socket (ADR-0008). `runtime-dir.ts` is the security
+  boundary: a `0700` uid-owned directory, asserted rather than repaired, plus a
+  reminted `0600` bearer token. `commands.ts` refuses a real agent command with
+  `NOT_IMPLEMENTED` naming the missing executor rather than letting it read as a
+  typo. This socket is not a second command surface.
+- `src/bin/runnerd.ts` — the entry point. Foreground only; it does not
+  daemonize, and it writes diagnostics to stderr, never the token.
 
 Inside `packages/e2e` — the only place in this repository that spawns processes
 and opens sockets, and the only place allowed to:

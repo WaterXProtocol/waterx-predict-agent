@@ -1,0 +1,240 @@
+/**
+ * Turning a validated IPC request into an answer.
+ *
+ * The dispatcher is where the Runner's honesty rules become machine-readable
+ * rather than documentary:
+ *
+ * - `runner.status` reports `driving: false` while no executor exists. A client
+ *   that treats a reachable Runner as a running strategy is making exactly the
+ *   mistake ADR-0001 §6 is about, and a boolean in the reply is the only form of
+ *   that warning a program can act on.
+ * - `runner.cancel-job` distinguishes *recorded* from *applied*. Only the lease
+ *   holder may end a job, and only from a state that has not started a write —
+ *   replying "cancelled" while a submit may be in flight would report a stop that
+ *   did not happen (ADR-0001 §15). The store already refuses to apply it; this
+ *   layer refuses to describe it as applied.
+ */
+import type { Clock } from '../clock.ts';
+import { isJobStoreError, JobStoreError } from '../errors.ts';
+import type { RecoveryReport } from '../recovery.ts';
+import { canEndLocally, type JobState } from '../state-machine.ts';
+import type { JobStore } from '../store.ts';
+import type { LeaseKeeper } from '../supervisor.ts';
+import { validateRunnerCommand } from './commands.ts';
+import { isRunnerIpcError, RUNNER_IPC_PROTOCOL_VERSION, type ResponseErrorBody } from './protocol.ts';
+
+export interface RunnerCommandContext {
+  readonly store: JobStore;
+  readonly instanceId: string;
+  readonly pid: number;
+  readonly host: string;
+  readonly startedAt: string;
+  readonly now: Clock;
+  readonly leases: LeaseKeeper;
+  /** Whether anything in this build actually advances a job. */
+  readonly driving: boolean;
+  /** Named, so a client can report which pieces are absent rather than guessing. */
+  readonly driverGaps: readonly string[];
+  readonly recovery: RecoveryReport | undefined;
+  requestShutdown(reason: string): void;
+}
+
+export const dispatch = async (
+  command: string,
+  rawInput: unknown,
+  context: RunnerCommandContext,
+): Promise<unknown> => {
+  const input = validateRunnerCommand(command, rawInput);
+
+  switch (command) {
+    case 'runner.status':
+      return status(context);
+    case 'runner.jobs':
+      return jobs(input, context);
+    case 'runner.job':
+      return job(input, context);
+    case 'runner.cancel-job':
+      return cancelJob(input, context);
+    case 'runner.shutdown': {
+      const reason = typeof input['reason'] === 'string' ? input['reason'] : 'IPC_REQUEST';
+      context.requestShutdown(reason);
+      return { stopping: true, instanceId: context.instanceId, reason };
+    }
+    /* c8 ignore next 3 -- unreachable: validateRunnerCommand rejects every other name */
+    default:
+      throw new Error(`unhandled runner command ${command}`);
+  }
+};
+
+const status = async (context: RunnerCommandContext): Promise<unknown> => {
+  const all = await context.store.listJobs();
+  const byState: Record<string, number> = {};
+  for (const record of all) byState[record.state] = (byState[record.state] ?? 0) + 1;
+
+  return {
+    protocol: RUNNER_IPC_PROTOCOL_VERSION,
+    instanceId: context.instanceId,
+    pid: context.pid,
+    host: context.host,
+    startedAt: context.startedAt,
+    at: context.now(),
+    store: { kind: context.store.kind },
+    // The two fields a caller must read before believing a strategy is running.
+    driving: context.driving,
+    driverGaps: [...context.driverGaps],
+    jobs: { total: all.length, byState },
+    leasedHere: context.leases.held(),
+    recovery:
+      context.recovery === undefined
+        ? null
+        : {
+            at: context.recovery.at,
+            jobs: context.recovery.jobs.map((entry) => ({
+              jobId: entry.jobId,
+              from: entry.from,
+              to: entry.to,
+              disposition: entry.disposition,
+            })),
+            staleInstances: context.recovery.staleInstances.map((instance) => ({
+              instanceId: instance.instanceId,
+              host: instance.host,
+              heartbeatAt: instance.heartbeatAt,
+            })),
+          },
+  };
+};
+
+const jobs = async (
+  input: Readonly<Record<string, unknown>>,
+  context: RunnerCommandContext,
+): Promise<unknown> => {
+  const state = input['state'];
+  const accountId = input['accountId'];
+  const records = await context.store.listJobs({
+    ...(typeof state === 'string' ? { states: [state as JobState] } : {}),
+    ...(typeof accountId === 'string' ? { accountId } : {}),
+  });
+  return {
+    jobs: records.map((record) => ({
+      jobId: record.jobId,
+      strategyId: record.strategyId,
+      accountId: record.accountId,
+      state: record.state,
+      createdAt: record.createdAt,
+      updatedAt: record.updatedAt,
+      expiresAt: record.expiresAt,
+      terminalAt: record.terminalAt,
+      cancelRequestedAt: record.cancelRequestedAt,
+      leasedHere: context.leases.isHeld(record.jobId),
+      leaseInstanceId: record.leaseInstanceId,
+    })),
+  };
+};
+
+const job = async (
+  input: Readonly<Record<string, unknown>>,
+  context: RunnerCommandContext,
+): Promise<unknown> => {
+  const jobId = input['jobId'] as string;
+  const record = await context.store.getJob(jobId);
+  if (record === undefined) {
+    throw new JobStoreError('UNKNOWN_JOB', `unknown job ${jobId}`, { jobId });
+  }
+  const [legs, transitions, open] = await Promise.all([
+    context.store.listLegs(jobId),
+    context.store.listTransitions(jobId),
+    context.store.listOpenSideEffects(jobId),
+  ]);
+  return {
+    job: record,
+    legs,
+    transitions,
+    // The evidence that a request may have left this process. Surfaced rather
+    // than summarized: "unknown" is the answer, and it should look like one.
+    openSideEffects: open,
+    leasedHere: context.leases.isHeld(jobId),
+  };
+};
+
+const cancelJob = async (
+  input: Readonly<Record<string, unknown>>,
+  context: RunnerCommandContext,
+): Promise<unknown> => {
+  const jobId = input['jobId'] as string;
+  const reason = input['reason'] as string;
+  const at = context.now();
+
+  const record = await context.store.requestCancel(jobId, reason, at);
+  const lease = context.leases.lease(jobId);
+
+  if (lease === undefined) {
+    return {
+      jobId,
+      state: record.state,
+      recorded: true,
+      applied: false,
+      // Honest, and product-visible: nothing is running this job, so the request
+      // sits until some Runner claims it.
+      pending: 'NOT_LEASED_BY_THIS_RUNNER',
+      cancelRequestedAt: record.cancelRequestedAt,
+    };
+  }
+
+  if (!canEndLocally(record.state)) {
+    return {
+      jobId,
+      state: record.state,
+      recorded: true,
+      applied: false,
+      pending: 'IN_FLIGHT',
+      cancelRequestedAt: record.cancelRequestedAt,
+    };
+  }
+
+  const cancelled = await context.store.transition({
+    lease,
+    to: 'CANCELLED',
+    reason: 'CANCEL_REQUESTED',
+    at,
+    detail: { requestedReason: reason, requestedVia: 'ipc' },
+  });
+  // The terminal transition cleared the lease inside its own transaction, so the
+  // keeper must forget it rather than try to hand back a lease it no longer has.
+  context.leases.forget(jobId, 'RELEASED');
+  return {
+    jobId,
+    state: cancelled.state,
+    recorded: true,
+    applied: true,
+    cancelRequestedAt: cancelled.cancelRequestedAt,
+    terminalAt: cancelled.terminalAt,
+  };
+};
+
+/**
+ * Maps a thrown value onto the wire error body.
+ *
+ * Store refusals keep their own codes — `ILLEGAL_TRANSITION`, `LEASE_LOST`,
+ * `NO_IDEMPOTENCY_KEY` — because those name rules a caller must branch on, and
+ * flattening them into `INTERNAL` would turn a refusal that protects funds into
+ * an unexplained failure.
+ */
+export const toErrorBody = (error: unknown): ResponseErrorBody => {
+  if (isRunnerIpcError(error)) {
+    return {
+      code: error.code,
+      message: error.message,
+      ...(error.detail === undefined ? {} : { detail: error.detail }),
+    };
+  }
+  if (isJobStoreError(error)) {
+    return {
+      code: error.code,
+      message: error.message,
+      ...(error.detail === undefined ? {} : { detail: error.detail }),
+    };
+  }
+  // No stack on the wire. A local peer already knows where the Runner lives; the
+  // stack only adds paths and internals to whatever is reading the reply.
+  return { code: 'INTERNAL', message: error instanceof Error ? error.message : String(error) };
+};

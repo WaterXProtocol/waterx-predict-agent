@@ -60,6 +60,9 @@ importers:
 
   packages/runner:
     dependencies:
+      '@waterx/predict-agent-schema':
+        specifier: workspace:*
+        version: link:../schema
       '@waterx/predict-agent-sdk':
         specifier: workspace:*
         version: link:../sdk

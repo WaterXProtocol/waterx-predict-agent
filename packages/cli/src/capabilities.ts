@@ -190,7 +190,7 @@ export const CAPABILITIES: readonly Capability[] = [
     summary: 'Create and manage durable conditional jobs.',
     reason: 'NOT_BUILT',
     detail:
-      'Conditional orders are client-side and live in the Runner, which does not exist yet. Nothing server-side stores a target order.',
+      'Conditional orders are client-side and live in the Runner. A Runner process exists in this workspace, but nothing in it executes a job yet, and this CLI has no command that talks to one. Nothing server-side stores a target order.',
     tracking: '2.x',
   },
   {
@@ -199,7 +199,7 @@ export const CAPABILITIES: readonly Capability[] = [
     summary: 'Run and inspect the local job runner.',
     reason: 'NOT_BUILT',
     detail:
-      'The first Runner is self-hosted and local, and the device must stay awake and online for a job to progress. It is not built.',
+      'The first Runner is self-hosted and local, and the device must stay awake and online for a job to progress. The daemon and its local socket exist in this workspace, but it drives no job and this CLI cannot start or reach one.',
     tracking: '2.x',
   },
 ];
