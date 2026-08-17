@@ -12,8 +12,11 @@ calls it on a tick, one pass per job, never overlapping itself, and stops drivin
 job the instant this instance is fenced out of it.
 
 The scheduler needs three collaborators supplied together — a gateway, a
-`PriceObserver` and a `StrategySigner` — and this package implements only the
-first. So **whether a daemon drives is a decision, not a property of the build**:
+`PriceObserver` and a `StrategySigner` — and this package now implements the
+first two: `QuoteStreamPriceObserver` turns the SDK's indicative quote stream
+into observed prices, and into silence whenever that feed cannot prove it is
+live. The signer is still an interface. So **whether a daemon drives is a
+decision, not a property of the build**:
 an embedding application that supplies all three gets a Runner that takes a
 strategy to a fill, and `runnerd`, which supplies none, starts no scheduler and
 advances nothing. `runner.status` reports which one it is — `driving`, plus
@@ -43,15 +46,38 @@ socket is refused `NOT_IMPLEMENTED` either way.
 | Independent multi-leg execution under per-leg keys | implemented |
 | Exactly one logical submission across a crash at any boundary | implemented, tested |
 | Scheduler that calls `driveJob` on a schedule, inside the daemon | implemented |
-| Price watcher supplying a `PriceObserver` from a live stream | **not implemented** (interface only) |
+| `PriceObserver` over the SDK's indicative quote stream | implemented |
 | Signer inside the Runner trust boundary | **not implemented** (interface only, backlog 1.x) |
 | A driver `runnerd` can construct from local configuration | **not implemented** (backlog 2.6) |
 | Cursor persistence wired back into a live stream | **not implemented** (backlog 2.4) |
 
 Synthetic limit orders therefore still run in-process via the SDK's
 `waitForPriceAndExecute` and die with the process — see `packages/sdk/README.md`.
-Starting `runnerd` does not change that yet: it can construct no signer and no
-price source, so it starts with no driver and reports `driving: false`.
+Starting `runnerd` does not change that yet: it can construct no signer, and no
+quote stream either, because neither has a configuration surface to be built
+from. So it starts with no driver and reports `driving: false`.
+
+### What the price observer will and will not say
+
+`QuoteStreamPriceObserver` answers a `PriceObserver` from the SDK's indicative
+quote stream. It returns `null` — "nothing was observed", which the executor
+treats as a pass with no opinion — the moment the feed can no longer prove it is
+live: a stale frame, a gap it cannot fill, a dropped connection, a stream that
+gave up, a topic the server refused. It never ages a remembered number into an
+answer.
+
+It also **never falls back to `POST /quotes`**, which is where it differs from
+the SDK's `QuoteStreamPriceWatcher`. A `WatchKey` carries a market, an outcome
+and a side and deliberately no size; `POST /quotes` requires one. Falling back
+would mean inventing a probe size and minting a priced, executable artifact
+merely to read a number. It waits instead, which costs a tick.
+
+Subscriptions expire by disuse rather than by being told a job ended: a topic
+nobody has asked about for `idleMs` (five minutes by default) is released on the
+next `observe`. Nothing has to remember to tell it, so no cancellation, expiry,
+lost lease or crash leaks a subscription. `topics()` reports what is held and why
+a topic is quiet — `DEGRADED` in particular means the stream has given up for the
+life of the process, so that topic will answer `null` forever without erroring.
 
 ## Requirements
 

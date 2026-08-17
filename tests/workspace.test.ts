@@ -280,21 +280,39 @@ describe('the Runner package', () => {
   });
 
   it('says in its README which half of the Runner exists', () => {
-    // The daemon, its socket, `driveJob` and the loop that calls it are all
-    // built. What is not built is a price source or a signer to call it with, so
-    // a shipped `runnerd` still advances nothing. A README that described this
-    // package as "the Runner" would be claiming a job progresses on its own, so
-    // the absence has to survive in prose as well as in `driving: false`.
+    // The daemon, its socket, `driveJob`, the loop that calls it and the price
+    // source it reads are all built. What is not built is a signer, or any
+    // configuration surface to assemble a driver from, so a shipped `runnerd`
+    // still advances nothing. A README that described this package as "the
+    // Runner" would be claiming a job progresses on its own, so the absence has
+    // to survive in prose as well as in `driving: false`.
     const readme = read('packages/runner/README.md');
     expect(readme).toContain('**not implemented**');
     expect(readme.toLowerCase()).toContain('daemon');
     expect(readme).toContain('driving: false');
     expect(readme).toContain(
-      'Price watcher supplying a `PriceObserver` from a live stream | **not implemented**',
-    );
-    expect(readme).toContain(
       'Signer inside the Runner trust boundary | **not implemented**',
     );
+    expect(readme).toContain(
+      'A driver `runnerd` can construct from local configuration | **not implemented**',
+    );
+  });
+
+  it('keeps the price observer from ageing a price into an answer', () => {
+    // The observer's whole contract is that silence stays silence. If it ever
+    // learned to mint a quote to fill a gap it would need a size a `WatchKey`
+    // deliberately does not carry, and would be pricing an order off an
+    // indicative observation — so it must not reach the SDK's request-building
+    // surface at all, and it must read staleness through the one helper that
+    // returns null for it.
+    // Checked as imports, not as prose: the file's header explains at length why
+    // it will not build a quote request, and naming the type there is the
+    // explanation rather than a violation of it.
+    const prices = read('packages/runner/src/prices.ts');
+    expect(prices).toContain('streamTriggerPrice');
+    expect(prices).not.toMatch(/^\s*(?:type )?CreateQuoteRequestBody,?$/m);
+    expect(prices).not.toContain('quoteRequestFor');
+    expect(prices).not.toContain('getQuote');
   });
 
   it('keeps the honest `driving` flag out of reach of a typo', () => {
@@ -311,7 +329,8 @@ describe('the Runner package', () => {
 
   it('ships a `runnerd` that builds no driver, and therefore promises nothing', () => {
     // The binary an operator actually starts. It has no way to construct a
-    // signer or a price source, so it must not pass a `driver` — and it must
+    // signer, and no configured stream to put a price observer over, so it must
+    // not pass a `driver` — and it must
     // print what the daemon reports rather than a literal that would keep saying
     // `false` after this file learned how.
     const bin = read('packages/runner/src/bin/runnerd.ts');

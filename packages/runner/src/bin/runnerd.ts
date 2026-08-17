@@ -8,10 +8,12 @@
  *
  * It also starts the daemon with **no `driver`**, which is why it prints
  * `driving: false`. A driver is a gateway, a price source and a signer supplied
- * together; the last two are local configuration and key material this file has
- * no way to build, and constructing a half-driver here would be a Runner that
- * claims to be watching a market it cannot see. Backlog 2.6 carries the config
- * surface that would let it.
+ * together, and this file can build none of the three: the first two need
+ * credentials and an endpoint it has no config format for — the price observer
+ * exists, but an observer over no stream is not one — and the third needs key
+ * material that has no local representation at all. Constructing a half-driver
+ * here would be a Runner that claims to be watching a market it cannot see.
+ * Backlog 2.6 carries the config surface that would let it.
  *
  * It runs in the foreground and it does not daemonize. That is not an omission —
  * the Runner is self-hosted, and a process that detached itself would be a

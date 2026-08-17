@@ -15,10 +15,15 @@
  * `driveJob` on each of them on a tick, so a job finally moves without anyone
  * asking it to.
  *
- * What is still missing is the two collaborators a pass cannot happen without:
- * there is no price watcher behind `PriceObserver` and no signer behind
- * `StrategySigner` in this package, only the interfaces. So a daemon started
- * from `runnerd` supplies no `driver`, starts no scheduler and advances nothing;
+ * and, new, `QuoteStreamPriceObserver`, which answers a `PriceObserver` from the
+ * SDK's indicative quote stream and reports nothing — never a remembered number
+ * — the moment that feed can no longer prove it is live.
+ *
+ * What is still missing is the other collaborator a pass cannot happen without:
+ * there is no signer behind `StrategySigner` in this package, only the
+ * interface, and no local configuration from which a quote stream could be
+ * opened. So a daemon started from `runnerd` supplies no `driver`, starts no
+ * scheduler and advances nothing;
  * an embedding application that supplies all three gets a Runner that does. The
  * daemon reports which it is rather than implying — `driving` is read from
  * whether a scheduler is ticking, and `driverGaps` names what is absent when it
@@ -39,6 +44,11 @@ export {
   type RunnerDaemonOptions,
 } from './daemon.ts';
 export { isJobStoreError, JobStoreError, type JobStoreErrorCode } from './errors.ts';
+export {
+  QuoteStreamPriceObserver,
+  type PriceTopicStatus,
+  type QuoteStreamPriceObserverOptions,
+} from './prices.ts';
 export { RunnerIpcClient, type RunnerIpcClientOptions } from './ipc/client.ts';
 export {
   listRunnerIpcCommands,

@@ -35,8 +35,10 @@
  * impression.
  *
  * Nothing in *this package* constructs a driver. `runnerd` starts a daemon with
- * no `driver`, because a signer and a price source are configuration this build
- * has no file format for yet; an embedding application supplies them.
+ * no `driver`: a signer does not exist here at all, and while
+ * `QuoteStreamPriceObserver` does, opening the stream behind it takes credentials
+ * and an endpoint this build has no file format for yet. An embedding application
+ * supplies all three.
  */
 import { hostname } from 'node:os';
 import { join } from 'node:path';
@@ -63,11 +65,11 @@ import { LeaseKeeper, type LeaseLossReason } from './supervisor.ts';
 /**
  * The pieces a daemon started with no `driver` is missing.
  *
- * `scheduler` is no longer on this list unconditionally: {@link JobScheduler}
- * exists and the daemon starts one whenever it is given the collaborators a pass
- * needs. What a bare daemon lacks is those collaborators — a signer inside the
- * trust boundary, and a source of observed prices — and, consequently, the loop,
- * because starting one that could not act would be worse than not starting it.
+ * This is a list of what a daemon INSTANCE was not handed, not of what the
+ * package can build. Both `JobScheduler` and `QuoteStreamPriceObserver` exist;
+ * a daemon started with no `driver` still has neither, because nothing wired one
+ * up, and it still has no signer because none exists to wire. The consequence is
+ * the loop: starting one that could not act would be worse than not starting it.
  */
 export const RUNNER_DRIVER_GAPS: readonly string[] = ['scheduler', 'signer', 'price-watcher'];
 
