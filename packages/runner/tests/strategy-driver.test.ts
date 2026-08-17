@@ -28,10 +28,20 @@ import { recoverJobs } from '../src/recovery.ts';
 import { createExternalCommandSigner } from '../src/signer.ts';
 import { SqliteJobStore } from '../src/sqlite/store.ts';
 import type { JobState } from '../src/state-machine.ts';
-import type { BeginSideEffectInput, JobStore, TransitionInput } from '../src/store.ts';
+import type { JobStore, TransitionInput } from '../src/store.ts';
 import { driveJob, type DriveResult } from '../src/strategy/driver.ts';
 import type { PriceObserver, StrategyGateway, StrategySigner } from '../src/strategy/gateway.ts';
-import { jobInput, later, LEG, T0, tempStoreDir, type TempStoreDir } from './harness.ts';
+import {
+  Crash,
+  crashBeforeSideEffect,
+  crashingStore,
+  jobInput,
+  later,
+  LEG,
+  T0,
+  tempStoreDir,
+  type TempStoreDir,
+} from './harness.ts';
 import {
   apiError,
   BYTES,
@@ -51,30 +61,9 @@ import {
 
 /* ── A real store, and a way to kill it mid-pass ───────────────────────────── */
 
-class Crash extends Error {
-  override readonly name = 'Crash';
-}
-
-/**
- * The store, with a trip wire. `hook` runs BEFORE the delegated call, so a throw
- * from it leaves the database in exactly the state a process that died one
- * instruction earlier would have left it in.
- */
-const wired = (inner: JobStore, hook: (method: string, args: readonly unknown[]) => void): JobStore =>
-  new Proxy(inner, {
-    get(target, property, receiver): unknown {
-      const value: unknown = Reflect.get(target, property, receiver);
-      if (typeof value !== 'function') return value;
-      return (...args: unknown[]): unknown => {
-        hook(String(property), args);
-        return (value as (...a: unknown[]) => unknown).apply(target, args);
-      };
-    },
-  }) as JobStore;
-
 /** Dies just before the job records that it reached `state`. */
 const crashBefore = (inner: JobStore, state: JobState): JobStore =>
-  wired(inner, (method, args) => {
+  crashingStore(inner, (method, args) => {
     if (method !== 'transition') return;
     if ((args[0] as TransitionInput).to === state) throw new Crash(`crash before ${state}`);
   });
@@ -835,18 +824,10 @@ describe('a leg the crash left unsent', () => {
   ];
 
   /**
-   * Dies just before the ledger records that a request for `legIndex` is about to
-   * be made. The leg is left reserved, with a key and no attempt row — which is
-   * the one shape that PROVES nothing was ever sent for it.
+   * Half a run: leg 0 created, leg 1 reserved and never sent. The crash lands on
+   * leg 1's attempt row, so the leg is left with a key and no row at all — the
+   * one shape that PROVES nothing was ever sent for it.
    */
-  const crashBeforeSideEffect = (inner: JobStore, legIndex: number): JobStore =>
-    wired(inner, (method, args) => {
-      if (method !== 'beginSideEffect') return;
-      if ((args[0] as BeginSideEffectInput).legIndex !== legIndex) return;
-      throw new Crash(`crash before the attempt for leg ${String(legIndex)}`);
-    });
-
-  /** Half a run: leg 0 created, leg 1 reserved and never sent. */
   const halfSent = async (gateway: StrategyGateway): Promise<string> => {
     await arm({ intent: twoLegs });
     await expect(

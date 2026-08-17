@@ -18,6 +18,8 @@ import { chmodSync, existsSync, mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { PredictAgentTransportError } from '@waterx/predict-agent-sdk';
+
 import {
   installShutdownHandlers,
   RUNNER_DRIVER_GAPS,
@@ -31,7 +33,15 @@ import type { PriceTopicStatus } from '../src/prices.ts';
 import { readIpcToken } from '../src/ipc/runtime-dir.ts';
 import type { SchedulerDriver } from '../src/scheduler.ts';
 import { SqliteJobStore } from '../src/sqlite/store.ts';
-import { jobInput, later, LEG, T0, tempRuntimeDir, type TempRuntimeDir } from './harness.ts';
+import {
+  crashBeforeSideEffect,
+  jobInput,
+  later,
+  LEG,
+  T0,
+  tempRuntimeDir,
+  type TempRuntimeDir,
+} from './harness.ts';
 import {
   created,
   gatewayOf,
@@ -289,6 +299,140 @@ describe('a daemon that was given a driver', () => {
     // Stopped cleanly: the job is where the last completed pass left it, not
     // half-written by a pass that was abandoned.
     expect((await store.getJob('job_1'))?.state).toBe('DRAFT');
+  });
+});
+
+/* ── One order, across a restart of the whole process ──────────────────────── */
+
+/**
+ * The same property `strategy-driver.test.ts` proves for one pass, proved for the
+ * thing an operator actually runs: a daemon, its scheduler, its recovery, and a
+ * second daemon started on the same database after the first one died.
+ *
+ * The death is injected at the STORE, so the first process stops with exactly the
+ * rows a killed one would have left. The gateway is shared between both daemons,
+ * which is what makes "how many orders were ever created" a countable fact across
+ * the restart rather than a per-process one.
+ */
+describe('a Runner that was restarted mid-order', () => {
+  const twoLegs = [LEG, { ...LEG, positionId: 'pos_2', sellShares: '10.000000' }];
+
+  const driverOver = (gateway: SchedulerDriver['gateway']): SchedulerDriver => ({
+    gateway,
+    signer,
+    prices: pricesAt('0.900000'),
+  });
+
+  /** Closes the database the way a dying process would, and reopens it. */
+  const reopen = async (): Promise<void> => {
+    await store.close();
+    store = new SqliteJobStore({ path: dir.storePath });
+  };
+
+  it('finishes the half of the run that was never sent, and sends it once', async () => {
+    await store.createJob(
+      jobInput({
+        at: T0,
+        intent: twoLegs,
+        trigger: FAKE_TRIGGER,
+        expiresAt: later(NOW, 86_400_000),
+      }),
+    );
+    const gateway = gatewayOf({
+      quotes: [
+        quote({ asOf: NOW, expiresAt: later(NOW, 30_000) }),
+        quote({ quoteId: 'q_2', asOf: NOW, expiresAt: later(NOW, 30_000) }),
+      ],
+      creates: [
+        { ...created('exe_1'), signatureExpiresAt: later(NOW, 120_000) },
+        { ...created('exe_2'), signatureExpiresAt: later(NOW, 120_000) },
+      ],
+      submits: [{ executionId: 'exe_2', status: 'SUBMITTED', transactionDigest: '0xsubmit' }],
+      executions: {
+        // Leg 0 was created and never signed — the sponsored bytes died with the
+        // process — so the server expires it. Leg 1 is the half that still runs.
+        exe_1: { executionId: 'exe_1', status: 'EXPIRED' },
+        exe_2: { executionId: 'exe_2', status: 'FILLED' },
+      },
+    });
+
+    // First process: arms, triggers, creates leg 0, dies before the ledger has
+    // recorded a single thing about leg 1.
+    await startDaemon({
+      store: crashBeforeSideEffect(store, 1),
+      driver: driverOver(gateway),
+      tickIntervalMs: 3_600_000,
+    });
+    await daemons[0]?.tick();
+    const crashed = await daemons[0]?.tick();
+
+    expect(crashed?.failures[0]?.jobId).toBe('job_1');
+    expect(gateway.createCalls.length).toBe(1);
+    expect((await store.getJob('job_1'))?.state).toBe('CREATING');
+    const keys = (await store.listLegs('job_1')).map((leg) => leg.idempotencyKey);
+
+    await daemons[0]?.stop();
+    await reopen();
+
+    // Second process, same database, same server.
+    const handle = await startDaemon({
+      instanceId: 'run_live_2',
+      driver: driverOver(gateway),
+      tickIntervalMs: 3_600_000,
+    });
+    expect(handle.recovery.jobs[0]?.to).toBe('RECONCILING');
+
+    await daemons[1]?.tick();
+
+    // Exactly two creates for two legs, and the second one carried the key that
+    // was minted for it before the crash.
+    expect(gateway.createCalls.length).toBe(2);
+    expect(gateway.createCalls.map((call) => call.idempotencyKey)).toEqual(keys);
+    expect(gateway.submitCalls).toEqual(['exe_2']);
+
+    await daemons[1]?.tick();
+
+    expect((await store.listLegs('job_1')).map((leg) => leg.status)).toEqual([
+      'FAILED',
+      'SUCCEEDED',
+    ]);
+    expect((await store.getJob('job_1'))?.state).toBe('FILLED');
+  });
+
+  it('never invents a second order for a create the first process could not resolve', async () => {
+    await store.createJob(
+      jobInput({ at: T0, trigger: FAKE_TRIGGER, expiresAt: later(NOW, 86_400_000) }),
+    );
+    const gateway = gatewayOf({
+      quotes: [quote({ asOf: NOW, expiresAt: later(NOW, 30_000) })],
+      // The request leaves and nothing comes back. Nobody knows whether it landed.
+      creates: [new PredictAgentTransportError('socket hang up', undefined)],
+    });
+
+    await startDaemon({ driver: driverOver(gateway), tickIntervalMs: 3_600_000 });
+    await daemons[0]?.tick();
+    await daemons[0]?.tick();
+
+    expect(gateway.createCalls.length).toBe(1);
+    expect((await store.getJob('job_1'))?.state).toBe('UNKNOWN_PENDING');
+    expect((await store.listOpenSideEffects('job_1')).length).toBe(1);
+
+    await daemons[0]?.stop();
+    await reopen();
+
+    await startDaemon({
+      instanceId: 'run_live_2',
+      driver: driverOver(gateway),
+      tickIntervalMs: 3_600_000,
+    });
+    await daemons[1]?.tick();
+    await daemons[1]?.tick();
+
+    // A restart is not new information. The job stays visible and unresolved, and
+    // the loop keeps its hands off the one thing it must not do twice.
+    expect(gateway.createCalls.length).toBe(1);
+    expect((await store.getJob('job_1'))?.state).toBe('UNKNOWN_PENDING');
+    expect((await store.listOpenSideEffects('job_1')).length).toBe(1);
   });
 });
 

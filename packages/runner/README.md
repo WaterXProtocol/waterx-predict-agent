@@ -48,6 +48,7 @@ is absent, rather than a half-driver that could create an order it cannot sign.
 | Independent multi-leg execution under per-leg keys | implemented |
 | Exactly one logical submission across a crash at any boundary | implemented, tested |
 | A leg a crash left unsent, finished under the key already on disk | implemented, tested |
+| One order across a restart of the daemon itself, not just of a pass | implemented, tested |
 | Scheduler that calls `driveJob` on a schedule, inside the daemon | implemented |
 | `PriceObserver` over the SDK's indicative quote stream | implemented |
 | Signer inside the Runner trust boundary, over an external command | implemented |
