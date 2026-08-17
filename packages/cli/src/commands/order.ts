@@ -489,7 +489,7 @@ export async function orderExecute(context: CommandContext): Promise<unknown> {
   if (result.timedOut) {
     context.exitAs(EXIT_CODES.AMBIGUOUS);
     context.diagnostic(
-      `The wait for ${result.executionId} ran out before a terminal status. The order was NOT cancelled; reconcile with \`order reconcile --execution-id ${result.executionId}\`.`,
+      `The wait for ${result.executionId} ran out before a terminal status. The order was NOT cancelled; reconcile with \`order reconcile --executionId ${result.executionId}\`.`,
     );
   }
 
@@ -510,7 +510,7 @@ export async function orderExecute(context: CommandContext): Promise<unknown> {
             reason: 'WAIT_TIMED_OUT',
             detail:
               'The wait ended before the execution did. This is not a failure and not a cancellation: the order is on-chain and may still fill.',
-            command: `order reconcile --execution-id ${result.executionId}`,
+            command: `order reconcile --executionId ${result.executionId}`,
             neverDo: 'Do not resubmit under a fresh idempotency key. That places a second order.',
           },
         }

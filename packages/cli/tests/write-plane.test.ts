@@ -599,6 +599,52 @@ describe('a wait that runs out is ambiguous, not failed', () => {
     expect(result.fetches.filter((call) => call.url.endsWith('/executions'))).toHaveLength(1);
     expect(signatures(result.signerRuns).filter((type) => type === 'TRANSACTION')).toHaveLength(1);
   }, 15_000);
+
+  it('emits a recovery instruction this CLI can actually run', async () => {
+    // The one instruction a caller follows while holding an order whose outcome
+    // is unknown. Asserting only that it mentions the execution id let it ship
+    // spelled `--execution-id`, which is not a field of `order reconcile` and
+    // exits USAGE — so the documented recovery from an ambiguous write was a
+    // command that could not run. The assertion is therefore: take the string
+    // the CLI printed, split it the way a shell would, and execute THAT.
+    const token = await previewToken();
+    const timedOut = await invoke(
+      [
+        'order',
+        'execute',
+        '--approve',
+        token,
+        '--input',
+        input({ referenceQuoteId: QUOTE_ID, waitFor: 'TERMINAL', timeoutMs: 1_000 }),
+      ],
+      {
+        env: CONFIGURED_ENV,
+        routes: {
+          ...WRITE_ROUTES,
+          [`GET ${EXECUTIONS_PATH}/${EXECUTION_ID}`]: submitted(EXECUTION_ID, 'PENDING_FILL'),
+        },
+      },
+    );
+    const { reconciliation } = timedOut.envelope.data as { reconciliation: { command: string } };
+
+    const replayed = await invoke(reconciliation.command.split(' '), {
+      env: CONFIGURED_ENV,
+      routes: {
+        'POST /agent-api/v1/auth': AUTH_OK,
+        [`GET ${EXECUTIONS_PATH}/${EXECUTION_ID}`]: filled(),
+      },
+    });
+    const resolved = replayed.envelope.data as { resolved: boolean; execution: { terminal: boolean } };
+
+    expect(replayed.exit).toBe(EXIT_CODES.OK);
+    expect(resolved.resolved).toBe(true);
+    expect(resolved.execution.terminal).toBe(true);
+    // Recovery reads. It must not place a second order under any spelling.
+    expect(replayed.fetches.some((call) => call.method === 'POST' && call.url.endsWith('/executions'))).toBe(
+      false,
+    );
+    expect(signatures(replayed.signerRuns)).not.toContain('TRANSACTION');
+  }, 15_000);
 });
 
 describe('order get and order reconcile', () => {
