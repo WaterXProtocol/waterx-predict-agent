@@ -107,7 +107,7 @@ orchestrates.
 | `packages/sdk` | `@waterx/predict-agent-sdk` | Published surface, implemented |
 | `packages/schema` | `@waterx/predict-agent-schema` | Published surface, implemented |
 | `packages/cli` | `@waterx/predict-agent-cli` | Implemented, reads **and writes** behind an enforced execution policy; `private`, so nothing is published |
-| `packages/runner` | `@waterx/predict-agent-runner` | SQLite/WAL job store, state machine, lease fencing, crash recovery, plus a daemon with authenticated local IPC (ADR-0008) and lease supervision. The **executor, signer, reconciler and price-watcher are not implemented**, so the process runs but no job progresses on its own — `runner.status` reports `driving: false`. `private`, Node 24 floor (ADR-0007) |
+| `packages/runner` | `@waterx/predict-agent-runner` | SQLite/WAL job store, state machine, lease fencing, crash recovery, `UNKNOWN_PENDING` reconciliation, plus a daemon with authenticated local IPC (ADR-0008) and lease supervision. The **executor, signer and price-watcher are not implemented**, so the process runs, nothing calls the reconciler on a schedule, and no job progresses on its own — `runner.status` reports `driving: false`. `private`, Node 24 floor (ADR-0007) |
 | `packages/mcp` | `@waterx/predict-agent-mcp` | Reserved boundary, **not implemented** |
 | `packages/e2e` | `@waterx/predict-agent-e2e` | Harness that drives the installed CLI as a subprocess; `private`, never shipped. The end-to-end has **not run** — nothing here is evidence that it passes |
 
@@ -184,6 +184,12 @@ Inside `packages/runner`:
   `synchronous = FULL` is deliberate; a newer schema is refused outright.
 - `src/recovery.ts` — what a Runner does with the jobs it finds at start-up. Its
   rule is *only evidence ends a job; absence of evidence ends nothing.*
+- `src/reconciler.ts` — the other half of that rule: recovery decides *that* a job
+  is unresolved, `reconcileJob` decides *what happened*, and only from an
+  authoritative REST read. A non-terminal execution is left alone rather than
+  finalized on a clock, and a create with no execution id reports `INCONCLUSIVE`
+  because no API read maps an idempotency key to an execution. Nothing calls it on
+  a schedule yet — that is the executor's job.
 - `src/secrets.ts` — refusal, not redaction, at the store boundary: a
   secret-shaped field is rejected rather than written and masked.
 - `src/daemon.ts` — the process. Start-up order is load-bearing: assert the

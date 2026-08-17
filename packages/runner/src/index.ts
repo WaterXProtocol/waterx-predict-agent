@@ -2,13 +2,15 @@
  * @waterx/predict-agent-runner — the self-hosted local Runner.
  *
  * What ships here today: the SQLite/WAL job store behind a store interface, the
- * job state machine, crash recovery into `UNKNOWN_PENDING`, and — new — the
- * daemon process, its authenticated local IPC socket, and the heartbeat/lease
- * supervisor that stops a fenced-out Runner from writing.
+ * job state machine, crash recovery into `UNKNOWN_PENDING`, the daemon process,
+ * its authenticated local IPC socket, the heartbeat/lease supervisor that stops
+ * a fenced-out Runner from writing, and — new — `reconcileJob`, which resolves an
+ * `UNKNOWN_PENDING` job from an authoritative REST read.
  *
  * What is still missing is the part that makes a job *move*: there is no
- * executor, no signer and no live reconciler, so a recovered job sits in the
- * state recovery assigned it. The daemon says so rather than implying otherwise
+ * executor and no signer, so nothing calls the reconciler on a schedule and a
+ * recovered job sits in the state recovery assigned it. The daemon says so
+ * rather than implying otherwise
  * — `driving: false` on the IPC handshake and in `runner.status`, and every agent
  * command contract name is refused `NOT_IMPLEMENTED`. See the README and
  * `docs/IMPLEMENTATION_BACKLOG.md` 2.6.
@@ -93,6 +95,13 @@ export type {
   SideEffectKind,
   SideEffectOutcome,
 } from './job.ts';
+export {
+  reconcileJob,
+  type ReconcileDisposition,
+  type ReconcileGateway,
+  type ReconcileJobOptions,
+  type ReconcileResult,
+} from './reconciler.ts';
 export {
   classify,
   type RecoveredJob,

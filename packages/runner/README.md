@@ -23,8 +23,8 @@ over the socket is refused `NOT_IMPLEMENTED` rather than answered.
 | Daemon process, recovery at start-up, ordered shutdown | implemented |
 | Authenticated local IPC over a Unix socket (ADR-0008) | implemented |
 | Lease renewal and heartbeat supervision, with abort on loss | implemented |
+| `UNKNOWN_PENDING` resolved from an authoritative REST read | implemented, uncalled |
 | Executor that drives a job through the SDK | **not implemented** |
-| Live reconciliation of `UNKNOWN_PENDING` against REST | **not implemented** |
 | Price watcher feeding a job's trigger | **not implemented** |
 | Signer inside the Runner trust boundary | **not implemented** (backlog 1.x) |
 | Cursor persistence wired back into a live stream | **not implemented** (backlog 2.4) |
@@ -102,6 +102,26 @@ job in `UNKNOWN_PENDING`, which has exactly one exit — a reconcile under the
 *original* idempotency key. No recovery path ever mints a second intent for one
 logical order.
 
+`reconcileJob` is the implementation of that single exit. It reads the execution
+over REST and admits only what the server reported — `FILLED`, `REJECTED` as
+`FAILED`, `CANCELLED`, `EXPIRED` — while `SUBMITTED` and `PENDING_FILL` leave the
+job in `RECONCILING` to be read again, because finalizing a live order on a clock
+is the failure this whole path exists to avoid. An answer that settles nothing puts
+the job back in `UNKNOWN_PENDING` rather than downgrading "I cannot tell" to
+"nothing happened".
+
+It is implemented and tested, and **nothing calls it on a schedule**: that is the
+executor's job, and there is no executor. It is exported for a caller that has a
+lease and wants an answer.
+
+One case it cannot resolve, and neither can anything else today: a crash *during*
+the create leaves an idempotency key with no execution id, and this API has no read
+from a key to an execution — no endpoint takes the key, and the execution summary
+does not carry it. Replaying the create as a probe is not a substitute, because a
+key that never landed would be *made* to land by the probe. So that job reports
+`INCONCLUSIVE` and stays visible in `UNKNOWN_PENDING`. Backlog §6 carries the
+backend dependency.
+
 **Persist before the side effect.** A state whose next act can create or submit an
 order is unreachable until the leg and its idempotency key are committed; the
 store raises `NO_IDEMPOTENCY_KEY` rather than trusting the caller to sequence it.
@@ -142,6 +162,7 @@ src/state-machine.ts  the states, the legal edges, and why each one exists
 src/store.ts          the JobStore interface — engine-free
 src/sqlite/           the SQLite/WAL implementation and its migrations
 src/recovery.ts       what a Runner does with the jobs it finds at start-up
+src/reconciler.ts     resolving UNKNOWN_PENDING from an authoritative REST read
 src/secrets.ts        the refusal list applied at the store boundary
 src/daemon.ts         start-up order, shutdown, and what the process admits to
 src/supervisor.ts     lease renewal, heartbeat, and the two aborts they cause

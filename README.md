@@ -22,7 +22,7 @@ scope an operator wrote down. See
 | [`packages/sdk`](packages/sdk) | `@waterx/predict-agent-sdk` — the execution core. Authentication, quotes, protected market orders, reads. | Implemented |
 | [`packages/schema`](packages/schema) | `@waterx/predict-agent-schema` — the versioned, runtime-validated command contract. | Implemented |
 | [`packages/cli`](packages/cli) | The `waterx-predict` CLI: the universal agent surface. Discovery, doctor, market and account reads, and the market-order write plane, in one JSON envelope with stable exit codes. | Implemented and unpublished |
-| [`packages/runner`](packages/runner) | The self-hosted local Runner. Today: the durable job store, the state machine, lease fencing, crash recovery, and a daemon that recovers, supervises leases and answers an authenticated local socket. | Runs, but drives nothing — the **executor, signer and reconciler are not implemented**, and it says so as `driving: false` |
+| [`packages/runner`](packages/runner) | The self-hosted local Runner. Today: the durable job store, the state machine, lease fencing, crash recovery, `UNKNOWN_PENDING` reconciliation against REST, and a daemon that recovers, supervises leases and answers an authenticated local socket. | Runs, but drives nothing — the **executor and signer are not implemented**, nothing calls the reconciler on a schedule, and it says so as `driving: false` |
 | [`packages/mcp`](packages/mcp) | Optional MCP adapter. | Reserved, **not implemented** |
 | [`packages/e2e`](packages/e2e) | Test harness. Drives the installed CLI end to end against a real non-production server, and reports what could not run. Never shipped. | Implemented; **the end-to-end itself has not run** — no environment is provisioned |
 
