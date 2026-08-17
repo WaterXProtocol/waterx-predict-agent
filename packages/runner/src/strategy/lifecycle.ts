@@ -20,8 +20,8 @@
  * that should have ended costs it time it already had a bound on; ending one that
  * could still have fired cannot be undone.
  *
- * NOTE: nothing calls this yet. The price watcher and executor that would act on
- * the verdict are not implemented (`docs/IMPLEMENTATION_BACKLOG.md` 2.6).
+ * `preflight` calls this on every watching pass, so a market that stops trading
+ * while a job is armed is noticed then rather than at the next restart.
  */
 import type { PredictMarketStatus } from '@waterx/predict-agent-sdk';
 

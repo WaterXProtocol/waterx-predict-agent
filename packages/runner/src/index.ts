@@ -5,16 +5,19 @@
  * job state machine, crash recovery into `UNKNOWN_PENDING`, the daemon process,
  * its authenticated local IPC socket, the heartbeat/lease supervisor that stops
  * a fenced-out Runner from writing, `reconcileJob`, which resolves an
- * `UNKNOWN_PENDING` job from an authoritative REST read, and — new —
- * `StrategyService`: create/get/list/cancel/events over the durable store, with
- * mandatory capped expiry, frozen-share percentage SELLs and an explicit dynamic
- * fraction mode.
+ * `UNKNOWN_PENDING` job from an authoritative REST read, `StrategyService`:
+ * create/get/list/cancel/events over the durable store, with mandatory capped
+ * expiry, frozen-share percentage SELLs and an explicit dynamic fraction mode,
+ * and — new — `driveJob`, which advances one job by one pass: watch, pause,
+ * fresh authorization/market/position/quote checks at the trigger, independent
+ * multi-leg create/sign/submit under per-leg idempotency keys, and reconcile.
  *
- * What is still missing is the part that makes a job *move*: there is no
- * executor, signer or price watcher, so a created strategy is a durable record
- * that nothing advances, nothing calls the reconciler on a schedule, and a
- * recovered job sits in the state recovery assigned it. The daemon says so
- * rather than implying otherwise
+ * What is still missing is the part that makes a job move *by itself*. Nothing
+ * calls `driveJob` on a schedule; there is no price watcher behind
+ * `PriceObserver` and no signer behind `StrategySigner`, only the interfaces a
+ * caller supplies. So inside this process a created strategy is a durable record
+ * that nothing advances and a recovered job sits in the state recovery assigned
+ * it. The daemon says so rather than implying otherwise
  * — `driving: false` on the IPC handshake and in `runner.status`, and every agent
  * command contract name is refused `NOT_IMPLEMENTED`. See the README and
  * `docs/IMPLEMENTATION_BACKLOG.md` 2.6.
@@ -148,7 +151,25 @@ export {
   type StrategySideEffectEvent,
   type StrategyTransitionEvent,
 } from './strategy/events.ts';
+export {
+  driveJob,
+  verifyQuote,
+  watchKeyOf,
+  type DriveAction,
+  type DriveJobOptions,
+  type DriveLegReport,
+  type DriveResult,
+} from './strategy/driver.ts';
 export { isStrategyError, StrategyError, type StrategyErrorCode } from './strategy/errors.ts';
+export {
+  buildCreateRequest,
+  quoteRequestFor,
+  sizeOf,
+  type PriceObserver,
+  type StrategyGateway,
+  type StrategySigner,
+  type WatchKey,
+} from './strategy/gateway.ts';
 export {
   BETA_MAX_EXPIRY_MS,
   normalizeStrategy,
@@ -167,6 +188,21 @@ export {
   type MarketLifecycleFacts,
   type MarketVerdict,
 } from './strategy/lifecycle.ts';
+export {
+  checkMarkets,
+  classifyAuthorization,
+  marketsInvolved,
+  permissionsNeeded,
+  preflight,
+  type LegSkip,
+  type LegSkipReason,
+  type PermissionsNeeded,
+  type PreflightInput,
+  type PreflightPauseReason,
+  type PreflightStopReason,
+  type PreflightVerdict,
+  type PreparedLeg,
+} from './strategy/preflight.ts';
 export {
   findPosition,
   type FindPositionOptions,

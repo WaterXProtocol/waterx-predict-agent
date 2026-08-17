@@ -280,15 +280,18 @@ describe('the Runner package', () => {
   });
 
   it('says in its README which half of the Runner exists', () => {
-    // The daemon and its socket are built; the executor is not. A README that
-    // described this package as "the Runner" would be claiming a job progresses
-    // on its own, which is the one thing it still cannot do — so the absence has
-    // to survive in prose as well as in `driving: false`.
+    // The daemon, its socket and `driveJob` are all built; the loop that would
+    // call `driveJob` is not, and neither is a price source to call it with. A
+    // README that described this package as "the Runner" would be claiming a job
+    // progresses on its own, which is the one thing it still cannot do — so the
+    // absence has to survive in prose as well as in `driving: false`.
     const readme = read('packages/runner/README.md');
     expect(readme).toContain('**not implemented**');
     expect(readme.toLowerCase()).toContain('daemon');
     expect(readme).toContain('driving: false');
-    expect(readme).toContain('Executor that drives a job through the SDK | **not implemented**');
+    expect(readme).toContain(
+      'Scheduler that calls `driveJob` on a schedule, inside the daemon | **not implemented**',
+    );
   });
 
   it('keeps the honest `driving` flag out of reach of a typo', () => {

@@ -384,6 +384,27 @@ const normalizeLeg = async (
   }
 };
 
+/**
+ * A fraction of a holding, as an exact share count.
+ *
+ * Shared by the two places a fraction becomes a size — freezing at creation, and
+ * the dynamic mode's re-read at trigger — so the two cannot arrive at different
+ * numbers from the same inputs. Scaled-integer arithmetic throughout, truncating
+ * toward zero: `0.5` of an odd share count sells the smaller half, because the
+ * larger one is shares the position does not have.
+ *
+ * `null` means the fraction truncated to nothing. That is not a size, and it is
+ * returned rather than thrown so the trigger-time caller can skip one leg where
+ * the creation-time caller refuses the whole strategy.
+ */
+export const sharesForFraction = (
+  sharesHeld: DecimalString,
+  fraction: DecimalString,
+): DecimalString | null => {
+  const shares = (toScaled(sharesHeld) * toScaled(fraction)) / ONE;
+  return shares === 0n ? null : fromScaled(shares);
+};
+
 interface FreezeInput {
   readonly fraction: DecimalString;
   readonly index: number;
@@ -455,9 +476,12 @@ const freezeFraction = async (
     );
   }
 
-  const held = parseScaled(position.shares, `position ${positionId} shares`, 'SIZE_INVALID', where);
-  const frozen = (held * toScaled(fraction)) / ONE;
-  if (frozen === 0n) {
+  // Validated before the arithmetic so a share count the server rendered in some
+  // other form is a refusal a caller can branch on, not a RangeError from a
+  // helper two layers down.
+  parseScaled(position.shares, `position ${positionId} shares`, 'SIZE_INVALID', where);
+  const frozenShares = sharesForFraction(position.shares, fraction);
+  if (frozenShares === null) {
     throw new StrategyError(
       'FRACTION_RESOLVES_TO_ZERO',
       `${fraction} of the ${position.shares} shares held in ${positionId} rounds down to nothing`,
@@ -466,7 +490,7 @@ const freezeFraction = async (
   }
 
   return {
-    sellShares: fromScaled(frozen),
+    sellShares: frozenShares,
     sizing: {
       kind: 'FROZEN_FRACTION',
       fraction,

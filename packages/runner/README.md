@@ -3,12 +3,15 @@
 The self-hosted local Runner. Private to this workspace; nothing here is
 published, and the SDK does not depend on it (ADR-0001 §4).
 
-**There is now a process, and it still drives nothing.** The daemon starts,
-recovers the jobs it finds, holds their leases and answers a local socket. What it
-does not have is the executor that would turn a held lease into an order, so a job
-sits in the state recovery left it in. `runner.status` reports this as
-`driving: false` with the missing pieces named, and any real agent command sent
-over the socket is refused `NOT_IMPLEMENTED` rather than answered.
+**There is now a process, and something that knows how to move a job — and the
+two are not yet connected.** The daemon starts, recovers the jobs it finds, holds
+their leases and answers a local socket. Separately, `driveJob` takes a held lease
+and walks one job one step: watch, pause, trigger, quote, create, sign, submit,
+reconcile. What does not exist is the loop that calls it, or a price source to
+call it with, so inside the daemon a job still sits in the state recovery left it
+in. `runner.status` reports this as `driving: false` with the missing pieces
+named, and any real agent command sent over the socket is refused
+`NOT_IMPLEMENTED` rather than answered.
 
 | | status |
 | --- | --- |
@@ -23,19 +26,24 @@ over the socket is refused `NOT_IMPLEMENTED` rather than answered.
 | Daemon process, recovery at start-up, ordered shutdown | implemented |
 | Authenticated local IPC over a Unix socket (ADR-0008) | implemented |
 | Lease renewal and heartbeat supervision, with abort on loss | implemented |
-| `UNKNOWN_PENDING` resolved from an authoritative REST read | implemented, uncalled |
+| `UNKNOWN_PENDING` resolved from an authoritative REST read | implemented |
 | Strategy create / get / list / cancel / events over the store | implemented |
 | Mandatory `expiresAt`, capped at seven days (ADR-0005) | implemented |
 | Frozen-share percentage SELL, and the explicit dynamic mode | implemented |
-| Market pause-vs-terminal classification (ADR-0004) | implemented, uncalled |
-| Executor that drives a job through the SDK | **not implemented** |
-| Price watcher feeding a job's trigger | **not implemented** |
-| Signer inside the Runner trust boundary | **not implemented** (backlog 1.x) |
+| Market pause-vs-terminal classification (ADR-0004) | implemented |
+| `driveJob`: one job, one pass, watch through reconcile | implemented |
+| Fresh delegation / market / position / quote checks at trigger | implemented |
+| Independent multi-leg execution under per-leg keys | implemented |
+| Exactly one logical submission across a crash at any boundary | implemented, tested |
+| Scheduler that calls `driveJob` on a schedule, inside the daemon | **not implemented** |
+| Price watcher supplying a `PriceObserver` from a live stream | **not implemented** (interface only) |
+| Signer inside the Runner trust boundary | **not implemented** (interface only, backlog 1.x) |
 | Cursor persistence wired back into a live stream | **not implemented** (backlog 2.4) |
 
 Synthetic limit orders therefore still run in-process via the SDK's
 `waitForPriceAndExecute` and die with the process — see `packages/sdk/README.md`.
-Starting `runnerd` does not change that yet.
+Starting `runnerd` does not change that yet: `driveJob` is a function this
+package exports, not something the process runs.
 
 ## Requirements
 
@@ -102,11 +110,12 @@ happen.
 `StrategyService` is the command core — one implementation of what a strategy
 *is*, so the CLI, the IPC surface and any adapter cannot drift into a second set
 of rules about sizing, expiry or cancellation. `create` normalizes an intent and
-writes a durable job in `DRAFT`. Nothing advances it: there is no executor, so a
-created strategy is a record, not a running order. `create` returns the job's
-state rather than a word like "armed" for that reason, and it is deliberately not
-exposed over the IPC socket yet — advertising a strategy command from a process
-that reports `driving: false` would claim execution that does not exist.
+writes a durable job in `DRAFT`. Nothing in this process advances it: `driveJob`
+exists but nothing calls it on a schedule, so a created strategy is a record, not
+a running order. `create` returns the job's state rather than a word like "armed"
+for that reason, and it is deliberately not exposed over the IPC socket yet —
+advertising a strategy command from a process that reports `driving: false` would
+claim execution that does not exist.
 
 What it refuses is the interesting part. `normalizeStrategy` will not guess a
 size, an expiry or a market:
@@ -144,7 +153,50 @@ may have left the process, and it does not become silence.
 pattern-matching it would make a copy edit on the server a control-flow change
 here. Closed and resolved are terminal; not-tradeable pauses under the original
 expiry; a status this build does not recognize pauses too, because ending a job
-that could still have fired cannot be undone. Nothing calls it yet.
+that could still have fired cannot be undone. `preflight` calls it on every
+watching pass, so a market that halts at 3am is noticed then rather than at the
+next restart.
+
+## Driving one job
+
+`driveJob({ store, gateway, signer, prices, lease, at })` advances a single job by
+a single pass and returns what it did. It is a function, not a loop: the caller
+owns scheduling, so a Runner, a test and a one-shot CLI invocation all get the
+same semantics, and a pass that must not happen concurrently with itself is the
+caller's lease to enforce.
+
+A pass re-reads everything that could have changed while the job was armed, in
+this order, before it writes anything:
+
+1. **The local mandate**, then **delegation and effective limits** from the
+   server. A permission the owner revoked ends the job. `mayPlaceOrder: null`
+   means the chain read failed and pauses it — `null` is never read as "no". No
+   mandate at all, a suspension, or any `blockers` entry pauses too, forwarded
+   verbatim rather than re-interpreted.
+2. **Every market involved** — the watched one and each leg's. Closed or resolved
+   ends the whole job; anything else non-runnable pauses it under its *original*
+   `expiresAt`, which is never extended, and its original market, which is never
+   swapped.
+3. **The position**, but only for a `DYNAMIC_FRACTION` leg, which is the explicit
+   mode that asked for it. A frozen size is not re-derived. An unproven lookup
+   pauses the job; a *proven* absence or mismatch skips only that leg.
+4. **A fresh quote per leg**, re-verified against the trigger's target. An
+   indicative bid that met the floor and an executable quote that does not is a
+   re-arm, not a worse fill.
+
+Then the legs execute as phases rather than a queue — all creates, all signs, all
+submits — because sponsored bytes and signatures are never persisted (ADR-0001
+§7), so create → sign → submit has to complete in one in-memory pass or start
+over from evidence. Each leg carries its own idempotency key and its own ledger
+row: one leg's refusal never rolls back a sibling's fill, and a job with one
+filled leg and one rejected leg is `FILLED` with the detail on the legs.
+
+The one thing a pass will not do is decide an outcome. A submit that returned
+records a digest and nothing else; only `reconcileJob`, reading the server, may
+call a leg `SUCCEEDED`. A request that got no answer leaves its attempt row open
+and moves the job to `UNKNOWN_PENDING`, which stops the pass — including for legs
+that had not been reached, because a chain whose earlier order is unresolved is
+not a chain that should keep placing orders.
 
 ## The three properties everything else follows from
 
@@ -163,9 +215,10 @@ is the failure this whole path exists to avoid. An answer that settles nothing p
 the job back in `UNKNOWN_PENDING` rather than downgrading "I cannot tell" to
 "nothing happened".
 
-It is implemented and tested, and **nothing calls it on a schedule**: that is the
-executor's job, and there is no executor. It is exported for a caller that has a
-lease and wants an answer.
+`driveJob` calls it at the end of every executing pass and on any pass that finds
+a job already in `RECONCILING` or `UNKNOWN_PENDING`. What still does not exist is
+anything calling *either* of them on a schedule, so a job only advances while a
+caller is driving it.
 
 One case it cannot resolve, and neither can anything else today: a crash *during*
 the create leaves an idempotency key with no execution id, and this API has no read
@@ -218,6 +271,8 @@ src/recovery.ts       what a Runner does with the jobs it finds at start-up
 src/reconciler.ts     resolving UNKNOWN_PENDING from an authoritative REST read
 src/secrets.ts        the refusal list applied at the store boundary
 src/strategy/         normalization, the command core, and what they refuse
+src/strategy/preflight.ts  what is re-read at the trigger, and pause vs stop
+src/strategy/driver.ts     one job, one pass, and what a pass refuses to decide
 src/daemon.ts         start-up order, shutdown, and what the process admits to
 src/supervisor.ts     lease renewal, heartbeat, and the two aborts they cause
 src/ipc/              the socket: framing, auth, dispatch, and the client

@@ -165,7 +165,13 @@ export const reconcileJob = async (options: ReconcileJobOptions): Promise<Reconc
   }
 
   const legs = await store.listLegs(job.jobId);
-  const target = legs.find((leg) => !isResolved(leg));
+  const unresolved = legs.filter((leg) => !isResolved(leg));
+  // A leg with an execution id is a leg this module can actually establish
+  // something about, so it goes first. Taking them in index order instead would
+  // let one leg whose create was ambiguous — the gap documented above, which
+  // returns INCONCLUSIVE every pass — permanently hide the resolvable legs
+  // behind it, and a chain of orders would never conclude because of its first.
+  const target = unresolved.find((leg) => leg.executionId !== null) ?? unresolved[0];
   if (target === undefined) {
     // Every leg is already resolved; only the job-level summary is outstanding.
     return await concludeJob({ store, lease, at, legs, from });

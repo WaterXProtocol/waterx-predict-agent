@@ -377,7 +377,7 @@ describe('what the IPC surface accepts as a command', () => {
     // Not UNKNOWN_COMMAND — that reads as a typo — and certainly not a reply.
     const error = caught(() => validateRunnerCommand('order.execute', {}));
     expect(error.code).toBe('NOT_IMPLEMENTED');
-    expect(error.detail?.['missing']).toEqual(['executor', 'signer', 'reconciler']);
+    expect(error.detail?.['missing']).toEqual(['scheduler', 'signer', 'price-watcher']);
   });
 
   it('refuses a name that is in neither set', () => {

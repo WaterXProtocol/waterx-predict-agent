@@ -4,7 +4,8 @@
  * The dispatcher is where the Runner's honesty rules become machine-readable
  * rather than documentary:
  *
- * - `runner.status` reports `driving: false` while no executor exists. A client
+ * - `runner.status` reports `driving: false` while nothing in this process calls
+ *   the driver on a schedule — an exported `driveJob` is not a loop. A client
  *   that treats a reachable Runner as a running strategy is making exactly the
  *   mistake ADR-0001 §6 is about, and a boolean in the reply is the only form of
  *   that warning a program can act on.

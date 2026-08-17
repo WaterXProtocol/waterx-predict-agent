@@ -97,8 +97,8 @@ export const validateRunnerCommand = (
     if (getCommand(name) !== undefined) {
       throw new RunnerIpcError(
         'NOT_IMPLEMENTED',
-        `"${name}" is a real agent command and this Runner cannot perform it: the daemon has no executor, no signer and no reconciler yet (docs/IMPLEMENTATION_BACKLOG.md 2.6). Run it through the CLI, which executes in-process and dies with the process.`,
-        { command: name, missing: ['executor', 'signer', 'reconciler'] },
+        `"${name}" is a real agent command and this Runner cannot perform it: the daemon runs no scheduler, holds no signer and watches no prices yet (docs/IMPLEMENTATION_BACKLOG.md 2.6). Run it through the CLI, which executes in-process and dies with the process.`,
+        { command: name, missing: ['scheduler', 'signer', 'price-watcher'] },
       );
     }
     throw new RunnerIpcError(

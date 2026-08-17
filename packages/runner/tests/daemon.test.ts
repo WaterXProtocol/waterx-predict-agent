@@ -5,8 +5,9 @@
  *
  * The load-bearing assertion in this file is the boring one — `driving: false`.
  * A reachable Runner looks exactly like a working one until you ask, and this
- * build has no executor, no signer and no reconciler, so a recovered job sits
- * where recovery put it. Everything else here is the trust boundary: a runtime
+ * daemon runs no scheduler, holds no signer and watches no prices, so a recovered
+ * job sits where recovery put it — `driveJob` existing elsewhere in the package
+ * changes nothing a client of *this* process can observe. Everything else here is the trust boundary: a runtime
  * directory that must be private, a token minted per start, and a cancellation
  * that reports what was applied rather than what was asked for.
  */

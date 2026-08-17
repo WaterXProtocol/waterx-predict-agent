@@ -360,6 +360,21 @@ describe('a chain of independent legs', () => {
     ]);
   });
 
+  it('reads a resolvable leg before one whose create it can never look up', async () => {
+    // Leg 0's create was ambiguous, so it has no execution id and every pass
+    // will return INCONCLUSIVE for it. Taken in index order it would hide leg 1
+    // forever, and a chain of orders would never conclude because of its first.
+    await stage([{ openAttempt: 'CREATE_EXECUTION' }, { executionId: 'exe_2' }]);
+
+    const result = await run(gatewayOf({ ...execution('FILLED'), executionId: 'exe_2' }));
+
+    expect(result.legIndex).toBe(1);
+    expect(result.disposition).toBe('LEG_RESOLVED');
+    expect((await store.listLegs('job_1'))[1]?.status).toBe('SUCCEEDED');
+    // Leg 0 is still open, and the job is still not concluded because of it.
+    expect(await stateOf()).toBe('RECONCILING');
+  });
+
   it('keeps a stop that was asked for distinguishable from a failure', async () => {
     await stage([{ executionId: 'exe_1', status: 'SKIPPED' }, { executionId: 'exe_2' }]);
 

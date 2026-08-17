@@ -23,11 +23,12 @@
  * leases are handed back and the instance is marked stopped, so the next Runner
  * does not have to wait out a TTL for jobs nobody is running.
  *
- * **This daemon does not drive jobs.** There is no executor, no signer and no
- * reconciler yet, so a recovered job sits in the state recovery assigned it. That
- * is reported as `driving: false` on the IPC handshake and in `runner.status`,
- * because a reachable Runner that isn't executing looks exactly like one that is
- * until you ask.
+ * **This daemon does not drive jobs.** `driveJob` exists and would advance one,
+ * but nothing here schedules it, no signer lives in this process yet and no price
+ * source feeds a trigger — so a recovered job sits in the state recovery assigned
+ * it. That is reported as `driving: false` on the IPC handshake and in
+ * `runner.status`, because a reachable Runner that isn't executing looks exactly
+ * like one that is until you ask.
  */
 import { hostname } from 'node:os';
 import { join } from 'node:path';
@@ -45,13 +46,15 @@ import { recoverJobs, type RecoveryReport } from './recovery.ts';
 import type { JobStore } from './store.ts';
 import { LeaseKeeper, type LeaseLossReason } from './supervisor.ts';
 
-/** The pieces that would make a job progress, and do not exist yet. */
-export const RUNNER_DRIVER_GAPS: readonly string[] = [
-  'executor',
-  'signer',
-  'reconciler',
-  'price-watcher',
-];
+/**
+ * The pieces this process would need to make a job progress, and does not have.
+ *
+ * `driveJob` and `reconcileJob` are no longer on this list — they exist, and a
+ * caller holding a lease can advance a job with them. What is absent is anything
+ * inside *this* process that calls them, and the two collaborators such a caller
+ * would have to supply.
+ */
+export const RUNNER_DRIVER_GAPS: readonly string[] = ['scheduler', 'signer', 'price-watcher'];
 
 export interface RunnerDaemonOptions {
   /** Already open. The daemon closes it on `stop` only if it opened it. */
