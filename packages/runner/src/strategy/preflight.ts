@@ -97,7 +97,20 @@ export type LegSkipReason =
   /** The executable quote does not meet the target the indicative price did. */
   | 'TARGET_NO_LONGER_MET'
   /** The quote was already past its own `expiresAt` when it arrived. */
-  | 'QUOTE_EXPIRED';
+  | 'QUOTE_EXPIRED'
+  /**
+   * The job's own `expiresAt` passed while this leg sat unsent after a crash. The
+   * expiry cannot end the job — a sibling's order is on the server and only the
+   * server may end that — but it does end this leg's chance to be part of the run.
+   */
+  | 'EXPIRED_BEFORE_SENT'
+  /**
+   * A fresh check refused the whole job on the pass that would have sent this
+   * leg — a revoked delegation, a closed market, a mandate that ran out. The
+   * `detail` carries which. Its siblings had already traded, so the job cannot
+   * simply stop; this leg is the part of the run that does not happen.
+   */
+  | 'REFUSED_ON_RESUME';
 
 export interface LegSkip {
   readonly reason: LegSkipReason;

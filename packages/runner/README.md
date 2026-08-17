@@ -47,6 +47,7 @@ is absent, rather than a half-driver that could create an order it cannot sign.
 | Fresh delegation / market / position / quote checks at trigger | implemented |
 | Independent multi-leg execution under per-leg keys | implemented |
 | Exactly one logical submission across a crash at any boundary | implemented, tested |
+| A leg a crash left unsent, finished under the key already on disk | implemented, tested |
 | Scheduler that calls `driveJob` on a schedule, inside the daemon | implemented |
 | `PriceObserver` over the SDK's indicative quote stream | implemented |
 | Signer inside the Runner trust boundary, over an external command | implemented |
@@ -406,6 +407,20 @@ does not carry it. Replaying the create as a probe is not a substitute, because 
 key that never landed would be *made* to land by the probe. So that job reports
 `INCONCLUSIVE` and stays visible in `UNKNOWN_PENDING`. Backlog §6 carries the
 backend dependency.
+
+There is exactly one absence that *does* prove something, and it is about local
+disk rather than about the server: an attempt row is committed **before** the
+request that uses it, so a leg with no attempt row of any kind — open, failed or
+abandoned — is a leg nothing was ever sent for. The reconciler checks that first,
+ahead of reading executions that already exist, because this leg's create needs a
+fresh quote and a quote is the one input that decays. Two answers follow. If no
+leg of the job was ever sent, the job goes back to `WATCHING` with every key kept,
+and re-observes its trigger from scratch. If a sibling's request did leave the
+process, the job stays in `RECONCILING` and `driveJob` finishes the run: fresh
+authorization, market, position and quote checks, then a create under the key that
+was minted before the crash. That resume can never end the job — an order exists
+on the server, so a refusal, or the job's own `expiresAt` passing, marks the unsent
+legs `SKIPPED` and leaves the verdict to the read.
 
 **Persist before the side effect.** A state whose next act can create or submit an
 order is unreachable until the leg and its idempotency key are committed; the

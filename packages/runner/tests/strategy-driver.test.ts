@@ -28,7 +28,7 @@ import { recoverJobs } from '../src/recovery.ts';
 import { createExternalCommandSigner } from '../src/signer.ts';
 import { SqliteJobStore } from '../src/sqlite/store.ts';
 import type { JobState } from '../src/state-machine.ts';
-import type { JobStore, TransitionInput } from '../src/store.ts';
+import type { BeginSideEffectInput, JobStore, TransitionInput } from '../src/store.ts';
 import { driveJob, type DriveResult } from '../src/strategy/driver.ts';
 import type { PriceObserver, StrategyGateway, StrategySigner } from '../src/strategy/gateway.ts';
 import { jobInput, later, LEG, T0, tempStoreDir, type TempStoreDir } from './harness.ts';
@@ -823,6 +823,148 @@ describe('a crash at every side-effect boundary', () => {
     expect(result.reason).toBe('SUBMIT_UNRESOLVED');
     expect(await stateOf()).toBe('UNKNOWN_PENDING');
     expect((await store.listOpenSideEffects('job_1')).length).toBe(1);
+  });
+});
+
+/* ── Finishing a run a crash cut in half ───────────────────────────────────── */
+
+describe('a leg the crash left unsent', () => {
+  const twoLegs: readonly JobLegIntent[] = [
+    { ...LEG, positionId: 'pos_1' },
+    { ...LEG, positionId: 'pos_2', sellShares: '10.000000' },
+  ];
+
+  /**
+   * Dies just before the ledger records that a request for `legIndex` is about to
+   * be made. The leg is left reserved, with a key and no attempt row — which is
+   * the one shape that PROVES nothing was ever sent for it.
+   */
+  const crashBeforeSideEffect = (inner: JobStore, legIndex: number): JobStore =>
+    wired(inner, (method, args) => {
+      if (method !== 'beginSideEffect') return;
+      if ((args[0] as BeginSideEffectInput).legIndex !== legIndex) return;
+      throw new Crash(`crash before the attempt for leg ${String(legIndex)}`);
+    });
+
+  /** Half a run: leg 0 created, leg 1 reserved and never sent. */
+  const halfSent = async (gateway: StrategyGateway): Promise<string> => {
+    await arm({ intent: twoLegs });
+    await expect(
+      drive(gateway, pricesAt('0.900000'), { store: crashBeforeSideEffect(store, 1) }),
+    ).rejects.toThrow(Crash);
+
+    const legs = await store.listLegs('job_1');
+    expect(legs[0]?.executionId).toBe('exe_1');
+    expect(legs[1]?.executionId).toBe(null);
+    expect((await store.listSideEffects('job_1')).map((a) => a.legIndex)).toEqual([0]);
+    return legs[1]?.idempotencyKey ?? '';
+  };
+
+  it('sends it for the first time, under the key already on disk', async () => {
+    const gateway = gatewayOf({
+      quotes: [quote(), quote({ quoteId: 'q_2' })],
+      creates: [created('exe_1'), created('exe_2')],
+      submits: [{ executionId: 'exe_2', status: 'SUBMITTED', transactionDigest: '0xsubmit' }],
+      executions: {
+        // Nobody ever signed leg 0's execution — the bytes died with the process —
+        // so the server expires it. Leg 1 is the half of the run that still runs.
+        exe_1: { executionId: 'exe_1', status: 'EXPIRED' },
+        exe_2: { executionId: 'exe_2', status: 'FILLED' },
+      },
+    });
+
+    const mintedKey = await halfSent(gateway);
+    await restart();
+    // An execution id is on disk, so recovery reconciles rather than re-arming.
+    expect(await stateOf()).toBe('RECONCILING');
+
+    const result = await drive(gateway, pricesAt('0.900000'));
+
+    expect(result.action).toBe('EXECUTED');
+    expect(gateway.createCalls.length).toBe(2);
+    // The SAME key, minted before the crash: this is the rest of the run, not a
+    // second order.
+    expect(gateway.createCalls[1]?.idempotencyKey).toBe(mintedKey);
+    expect(gateway.submitCalls).toEqual(['exe_2']);
+    const legs = await store.listLegs('job_1');
+    expect(legs[1]?.executionId).toBe('exe_2');
+
+    // And the run concludes: one leg expired unsigned, the other filled.
+    await drive(gateway, pricesAt('0.900000'));
+    expect((await store.listLegs('job_1')).map((leg) => leg.status)).toEqual([
+      'FAILED',
+      'SUCCEEDED',
+    ]);
+    expect(await stateOf()).toBe('FILLED');
+  });
+
+  it('never sends it late, once the job’s own expiry has passed', async () => {
+    const gateway = gatewayOf({
+      quotes: [quote(), quote({ quoteId: 'q_2' })],
+      creates: [created('exe_1'), created('exe_2')],
+      executions: { exe_1: { executionId: 'exe_1', status: 'EXPIRED' } },
+    });
+
+    await halfSent(gateway);
+    // Long past `expiresAt` — a day and a bit after the job was created.
+    const late = later(T0, 90_000_000);
+    await restart(late);
+
+    const result = await drive(gateway, pricesAt('0.900000'), { at: late });
+
+    // ADR-0005: the expiry is never extended, not even to finish a run.
+    expect(gateway.createCalls.length).toBe(1);
+    expect(result.legs?.[0]?.skip?.reason).toBe('EXPIRED_BEFORE_SENT');
+    expect((await store.listLegs('job_1')).map((leg) => leg.status)).toEqual([
+      'FAILED',
+      'SKIPPED',
+    ]);
+    // The job's own end is still the server's to report: leg 0's execution expired.
+    expect(result.action).toBe('ENDED');
+    expect(await stateOf()).toBe('EXPIRED');
+  });
+
+  it('re-arms the whole job when nothing at all left the process', async () => {
+    await arm({ intent: twoLegs });
+    const gateway = gatewayOf({
+      quotes: [quote(), quote({ quoteId: 'q_2' })],
+      creates: [created('exe_1'), created('exe_2')],
+      submits: [
+        { executionId: 'exe_1', status: 'SUBMITTED' },
+        { executionId: 'exe_2', status: 'SUBMITTED' },
+      ],
+      executions: {
+        exe_1: { executionId: 'exe_1', status: 'PENDING_FILL' },
+        exe_2: { executionId: 'exe_2', status: 'PENDING_FILL' },
+      },
+    });
+
+    await expect(
+      drive(gateway, pricesAt('0.900000'), { store: crashBeforeSideEffect(store, 0) }),
+    ).rejects.toThrow(Crash);
+    expect(gateway.createCalls).toEqual([]);
+    const keys = (await store.listLegs('job_1')).map((leg) => leg.idempotencyKey);
+
+    await restart();
+    // The state says an order may exist; the ledger says none was ever sent.
+    expect(await stateOf()).toBe('UNKNOWN_PENDING');
+
+    const rearmed = await drive(gateway, pricesAt('0.900000'));
+
+    expect(rearmed.action).toBe('REARMED');
+    expect(rearmed.reason).toBe('NOTHING_WAS_SENT');
+    expect(await stateOf()).toBe('WATCHING');
+    expect(gateway.createCalls).toEqual([]);
+
+    // Watching again from scratch: the target is re-observed before it acts.
+    const waited = await drive(gateway, pricesAt('0.810000'));
+    expect(waited.reason).toBe('TARGET_NOT_MET');
+    expect(gateway.createCalls).toEqual([]);
+
+    await drive(gateway, pricesAt('0.900000'));
+
+    // And when it does act, it acts under the keys it already minted.
+    expect(gateway.createCalls.map((call) => call.idempotencyKey)).toEqual(keys);
   });
 });
 

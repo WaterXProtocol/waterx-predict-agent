@@ -188,10 +188,13 @@ Inside `packages/runner`:
   is unresolved, `reconcileJob` decides *what happened*, and only from an
   authoritative REST read. A non-terminal execution is left alone rather than
   finalized on a clock, and a create with no execution id reports `INCONCLUSIVE`
-  because no API read maps an idempotency key to an execution. `driveJob` calls it
-  at the end of every executing pass, and `JobScheduler` calls `driveJob` on a
-  tick, so in a configured daemon a `RECONCILING` job is read back until the
-  server says something terminal.
+  because no API read maps an idempotency key to an execution. The one absence it
+  *does* read as proof is a leg with no attempt row at all — the row is committed
+  before the request — which either re-arms the whole job (nothing ever left the
+  process) or lets `driveJob` finish a half-sent run under the key already on disk.
+  `driveJob` calls it at the end of every executing pass, and `JobScheduler` calls
+  `driveJob` on a tick, so in a configured daemon a `RECONCILING` job is read back
+  until the server says something terminal.
 - `src/secrets.ts` — refusal, not redaction, at the store boundary: a
   secret-shaped field is rejected rather than written and masked.
 - `src/daemon.ts` — the process. Start-up order is load-bearing: assert the

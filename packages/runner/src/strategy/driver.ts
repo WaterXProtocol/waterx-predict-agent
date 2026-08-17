@@ -24,7 +24,10 @@
  *   - after a leg is reserved and an attempt is open — a request may exist, so
  *     the job goes to `UNKNOWN_PENDING` and only the reconciler may end it;
  *   - after a create succeeded but before the submit — the execution is on the
- *     server under a key this store holds, and the reconciler reads it back.
+ *     server under a key this store holds, and the reconciler reads it back;
+ *   - after one leg was created but before its sibling was sent at all — the
+ *     reconciler proves the sibling never left the process, and `resume` sends it
+ *     for the first time, under the key already on disk.
  *
  * ## Multi-leg, as phases rather than as a queue
  *
@@ -175,9 +178,11 @@ export const driveJob = async (options: DriveJobOptions): Promise<DriveResult> =
     return say(job, job.state, 'ALREADY_TERMINAL', `JOB_${job.state}`);
   }
 
-  // Not knowing has exactly one exit, and it is not this module's to take.
+  // Not knowing has exactly one exit, and it is not this module's to take. The
+  // job is handed along so that the one answer a reconcile can give which needs
+  // an order placed — a leg it proved was never sent — has somewhere to go.
   if (job.state === 'UNKNOWN_PENDING' || job.state === 'RECONCILING') {
-    return await reconcilePass(options, job.state);
+    return await reconcilePass(options, job.state, job);
   }
 
   if (canEndLocally(job.state)) {
@@ -956,7 +961,162 @@ const unknown = async (
   return { jobId: job.jobId, from, to: 'UNKNOWN_PENDING', action: 'UNKNOWN_PENDING', reason, detail };
 };
 
-const reconcilePass = async (options: DriveJobOptions, from: JobState): Promise<DriveResult> => {
+/* ── Resuming a run a crash cut in half ────────────────────────────────────── */
+
+/**
+ * The only way back into `CREATING`, and the narrowest one that finishes a run.
+ *
+ * Reached only when `reconcileJob` proved, from the ledger, that a leg was never
+ * sent while a sibling's order was — so this is not a retry of anything. It is
+ * the rest of a run, sent for the first time, under the key that was minted for
+ * it before the crash.
+ *
+ * Three properties hold it together:
+ *
+ * 1. **The persisted intent, not a fresh one.** The key on disk was minted for
+ *    the intent on disk. A resolved dynamic fraction is re-read here to see
+ *    whether the position still qualifies the leg at all, but the size that is
+ *    actually sent is the one the key belongs to — sending a different order
+ *    under it would be a second logical order wearing the first one's key.
+ * 2. **Fresh checks all the same.** Authorization, market lifecycle, position and
+ *    an executable quote are re-read exactly as they are at a trigger. A crash is
+ *    not permission to skip the checks; if anything, more time has passed.
+ * 3. **The job cannot be ended here.** An order exists on the server, so a
+ *    refusal skips the *legs* and leaves the terminal verdict to the reconciler,
+ *    which reads it. That is the difference between "this leg missed the run" and
+ *    a stop that did not happen (ADR-0001 §15).
+ */
+const resume = async (options: DriveJobOptions, job: JobRecord): Promise<DriveResult> => {
+  const { store, lease, at } = options;
+  // The state is RECONCILING by the time a REPLAYABLE answer exists; naming it
+  // keeps every transition below legal for the state the store actually holds.
+  const inFlight: JobRecord = { ...job, state: 'RECONCILING' };
+
+  const legs = await store.listLegs(job.jobId);
+  const attempted = new Set(
+    (await store.listSideEffects(job.jobId)).map((attempt) => attempt.legIndex),
+  );
+  const unsent = legs.filter(
+    (leg) => leg.status === 'PENDING' && leg.executionId === null && !attempted.has(leg.legIndex),
+  );
+  if (unsent.length === 0) {
+    // Nothing to resume after all. Not an error: the reconcile that said so read
+    // the store a moment earlier, and the honest answer is to reconcile again.
+    return await reconcilePass(options, 'RECONCILING');
+  }
+  const intents = new Map(unsent.map((leg) => [leg.legIndex, leg.intent]));
+  const missed = (skip: LegSkip): readonly PreparedLeg[] =>
+    unsent.map((leg) => ({ legIndex: leg.legIndex, intent: leg.intent, skip }));
+
+  if (Date.parse(job.expiresAt) <= Date.parse(at)) {
+    // ADR-0005: never extended, not even to finish a run the job started. Nothing
+    // was sent for these legs, so saying they were not is a fact, not a stop.
+    return await concludeResume(
+      options,
+      inFlight,
+      missed({
+        reason: 'EXPIRED_BEFORE_SENT',
+        retryable: false,
+        detail: { expiresAt: job.expiresAt, at },
+      }),
+    );
+  }
+
+  const verdict = await preflight({
+    job: inFlight,
+    gateway: options.gateway,
+    at,
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+  });
+
+  if (verdict.kind === 'PAUSE') {
+    // No transition: PAUSED is a state a job with an order on the server may not
+    // enter, and the job is already in the one that describes it. The next pass
+    // asks again, and the expiry above is what bounds the asking.
+    return say(inFlight, 'RECONCILING', 'RECONCILED', `RESUME_${verdict.reason}`, {
+      detail: verdict.detail,
+    });
+  }
+  if (verdict.kind === 'STOP') {
+    return await concludeResume(
+      options,
+      inFlight,
+      missed({
+        reason: 'REFUSED_ON_RESUME',
+        retryable: false,
+        detail: { refusal: verdict.reason, ...verdict.detail },
+      }),
+    );
+  }
+
+  const skipped: PreparedLeg[] = [];
+  const quoted: QuotedLeg[] = [];
+  for (const prepared of verdict.legs) {
+    const intent = intents.get(prepared.legIndex);
+    if (intent === undefined) continue; // Already resolved; not this pass's business.
+    if (prepared.skip !== undefined) {
+      skipped.push({ ...prepared, intent });
+      continue;
+    }
+    const quote = await options.gateway.getQuote(
+      quoteRequestFor(intent, prepared.legIndex),
+      options.signal,
+    );
+    const refusal = verifyQuote(inFlight, intent, quote, at);
+    if (refusal !== undefined) {
+      skipped.push({ legIndex: prepared.legIndex, intent, skip: refusal });
+      continue;
+    }
+    quoted.push({ legIndex: prepared.legIndex, intent, quote });
+  }
+
+  if (quoted.length === 0) return await concludeResume(options, inFlight, skipped);
+  return await execute(options, inFlight, quoted, skipped);
+};
+
+/**
+ * No leg of the resume can be sent. Record which, and let the reconciler decide
+ * what the job as a whole became.
+ *
+ * The verdict is deliberately not written here. Some sibling filled or failed on
+ * the server, and `concludeJob` derives the job's state from the leg rows — a
+ * terminal state written from this side would be this process's opinion about an
+ * order it never read.
+ */
+const concludeResume = async (
+  options: DriveJobOptions,
+  job: JobRecord,
+  skipped: readonly PreparedLeg[],
+): Promise<DriveResult> => {
+  for (const leg of skipped) {
+    await options.store.updateLeg({
+      lease: options.lease,
+      legIndex: leg.legIndex,
+      at: options.at,
+      status: 'SKIPPED',
+    });
+  }
+  const result = await reconcilePass(options, 'RECONCILING');
+  return {
+    ...result,
+    from: job.state,
+    legs: skipped.map(toReport),
+    detail: { ...result.detail, resume: 'NO_LEG_SENT' },
+  };
+};
+
+/**
+ * @param resumable - the job record, when this pass is allowed to act on a
+ * `REPLAYABLE` answer. Omitted by the calls made from inside {@link execute}: a
+ * pass that has just created orders must not turn round and create more, and a
+ * leg it left unsent has an attempt row, so it cannot be replayable anyway. The
+ * next pass will resume it if it is.
+ */
+const reconcilePass = async (
+  options: DriveJobOptions,
+  from: JobState,
+  resumable?: JobRecord,
+): Promise<DriveResult> => {
   const result = await reconcileJob({
     store: options.store,
     gateway: options.gateway,
@@ -965,14 +1125,20 @@ const reconcilePass = async (options: DriveJobOptions, from: JobState): Promise<
     ...(options.signal === undefined ? {} : { signal: options.signal }),
   });
 
+  if (result.disposition === 'REPLAYABLE' && resumable !== undefined) {
+    return await resume(options, resumable);
+  }
+
   const action: DriveAction =
     result.disposition === 'TERMINAL'
       ? 'ENDED'
       : result.disposition === 'INCONCLUSIVE'
         ? 'UNKNOWN_PENDING'
-        : result.disposition === 'NOT_APPLICABLE'
-          ? 'NOT_DRIVABLE'
-          : 'RECONCILED';
+        : result.disposition === 'REARMED'
+          ? 'REARMED'
+          : result.disposition === 'NOT_APPLICABLE'
+            ? 'NOT_DRIVABLE'
+            : 'RECONCILED';
 
   return {
     jobId: result.jobId,

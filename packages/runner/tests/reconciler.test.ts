@@ -396,6 +396,62 @@ describe('a chain of independent legs', () => {
   });
 });
 
+describe('a leg nothing was ever sent for', () => {
+  it('holds the run open for a leg with no attempt row, and reads nothing to say so', async () => {
+    // Leg 0's execution exists; leg 1 was reserved and the process died before
+    // the ledger recorded a single request for it. Absence of an attempt row is
+    // the only absence that proves anything, and it proves this.
+    await stage([{ executionId: 'exe_1' }, {}]);
+    const gateway = gatewayOf(execution('FILLED'));
+
+    const result = await run(gateway);
+
+    expect(result.disposition).toBe('REPLAYABLE');
+    expect(result.reason).toBe('NEVER_SENT');
+    expect(result.legIndex).toBe(1);
+    // Nothing was read: the answer came from this store's own ledger.
+    expect(gateway.calls).toEqual([]);
+    // And nothing was concluded — only the driver may send the leg.
+    expect(await stateOf()).toBe('RECONCILING');
+  });
+
+  it('re-arms the job when no leg of it was ever sent, keeping every key', async () => {
+    await stage([{}, {}]);
+    const gateway = gatewayOf(execution('FILLED'));
+    const keys = (await store.listLegs('job_1')).map((leg) => leg.idempotencyKey);
+
+    const result = await run(gateway);
+
+    expect(result.disposition).toBe('REARMED');
+    expect(result.reason).toBe('NOTHING_WAS_SENT');
+    expect(gateway.calls).toEqual([]);
+    expect(await stateOf()).toBe('WATCHING');
+    // The keys stay: a re-armed job replays them rather than minting new ones.
+    expect((await store.listLegs('job_1')).map((leg) => leg.idempotencyKey)).toEqual(keys);
+  });
+
+  it('treats a CLOSED attempt row as evidence too, not just an open one', async () => {
+    // An abandoned attempt is still a row that was written before a request, so
+    // the request may have left. Reading only OPEN attempts here would turn a
+    // crash-recovered ambiguity into "nothing was sent" and create a second order.
+    await stage([{ openAttempt: 'CREATE_EXECUTION' }]);
+    await store.completeSideEffect({
+      lease,
+      attemptId: 'att_0',
+      outcome: 'ABANDONED',
+      at: later(T0, 210),
+    });
+    const gateway = gatewayOf(execution('FILLED'));
+
+    const result = await run(gateway);
+
+    expect(result.disposition).toBe('INCONCLUSIVE');
+    expect(result.reason).toBe('NO_EXECUTION_ID');
+    expect(gateway.calls).toEqual([]);
+    expect(await stateOf()).toBe('UNKNOWN_PENDING');
+  });
+});
+
 describe('the lease signal', () => {
   it('hands the job’s abort signal to the read', async () => {
     // A Runner that has been fenced out must stop reading on behalf of a job

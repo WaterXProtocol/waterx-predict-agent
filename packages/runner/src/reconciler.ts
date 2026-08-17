@@ -20,6 +20,9 @@
  * - `RECONCILING → UNKNOWN_PENDING` is the honest retreat. A reconcile that could
  *   not establish anything puts the job back, rather than downgrading "I cannot
  *   tell" into "nothing happened".
+ * - `RECONCILING → WATCHING`, and the `REPLAYABLE` answer that leads back to
+ *   `CREATING`, are the two exits taken when the ledger *proves* a leg was never
+ *   sent. See "The one thing absence does prove" below.
  *
  * A non-terminal read is not a retreat and not a result: `SUBMITTED` and
  * `PENDING_FILL` mean an order exists and a keeper may still fill it, so the job
@@ -39,6 +42,27 @@
  *
  * So that case returns `INCONCLUSIVE` and the job goes back to `UNKNOWN_PENDING`,
  * where a human can see it. Backlog §6 carries the backend dependency.
+ *
+ * ## The one thing absence *does* prove
+ *
+ * An attempt row is committed — under `synchronous = FULL` — before the request
+ * that uses it. Read backwards, that invariant says a leg with no attempt row of
+ * any kind is a leg nothing was ever sent for. That is the single case where
+ * absence is evidence, and it is evidence about this process's own disk rather
+ * than about the server, which is why it is safe to act on when the paragraph
+ * above is not.
+ *
+ * It matters because of multi-leg jobs. A crash between one leg's create and the
+ * next leg's leaves a job whose first leg has a real execution and whose second
+ * was never sent; resolving only the first would strand the second in
+ * `UNKNOWN_PENDING` forever, and re-arming the whole job would ask a strategy
+ * that has already traded to watch for its trigger again. So the answer depends
+ * on whether anything left the process for this job at all:
+ *
+ * - nothing did — `REARMED`, and the job goes back to `WATCHING` with its keys
+ *   intact, to observe its trigger from scratch (ADR-0001 §14);
+ * - something did — `REPLAYABLE`, and the job stays in `RECONCILING` for the
+ *   driver to re-quote and create that leg under the key already on disk.
  */
 import type {
   PredictExecutionStatus,
@@ -75,6 +99,13 @@ export type ReconcileDisposition =
   | 'STILL_PENDING'
   /** Nothing could be established. The job is back in `UNKNOWN_PENDING`. */
   | 'INCONCLUSIVE'
+  /**
+   * This leg was provably never sent, and a sibling's order exists. The job stays
+   * in `RECONCILING`; only the driver may create it, under the key on disk.
+   */
+  | 'REPLAYABLE'
+  /** Nothing was ever sent for this job. Back to `WATCHING`, keys kept. */
+  | 'REARMED'
   /** The job was not in a state this module may touch. Nothing was written. */
   | 'NOT_APPLICABLE';
 
@@ -166,6 +197,36 @@ export const reconcileJob = async (options: ReconcileJobOptions): Promise<Reconc
 
   const legs = await store.listLegs(job.jobId);
   const unresolved = legs.filter((leg) => !isResolved(leg));
+
+  // A leg nothing was ever sent for comes first — ahead of reading executions
+  // that already exist. The order matters in one direction only: this leg's
+  // create needs a fresh quote, and a quote is the one input that decays, so
+  // waiting for a sibling to reach a terminal status before sending it is how a
+  // chained order arrives at a price the owner never asked for. Reading the
+  // sibling costs nothing by waiting a pass; sending this leg does.
+  const attempts = await store.listSideEffects(job.jobId);
+  const attempted = new Set(attempts.map((attempt) => attempt.legIndex));
+  // Any attempt row at all, of any kind and any outcome. Being coarse is
+  // deliberate: the question is "could a request for this leg have left the
+  // process", and a row that exists answers yes without a case analysis over
+  // kinds that would have to be revisited every time one is added.
+  const unsent = unresolved.find(
+    (leg) => leg.executionId === null && !attempted.has(leg.legIndex),
+  );
+  if (unsent !== undefined) {
+    return await neverSent({
+      store,
+      lease,
+      at,
+      from,
+      legs,
+      legIndex: unsent.legIndex,
+      // Another leg's request left this process even if no execution id ever came
+      // back from it, so this run is under way either way.
+      underWay: attempts.length > 0 || legs.some((leg) => leg.executionId !== null),
+    });
+  }
+
   // A leg with an execution id is a leg this module can actually establish
   // something about, so it goes first. Taking them in index order instead would
   // let one leg whose create was ambiguous — the gap documented above, which
@@ -182,6 +243,7 @@ export const reconcileJob = async (options: ReconcileJobOptions): Promise<Reconc
   );
 
   if (target.executionId === null) {
+    // An attempt row exists for it — checked above — so a request may have left.
     // The create may or may not have landed and nothing can be read that would
     // say which. The attempt row stays open on purpose: it is the evidence, and
     // closing it would erase the only record that a request may exist.
@@ -267,6 +329,65 @@ export const reconcileJob = async (options: ReconcileJobOptions): Promise<Reconc
     legIndex: target.legIndex,
     executionId: target.executionId,
     status: read.status,
+  };
+};
+
+interface NeverSentInput {
+  readonly store: JobStore;
+  readonly lease: JobLease;
+  readonly at: string;
+  readonly from: JobState;
+  readonly legs: readonly JobLeg[];
+  readonly legIndex: number;
+  /** True when a request for some leg of this job did leave the process. */
+  readonly underWay: boolean;
+}
+
+/**
+ * The two ways out of "this leg was never sent", and why the distinction is not
+ * cosmetic.
+ *
+ * A job nothing was ever sent for has not acted, so it goes back to watching and
+ * observes its trigger again from scratch — the price that fired before the crash
+ * is not evidence about now. A job that HAS acted cannot do that: re-observing a
+ * trigger for a run whose first leg is already on chain would either replay the
+ * whole strategy or strand the leg that missed. It stays in `RECONCILING` and the
+ * driver finishes the run it started, under the key already on disk.
+ *
+ * Neither answer invents anything about the server. The first writes a transition
+ * and no leg; the second writes nothing at all.
+ */
+const neverSent = async (input: NeverSentInput): Promise<ReconcileResult> => {
+  const { store, lease, at, from, legs, legIndex } = input;
+  if (input.underWay) {
+    return {
+      jobId: lease.jobId,
+      from,
+      to: 'RECONCILING',
+      disposition: 'REPLAYABLE',
+      reason: 'NEVER_SENT',
+      legIndex,
+    };
+  }
+
+  await store.transition({
+    lease,
+    to: 'WATCHING',
+    reason: 'NOTHING_WAS_SENT',
+    at,
+    detail: {
+      // The keys stay exactly where they are. A re-armed job reuses them, which
+      // is what makes a replay the same logical order rather than a second one.
+      keptKeys: legs.map((leg) => leg.legIndex),
+    },
+  });
+  return {
+    jobId: lease.jobId,
+    from,
+    to: 'WATCHING',
+    disposition: 'REARMED',
+    reason: 'NOTHING_WAS_SENT',
+    legIndex,
   };
 };
 
