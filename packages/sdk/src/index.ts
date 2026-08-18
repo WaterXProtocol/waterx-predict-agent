@@ -69,3 +69,30 @@ export {
 } from './signer.ts';
 export type { RetryOptions, TransportOptions } from './transport.ts';
 export type * from './contract.ts';
+/**
+ * The contract's runtime values, exported separately because `export type *`
+ * carries none of them.
+ *
+ * They were unreachable from a published consumer: the `exports` map admits
+ * only `.`, so `@waterx/predict-agent-sdk/dist/src/contract.js` is blocked, and
+ * the entry point re-exported the module for types only. A caller that wanted
+ * to know the route it was about to call, the header the server reads for
+ * idempotency, or the subscription cap a stream enforces had to hard-code the
+ * value the SDK already holds — and a hard-coded copy is a copy that drifts.
+ */
+export {
+  IDEMPOTENCY_KEY_HEADER,
+  PREDICT_AGENT_API_ROUTES,
+  PREDICT_AGENT_STREAM_NAMESPACE,
+  PREDICT_EXECUTION_STREAM,
+  PREDICT_QUOTE_HEARTBEAT,
+  PREDICT_QUOTE_STREAM,
+  PREDICT_QUOTE_STREAM_HEARTBEAT_MS,
+  PREDICT_QUOTE_STREAM_MAX_SUBSCRIBE_RATE,
+  PREDICT_QUOTE_STREAM_MAX_TOPICS,
+  PREDICT_QUOTE_SUBSCRIBE,
+  PREDICT_QUOTE_SUBSCRIPTION,
+  PREDICT_QUOTE_UNSUBSCRIBE,
+  PREDICT_STREAM_READY,
+  RETRYABLE_PREDICT_AGENT_ERROR_CODES,
+} from './contract.ts';
