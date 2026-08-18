@@ -40,13 +40,16 @@ export {
   evidenceOf,
   exitCodeFor,
   summarize,
+  type CapabilityPermission,
   type E2eReport,
   type Evidence,
   type NotRunReason,
   type Outcome,
   type StepDescription,
   type StepResult,
+  type WriteCapability,
 } from './report.ts';
+export { shellRunner, type ExternalResult, type ExternalRunner } from './external.ts';
 export {
   DEFAULT_OPTIONS,
   STEPS,
@@ -60,11 +63,12 @@ export {
 export {
   HARNESS_NAME,
   NON_PRODUCTION_ENVIRONMENTS,
+  WRITE_CAPABILITIES,
   runE2e,
   runWith,
   writePermission,
+  writePermissions,
   type RunOptions,
-  type WritePermission,
 } from './run.ts';
 export { render } from './render.ts';
 export { USAGE, parseOptions } from './options.ts';

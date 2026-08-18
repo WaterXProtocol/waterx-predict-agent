@@ -1,6 +1,12 @@
 /**
- * The seven things that must exist before a real end-to-end run is possible,
- * each with a named supplier.
+ * The ten things that must exist before a real end-to-end run is possible, each
+ * with a named supplier.
+ *
+ * Seven of them are the original single-order path. The last three were added
+ * with the durable half of the plan, and they are gaps in exactly the same sense:
+ * an owner address nobody supplied, a Runner nobody started and a restart command
+ * nobody wrote are all reasons a step could not run, and none of them is a reason
+ * to report one as passing.
  *
  * This list is the deliverable when the E2E cannot run, and it is not prose: a
  * gap has a machine-checkable settlement (the command and field that decide it)
@@ -24,6 +30,9 @@ export const GAP_IDS = [
   'defaultAccount',
   'delegation',
   'ownerRiskProfile',
+  'ownerAddress',
+  'runner',
+  'runnerRestart',
 ] as const;
 
 export type GapId = (typeof GAP_IDS)[number];
@@ -152,6 +161,45 @@ export const PROVISIONING_GAPS: readonly ProvisioningGap[] = [
     ],
     settledBy: 'account risk-limits --accountId <id> → a mandate rather than NO_RISK_PROFILE',
     needs: ['baseUrl', 'agentWallet', 'signerCommand', 'defaultAccount'],
+  },
+  {
+    id: 'ownerAddress',
+    title: 'Account owner address',
+    suppliedBy: 'ACCOUNT_OWNER',
+    ownerAuthenticated: false,
+    why: 'A strategy is armed ON BEHALF of an owner and records whose account it trades. The surface never defaults it, and neither does this harness: a guessed address attributes a trade to the wrong person, which no amount of later correction undoes.',
+    supplyWith: [
+      '--ownerAddress 0x… on this harness',
+      'The owner reads their own Sui address from the WaterX account UI and gives it to the operator. It is an ADDRESS; the key behind it stays with the owner.',
+    ],
+    settledBy: 'this harness was given one; nothing infers it',
+    needs: [],
+  },
+  {
+    id: 'runner',
+    title: 'A local Runner answering its socket',
+    suppliedBy: 'OPERATOR',
+    ownerAuthenticated: false,
+    why: 'Every strategy command is answered by the local Runner, not by the server: the backend stores no target and no conditional order. With no Runner there is nothing to arm a job on, and nothing to recover after a restart.',
+    supplyWith: [
+      'Start one in another terminal and leave it running: `waterx-predict-runnerd`.',
+      'The first Runner is self-hosted. It runs on the operator’s own machine, and a strategy is watched only while that machine is awake — there is no managed runner to fall back to.',
+    ],
+    settledBy: 'strategy list → a reply naming runner.instanceId, rather than RUNNER_UNREACHABLE',
+    needs: [],
+  },
+  {
+    id: 'runnerRestart',
+    title: 'A command that restarts the Runner',
+    suppliedBy: 'OPERATOR',
+    ownerAuthenticated: false,
+    why: 'Crash recovery cannot be proven without a crash. Nothing in this build supervises the daemon, so the restart belongs to whoever started it; a harness that backgrounded a Runner of its own would leave a process nobody knows is running.',
+    supplyWith: [
+      '--runner-restart "<command>" on this harness, e.g. a service-manager kick.',
+      'It must return promptly and by itself, and it is awaited with a bound. A command that runs the daemon in the foreground would hang the step rather than restart anything.',
+    ],
+    settledBy: 'this harness was given one; it never invents a way to stop a process',
+    needs: ['runner'],
   },
 ];
 

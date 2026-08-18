@@ -13,9 +13,22 @@
  * delegation. Where that read cannot happen, or where the server itself reports
  * a chain read that failed, the gap is UNCHECKED. Reporting "no delegation"
  * because nobody could look is how a healthy setup gets torn down.
+ *
+ * The Runner is settled by `strategy list`, which needs no server and no
+ * account: it dials a Unix socket on this machine. Two things have to be true
+ * for it to count — a Runner answered, AND it says it is driving. A Runner that
+ * answers but drives nothing accepts a strategy and writes a real job nothing
+ * will advance, and calling that "provisioned" would be the expensive kind of
+ * wrong.
+ *
+ * The two gaps nobody can probe — an owner address and a restart command — are
+ * settled by having been GIVEN one. Neither is inferred: there is no reading of
+ * this machine that produces the owner's address, and no safe way to guess how
+ * an operator's daemon is restarted.
  */
 import type { CliInvoker, CliRun } from './cli-process.ts';
 import { GAP_IDS, getGap, type GapId, type GapState } from './gaps.ts';
+import type { HarnessOptions } from './steps.ts';
 
 export interface RuntimeFacts {
   readonly baseUrl: string | null;
@@ -30,6 +43,8 @@ export interface RuntimeFacts {
 export interface Preflight {
   /** The `describe` run itself, reused as the first step's evidence. */
   readonly describe: CliRun;
+  /** The `strategy list` probe, reused the same way by the step of that name. */
+  readonly runnerProbe: CliRun;
   readonly facts: RuntimeFacts;
   readonly gaps: readonly GapState[];
 }
@@ -141,12 +156,85 @@ function serverGapStates(run: CliRun): GapState[] {
   ];
 }
 
-export async function preflight(invoke: CliInvoker): Promise<Preflight> {
+/**
+ * The Runner gap, from one `strategy list`.
+ *
+ * `RUNNER_UNREACHABLE` is the one error that means MISSING — the Runner is not
+ * there. Any other refusal is UNCHECKED: something answered and said no for a
+ * reason this harness has not established, and "no Runner" would be a stronger
+ * claim than the evidence supports.
+ */
+function runnerGapState(run: CliRun): GapState {
+  if (run.envelope?.ok !== true) {
+    const code = run.envelope?.error?.code ?? 'NO_ENVELOPE';
+    return code === 'RUNNER_UNREACHABLE'
+      ? {
+          id: 'runner',
+          status: 'MISSING',
+          observed: `No Runner answered: ${run.envelope?.error?.message ?? 'RUNNER_UNREACHABLE'}`,
+        }
+      : {
+          id: 'runner',
+          status: 'UNCHECKED',
+          observed: `The Runner probe did not succeed (${code}), so whether one is running was not established.`,
+        };
+  }
+
+  const runner = asRecord(asRecord(run.envelope.data).runner);
+  const instanceId = asString(runner.instanceId);
+  if (instanceId === null) {
+    return {
+      id: 'runner',
+      status: 'UNCHECKED',
+      observed: 'A reply arrived but named no Runner instance, so nothing can be told apart from anything else.',
+    };
+  }
+  return runner.driving === true
+    ? { id: 'runner', status: 'SATISFIED', observed: `Runner ${instanceId} answered and is driving jobs.` }
+    : {
+        id: 'runner',
+        status: 'MISSING',
+        // MISSING rather than SATISFIED-with-a-caveat: what is missing is a
+        // Runner that can advance a job, and this one cannot.
+        observed: `Runner ${instanceId} answered but is NOT driving jobs. A strategy armed on it would be armed and asleep.`,
+      };
+}
+
+/** The two gaps that are settled by having been supplied, and by nothing else. */
+function suppliedGapStates(options: HarnessOptions): GapState[] {
+  return [
+    {
+      id: 'ownerAddress',
+      status: options.ownerAddress === null ? 'MISSING' : 'SATISFIED',
+      observed:
+        options.ownerAddress === null
+          ? 'No owner address was supplied. Nothing here infers one: an address attributes a trade to a person.'
+          : // The address itself is configuration, not a secret, and it is
+            // already visible in the argv this harness prints.
+            `This harness was given ${options.ownerAddress}.`,
+    },
+    {
+      id: 'runnerRestart',
+      status: options.runnerRestart === null ? 'MISSING' : 'SATISFIED',
+      observed:
+        options.runnerRestart === null
+          ? 'No restart command was supplied, and none is invented — this harness never constructs a way to stop a process it did not start.'
+          : 'This harness was given a restart command by the operator.',
+    },
+  ];
+}
+
+export async function preflight(invoke: CliInvoker, options: HarnessOptions): Promise<Preflight> {
   const describe = await invoke(['describe']);
   const facts = readRuntimeFacts(describe);
   const states = new Map<GapId, GapState>(
-    localGapStates(facts).map((state) => [state.id, state]),
+    [...localGapStates(facts), ...suppliedGapStates(options)].map((state) => [state.id, state]),
   );
+
+  // Local, cheap and unconditional: it needs no base URL, no account and no
+  // signer, so there is no configuration under which asking is wasteful.
+  const runnerProbe = await invoke(['strategy', 'list']);
+  states.set('runner', runnerGapState(runnerProbe));
 
   const blocking = getGap('delegation').needs.filter(
     (need) => states.get(need)?.status !== 'SATISFIED',
@@ -168,6 +256,7 @@ export async function preflight(invoke: CliInvoker): Promise<Preflight> {
 
   return {
     describe,
+    runnerProbe,
     facts,
     // Declaration order, so the list a human reads is stable run to run.
     gaps: GAP_IDS.map((id) => {

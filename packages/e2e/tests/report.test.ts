@@ -14,14 +14,18 @@ import {
   type E2eReport,
   type Evidence,
   type StepResult,
+  type WriteCapability,
 } from '../src/report.ts';
 
 const ENVIRONMENT: E2eReport['environment'] = {
   baseUrl: 'https://predict.test.invalid',
   label: 'testnet',
   configFile: null,
-  writesPermitted: false,
-  writeWithheldBecause: 'not requested',
+  writes: [
+    { capability: 'order', permitted: false, withheldBecause: 'not requested' },
+    { capability: 'multi-leg', permitted: false, withheldBecause: 'not requested' },
+    { capability: 'strategy', permitted: false, withheldBecause: 'not requested' },
+  ],
 };
 
 const GAPS: readonly GapState[] = GAP_IDS.map((id) => ({
@@ -40,7 +44,7 @@ const evidence = (transport: Evidence['transport'] = 'PROCESS'): Evidence => ({
   durationMs: 12,
 });
 
-const step = (id: string, writes = false): StepResult['step'] => ({
+const step = (id: string, writes: WriteCapability | null = null): StepResult['step'] => ({
   id,
   title: id,
   proves: `what ${id} would establish`,

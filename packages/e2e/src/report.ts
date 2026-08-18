@@ -34,14 +34,34 @@ export type NotRunReason =
   /** An earlier step this one reads from did not pass. */
   | 'PREREQUISITE_NOT_MET'
   /** A write was deliberately withheld. Never a failure; always explained. */
-  | 'WRITE_WITHHELD';
+  | 'WRITE_WITHHELD'
+  /** There was nothing for this step to act on. Not a skip, and not a failure. */
+  | 'NOTHING_TO_DO';
+
+/**
+ * The three fund-moving decisions in this plan, opted into separately.
+ *
+ * They are not degrees of the same permission: `order` is one order placed now,
+ * `multi-leg` is several at once, and `strategy` leaves a job on the Runner that
+ * can trade after this process has exited. An operator who agreed to the first
+ * has not agreed to the third, and one flag would collapse exactly that.
+ */
+export type WriteCapability = 'order' | 'multi-leg' | 'strategy';
+
+export interface CapabilityPermission {
+  readonly capability: WriteCapability;
+  readonly permitted: boolean;
+  /** Null exactly when permitted. Otherwise the reason, in full. */
+  readonly withheldBecause: string | null;
+}
 
 export interface StepDescription {
   readonly id: string;
   readonly title: string;
   /** What a pass would actually establish. */
   readonly proves: string;
-  readonly writes: boolean;
+  /** Which opt-in the step needed, or null for one that moves no funds. */
+  readonly writes: WriteCapability | null;
 }
 
 export type StepResult =
@@ -72,9 +92,12 @@ export interface E2eReport {
     readonly baseUrl: string | null;
     readonly label: string | null;
     readonly configFile: string | null;
-    /** True only when the label is a known non-production one. */
-    readonly writesPermitted: boolean;
-    readonly writeWithheldBecause: string | null;
+    /**
+     * One entry per capability, permitted or not, and always all of them. A
+     * report that listed only what was permitted would make "we did not ask" and
+     * "we were refused" look the same.
+     */
+    readonly writes: readonly CapabilityPermission[];
   };
   readonly provisioning: readonly GapState[];
   readonly steps: readonly StepResult[];

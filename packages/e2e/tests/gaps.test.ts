@@ -7,7 +7,11 @@
 import { GAP_IDS, PROVISIONING_GAPS, getGap, type GapId } from '../src/gaps.ts';
 
 describe('the provisioning gap list', () => {
-  it('declares exactly the seven gaps the work package names, in order', () => {
+  it('declares exactly the ten gaps, in order, and restates none of them', () => {
+    // The first seven are WP05A's list, unchanged and not reworded. The last
+    // three are what the durable half additionally needs: a Runner on this
+    // machine, an owner to attribute the job to, and the operator's own way of
+    // restarting their daemon.
     expect([...GAP_IDS]).toEqual([
       'baseUrl',
       'environment',
@@ -16,7 +20,32 @@ describe('the provisioning gap list', () => {
       'defaultAccount',
       'delegation',
       'ownerRiskProfile',
+      'ownerAddress',
+      'runner',
+      'runnerRestart',
     ]);
+  });
+
+  it('never invents a way to stop the operator’s Runner', () => {
+    // The restart gap exists precisely because this repository must not guess.
+    // A `pkill`, a signal or a pid lookup here would be a way to kill a process
+    // nobody asked it to touch.
+    const gap = getGap('runnerRestart');
+    const text = `${gap.why} ${gap.supplyWith.join(' ')} ${gap.settledBy}`.toLowerCase();
+    for (const forbidden of ['pkill', 'killall', 'kill -', 'sigterm', 'sigkill']) {
+      expect(text, forbidden).not.toContain(forbidden);
+    }
+    expect(gap.suppliedBy).toBe('OPERATOR');
+    expect(gap.needs).toEqual(['runner']);
+  });
+
+  it('never infers the owner address, because an address attributes a trade', () => {
+    const gap = getGap('ownerAddress');
+    expect(gap.suppliedBy).toBe('ACCOUNT_OWNER');
+    // Not owner-AUTHENTICATED: knowing the address is not acting as the owner,
+    // and conflating the two would make the marker meaningless.
+    expect(gap.ownerAuthenticated).toBe(false);
+    expect(gap.needs).toEqual([]);
   });
 
   it('describes every declared gap exactly once', () => {

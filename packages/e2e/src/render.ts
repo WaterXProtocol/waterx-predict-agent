@@ -38,15 +38,23 @@ export function render(report: E2eReport): string {
   write(`  base URL      ${report.environment.baseUrl ?? '(not configured)'}`);
   write(`  label         ${report.environment.label ?? '(not configured)'}`);
   write(`  config file   ${report.environment.configFile ?? '(none)'}`);
-  write(`  writes        ${report.environment.writesPermitted ? 'PERMITTED' : 'WITHHELD'}`);
-  if (report.environment.writeWithheldBecause !== null) {
-    write(`                ${report.environment.writeWithheldBecause}`);
+  for (const [index, permission] of report.environment.writes.entries()) {
+    write(
+      `  ${index === 0 ? 'writes      ' : '            '}  ${permission.capability.padEnd(10)} ${
+        permission.permitted ? 'PERMITTED' : 'WITHHELD'
+      }`,
+    );
+    if (permission.withheldBecause !== null) write(`                ${permission.withheldBecause}`);
   }
   write();
 
   write('Steps');
   for (const result of report.steps) {
-    write(`  ${MARK[result.status]}  ${result.step.title}${result.step.writes ? '  [WRITE]' : ''}`);
+    write(
+      `  ${MARK[result.status]}  ${result.step.title}${
+        result.step.writes === null ? '' : `  [WRITE: ${result.step.writes}]`
+      }`,
+    );
     if (result.status === 'FAILED') write(`           ↳ ${result.why}`);
     if (result.status === 'NOT_RUN') write(`           ↳ ${result.reason}: ${result.detail}`);
   }

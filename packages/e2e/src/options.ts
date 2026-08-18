@@ -11,13 +11,28 @@ import type { RunOptions } from './run.ts';
 
 export const USAGE = `waterx-predict-e2e — drive the installed CLI end to end.
 
-  --allow-write            Place ONE real order. A non-production environment
-                           label is ALSO required; this flag alone is not enough.
+Three separate opt-ins, because they are three different decisions. Each ALSO
+requires a non-production environment label; a flag alone is never enough.
+
+  --allow-write            Place ONE real order.
+  --allow-multi-leg        Place TWO real orders in one call, independently.
+  --allow-strategy         Arm a durable strategy on the local Runner, which can
+                           trade LATER, after this process has exited. The run
+                           always tries to cancel it again, and says so if it
+                           could not.
+
   --search <text>          Free text for \`market search\`.  (default: arsenal)
   --outcomeId <YES|NO>     Outcome to price.                (default: YES)
   --buyAmount <decimal>    Notional to spend.               (default: 1)
   --maxSlippageBps <int>   Price protection.                (default: 100)
   --settleTimeoutMs <int>  Bound on the terminal wait.      (default: 60000)
+  --ownerAddress <0x…>     The account owner's address, for the strategy job.
+                           Never inferred.
+  --runner-restart <cmd>   YOUR command for restarting YOUR Runner, run once to
+                           prove a job survives it. This harness never constructs
+                           a way to stop a process it did not start.
+  --strategyTargetPrice <decimal>
+                           The armed BUY ceiling.           (default: 0.01)
   --help
 
 stdout is one JSON report; stderr is the human account of it. With nothing
@@ -35,6 +50,14 @@ export function parseOptions(argv: readonly string[]): RunOptions | 'HELP' {
     if (token === '--help' || token === '-h') return 'HELP';
     if (token === '--allow-write') {
       options.allowWrite = true;
+      continue;
+    }
+    if (token === '--allow-multi-leg') {
+      options.allowMultiLeg = true;
+      continue;
+    }
+    if (token === '--allow-strategy') {
+      options.allowStrategy = true;
       continue;
     }
     if (token === undefined || !token.startsWith('--')) continue;
@@ -57,6 +80,16 @@ export function parseOptions(argv: readonly string[]): RunOptions | 'HELP' {
         break;
       case 'settleTimeoutMs':
         options.settleTimeoutMs = Number.parseInt(value, 10);
+        break;
+      case 'ownerAddress':
+        options.ownerAddress = value;
+        break;
+      case 'runner-restart':
+        options.runnerRestart = value;
+        break;
+      case 'strategyTargetPrice':
+        // A price, so a string for the same reason an amount is one.
+        options.strategyTargetPrice = value;
         break;
       default:
         break;

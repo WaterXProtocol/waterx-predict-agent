@@ -1,14 +1,19 @@
 /**
  * The harness, driven against itself.
  *
- * Two things are worth proving here and neither is "the E2E passes" — it has
- * not, and on this machine it cannot:
+ * Three things are worth proving here and none of them is "the E2E passes" — it
+ * has not, and on this machine it cannot:
  *
- *  1. The write gate holds. A stub that answers every step perfectly, on an
- *     environment labelled for production, still never receives an `order
- *     execute` argv. The gate is checked as BEHAVIOUR — what the invoker was
- *     asked to run — not as a flag someone remembered to read.
- *  2. An unprovisioned run tells the truth. The real, installed binary is
+ *  1. The write gates hold, and there are THREE of them. A stub that answers
+ *     every step perfectly, on an environment labelled for production, still
+ *     never receives an `order execute`, an `order execute-many` or a `strategy
+ *     create` argv. And a run that opted into one of them does not thereby get
+ *     the other two. The gates are checked as BEHAVIOUR — what the invoker was
+ *     asked to run — not as flags someone remembered to read.
+ *  2. An armed strategy is always chased. The cancel step is ungated by
+ *     construction, so the only way a run ends with a live job is if the
+ *     cancellation itself failed — and then it says so.
+ *  3. An unprovisioned run tells the truth. The real, installed binary is
  *     spawned with an empty environment; `describe` genuinely runs, everything
  *     else is NOT_RUN with named gaps, and the verdict is PARTIAL — never
  *     PASSED, and never a silent skip.
@@ -17,11 +22,25 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import type { CliInvoker, CliRun } from '../src/cli-process.ts';
+import type { ExternalRunner } from '../src/external.ts';
 import { GAP_IDS } from '../src/gaps.ts';
+import { lintInvocation } from '../src/lint.ts';
 import { render } from '../src/render.ts';
-import { HARNESS_EXIT, exitCodeFor } from '../src/report.ts';
-import { NON_PRODUCTION_ENVIRONMENTS, runE2e, runWith, writePermission } from '../src/run.ts';
-import { DEFAULT_OPTIONS, STEPS, type HarnessOptions } from '../src/steps.ts';
+import { HARNESS_EXIT, exitCodeFor, type WriteCapability } from '../src/report.ts';
+import {
+  NON_PRODUCTION_ENVIRONMENTS,
+  WRITE_CAPABILITIES,
+  runE2e,
+  runWith,
+  writePermission,
+} from '../src/run.ts';
+import {
+  DEFAULT_OPTIONS,
+  STEPS,
+  emptyLedger,
+  type HarnessOptions,
+  type StepContext,
+} from '../src/steps.ts';
 import type { RuntimeFacts } from '../src/preflight.ts';
 
 /* ── a stub that answers everything correctly ──────────────────────────────
@@ -47,17 +66,26 @@ const RESPONSES: Record<string, unknown> = {
   'market list': { markets: [{ marketId: 'mkt-1' }] },
   'market search': { resolution: { status: 'RESOLVED' }, marketId: 'mkt-1' },
   'market get': { market: { marketId: 'mkt-1' } },
-  'market quote': { quote: { quoteId: 'q-1', expiresAt: '2026-01-01T00:00:30.000Z' } },
   'order preview': {
     placed: false,
     quote: { quoteId: 'q-2' },
     policy: { decision: 'APPROVAL_REQUIRED', approvalToken: 'appr-1' },
   },
   'order execute': { executionId: 'exec-1' },
+  'order execute-many': {
+    atomic: false,
+    legs: 2,
+    summary: { succeeded: 2, failed: 0, skipped: 0, ambiguous: 0 },
+    results: [
+      { index: 0, status: 'SUCCEEDED', executionId: 'exec-leg-1' },
+      { index: 1, status: 'SUCCEEDED', executionId: 'exec-leg-2' },
+    ],
+  },
   'order reconcile': { resolved: true },
   'order get': { execution: { executionId: 'exec-1', terminal: true } },
   'account positions': { positions: [] },
   'account fills': { fills: [] },
+  'strategy cancel': { jobId: 'job-1', state: 'CANCELLED', recorded: true, applied: true },
 };
 
 /** The command path, ignoring flags and their values. */
@@ -70,15 +98,99 @@ const keyOf = (argv: readonly string[]): string =>
 interface StubOptions {
   /** Overrides folded into `describe`'s `api` block. */
   readonly api?: Record<string, unknown>;
+  /** Overrides folded into every `runner` block the stub reports. */
+  readonly runner?: Record<string, unknown>;
+  /** Answer the Runner probe with the one error that means "no Runner". */
+  readonly runnerUnreachable?: boolean;
+  /** Make the operator's restart command fail, without running anything. */
+  readonly restartExitCode?: number;
 }
 
-function stubInvoker(options: StubOptions = {}): { invoke: CliInvoker; seen: string[][] } {
+interface Stub {
+  readonly invoke: CliInvoker;
+  readonly seen: string[][];
+  /** Stands in for the operator's restart command. Nothing is ever spawned. */
+  readonly external: ExternalRunner;
+  readonly restarts: () => number;
+}
+
+function stubInvoker(options: StubOptions = {}): Stub {
   const seen: string[][] = [];
+  const commands: string[] = [];
+  // A restart REPLACES the process holding the jobs, so the instance id changes.
+  // Modelling that is what makes the recovery step's "a different Runner
+  // answered" check something this fixture can fail.
+  let restarts = 0;
+  let quotes = 0;
+
+  const external: ExternalRunner = async (command) => {
+    commands.push(command);
+    const exitCode = options.restartExitCode ?? 0;
+    if (exitCode === 0) restarts += 1;
+    return { exitCode, output: 'waterx-predict-runnerd restarted' };
+  };
+
+  const runner = (): Record<string, unknown> => ({
+    instanceId: `runner-${restarts}`,
+    driving: true,
+    socketPath: '/tmp/waterx-predict-e2e.sock',
+    ...options.runner,
+  });
+
+  const dataFor = (key: string): unknown => {
+    switch (key) {
+      case 'describe':
+        return { ...PROVISIONED, api: { ...PROVISIONED.api, ...options.api } };
+      case 'market quote':
+        // A fresh quote per call. Two legs sharing one is the exact thing
+        // `multi-leg-quote-2` refuses, so the fixture must not hand them one.
+        quotes += 1;
+        return { quote: { quoteId: `q-${quotes}`, expiresAt: '2026-01-01T00:00:30.000Z' } };
+      case 'strategy list':
+        return { strategies: [], runner: runner() };
+      case 'strategy create':
+        return {
+          strategy: {
+            jobId: 'job-1',
+            state: 'WATCHING',
+            terminal: false,
+            expiry: { expiresAt: '2026-01-01T01:00:00.000Z' },
+          },
+          driving: true,
+          driverGaps: [],
+          runner: runner(),
+        };
+      case 'strategy get':
+        return {
+          strategy: { jobId: 'job-1', state: 'WATCHING', terminal: false, openSideEffects: [] },
+          leasedHere: true,
+          runner: runner(),
+        };
+      default:
+        return RESPONSES[key];
+    }
+  };
+
   const invoke: CliInvoker = async (argv) => {
     seen.push([...argv]);
     const key = keyOf(argv);
-    const data =
-      key === 'describe' ? { ...PROVISIONED, api: { ...PROVISIONED.api, ...options.api } } : RESPONSES[key];
+    if (options.runnerUnreachable === true && key === 'strategy list') {
+      return {
+        transport: 'STUB',
+        argv,
+        exitCode: 7,
+        durationMs: 1,
+        envelope: {
+          schemaVersion: '0.1.0',
+          ok: false,
+          command: key,
+          requestId: 'req-stub',
+          error: { code: 'RUNNER_UNREACHABLE', message: 'nothing is listening on the socket' },
+        },
+        stderr: '',
+      };
+    }
+    const data = dataFor(key);
     const run: CliRun = {
       // The one value this fixture may claim. `report.ts` reads it and voids the
       // whole report, which is the invariant under test.
@@ -94,7 +206,7 @@ function stubInvoker(options: StubOptions = {}): { invoke: CliInvoker; seen: str
     };
     return run;
   };
-  return { invoke, seen };
+  return { invoke, seen, external, restarts: () => restarts };
 }
 
 const withOptions = (overrides: Partial<HarnessOptions> = {}): HarnessOptions => ({
@@ -102,7 +214,16 @@ const withOptions = (overrides: Partial<HarnessOptions> = {}): HarnessOptions =>
   ...overrides,
 });
 
-/* ── the write gate ───────────────────────────────────────────────────────── */
+/** Everything opted into and everything supplied — the only fully-green shape. */
+const EVERYTHING = withOptions({
+  allowWrite: true,
+  allowMultiLeg: true,
+  allowStrategy: true,
+  ownerAddress: '0xowner',
+  runnerRestart: 'systemctl --user restart waterx-predict-runnerd',
+});
+
+/* ── the write gates ──────────────────────────────────────────────────────── */
 
 const facts = (environment: string | null): RuntimeFacts => ({
   baseUrl: 'https://predict.example.invalid',
@@ -116,7 +237,7 @@ const facts = (environment: string | null): RuntimeFacts => ({
 
 describe('the write gate', () => {
   it('refuses an unlabelled environment, because unlabelled is treated as production', () => {
-    const permission = writePermission(facts(null), withOptions({ allowWrite: true }));
+    const permission = writePermission(facts(null), withOptions({ allowWrite: true }), 'order');
     expect(permission.permitted).toBe(false);
     expect(permission.withheldBecause).toContain('treated as production');
   });
@@ -125,42 +246,234 @@ describe('the write gate', () => {
     // An allowlist, so a label nobody anticipated fails closed. `mainnet` is not
     // enumerated as forbidden anywhere — it simply is not permitted.
     for (const label of ['mainnet', 'prod', 'production', 'MAINNET', 'testnet-fork']) {
-      const permission = writePermission(facts(label), withOptions({ allowWrite: true }));
+      const permission = writePermission(facts(label), withOptions({ allowWrite: true }), 'order');
       expect(permission.permitted, label).toBe(false);
     }
     expect(NON_PRODUCTION_ENVIRONMENTS.has('mainnet')).toBe(false);
   });
 
   it('refuses a recognised environment that was not opted into', () => {
-    const permission = writePermission(facts('testnet'), withOptions({ allowWrite: false }));
+    const permission = writePermission(facts('testnet'), withOptions({ allowWrite: false }), 'order');
     expect(permission.permitted).toBe(false);
     expect(permission.withheldBecause).toContain('--allow-write');
   });
 
   it('permits only a recognised label AND an explicit opt-in, together', () => {
     for (const label of NON_PRODUCTION_ENVIRONMENTS) {
-      const permission = writePermission(facts(label), withOptions({ allowWrite: true }));
+      const permission = writePermission(facts(label), withOptions({ allowWrite: true }), 'order');
       expect(permission.permitted, label).toBe(true);
       expect(permission.withheldBecause, label).toBeNull();
     }
   });
 
-  it('never sends `order execute` to the invoker when the label is a production one', async () => {
-    const { invoke, seen } = stubInvoker({ api: { environment: 'mainnet' } });
-    const report = await runWith(invoke, withOptions({ allowWrite: true }));
-
-    // The gate is proven by what was NOT spawned. A flag read correctly but acted
-    // on late would still have placed the order.
-    expect(seen.map(keyOf)).not.toContain('order execute');
-
-    const execute = report.steps.find((step) => step.step.id === 'order-execute');
-    expect(execute?.status).toBe('NOT_RUN');
-    expect(execute?.status === 'NOT_RUN' ? execute.reason : null).toBe('WRITE_WITHHELD');
-    expect(report.environment.writesPermitted).toBe(false);
+  it('never lets one opt-in authorize another capability', () => {
+    // The whole reason these are three flags. Someone who agreed to ONE order
+    // did not agree to two, and neither of those is agreeing to leave a job
+    // behind that trades after the process exits.
+    const only: Record<WriteCapability, Partial<HarnessOptions>> = {
+      order: { allowWrite: true },
+      'multi-leg': { allowMultiLeg: true },
+      strategy: { allowStrategy: true },
+    };
+    for (const granted of WRITE_CAPABILITIES) {
+      const options = withOptions(only[granted]);
+      for (const capability of WRITE_CAPABILITIES) {
+        const permission = writePermission(facts('testnet'), options, capability);
+        expect(permission.permitted, `${granted} → ${capability}`).toBe(capability === granted);
+      }
+    }
   });
 
-  it('marks exactly one step as writing, so the gate covers the whole write surface', () => {
-    expect(STEPS.filter((step) => step.writes).map((step) => step.id)).toEqual(['order-execute']);
+  it('names the flag that would grant each capability, and what agreeing to it means', () => {
+    const flags = WRITE_CAPABILITIES.map(
+      (capability) => writePermission(facts('testnet'), withOptions(), capability).withheldBecause,
+    );
+    expect(flags[0]).toContain('--allow-write');
+    expect(flags[1]).toContain('--allow-multi-leg');
+    expect(flags[2]).toContain('--allow-strategy');
+    // The strategy opt-in has to say the dangerous part out loud.
+    expect(flags[2]).toContain('after this process has exited');
+  });
+
+  it('never sends a write to the invoker when the label is a production one', async () => {
+    const stub = stubInvoker({ api: { environment: 'mainnet' } });
+    const report = await runWith(stub.invoke, EVERYTHING, stub.external);
+
+    // The gates are proven by what was NOT spawned. A flag read correctly but
+    // acted on late would still have placed the order.
+    const spawned = stub.seen.map(keyOf);
+    expect(spawned).not.toContain('order execute');
+    expect(spawned).not.toContain('order execute-many');
+    expect(spawned).not.toContain('strategy create');
+
+    for (const id of ['order-execute', 'order-execute-many', 'strategy-arm']) {
+      const step = report.steps.find((result) => result.step.id === id);
+      expect(step?.status, id).toBe('NOT_RUN');
+      expect(step?.status === 'NOT_RUN' ? step.reason : null, id).toBe('WRITE_WITHHELD');
+    }
+    expect(report.environment.writes.every((permission) => !permission.permitted)).toBe(true);
+  });
+
+  it('marks every writing step with the capability it needs, and no other step', () => {
+    expect(STEPS.filter((step) => step.writes !== null).map((step) => [step.id, step.writes])).toEqual(
+      [
+        ['order-execute', 'order'],
+        ['order-execute-many', 'multi-leg'],
+        ['strategy-arm', 'strategy'],
+      ],
+    );
+    for (const step of STEPS) {
+      if (step.writes === null) continue;
+      expect(WRITE_CAPABILITIES, step.id).toContain(step.writes);
+    }
+  });
+});
+
+/* ── the strategy is always chased ────────────────────────────────────────── */
+
+describe('an armed strategy', () => {
+  it('is cancelled by a step nothing can withhold', () => {
+    const cancel = STEPS.find((step) => step.id === 'strategy-cancel');
+    // If this ever became a gated write, a run could end having armed a job and
+    // then declined to stop it — the one outcome the harness must not produce.
+    expect(cancel?.writes).toBeNull();
+    expect(cancel?.after).toEqual([]);
+    // And it runs last, so nothing can fail between arming and stopping.
+    expect(STEPS.at(-1)?.id).toBe('strategy-cancel');
+  });
+
+  it('reports NOTHING_TO_DO — not a failure — when this run armed nothing', async () => {
+    const stub = stubInvoker();
+    const report = await runWith(
+      stub.invoke,
+      withOptions({ ownerAddress: '0xowner', runnerRestart: 'true' }),
+      stub.external,
+    );
+
+    expect(stub.seen.map(keyOf)).not.toContain('strategy cancel');
+    const cancel = report.steps.find((result) => result.step.id === 'strategy-cancel');
+    expect(cancel?.status === 'NOT_RUN' ? cancel.reason : null).toBe('NOTHING_TO_DO');
+    // And it still points at the one command that would find a job this report
+    // cannot name.
+    expect(cancel?.status === 'NOT_RUN' ? cancel.detail : '').toContain('strategy list');
+  });
+
+  it('cancels the job it armed, and reads the reply as recorded-versus-applied', async () => {
+    const stub = stubInvoker();
+    const report = await runWith(stub.invoke, EVERYTHING, stub.external);
+
+    const cancelArgv = stub.seen.find((argv) => keyOf(argv) === 'strategy cancel');
+    expect(cancelArgv ?? []).toContain('job-1');
+    expect(report.steps.find((result) => result.step.id === 'strategy-cancel')?.status).toBe('PASSED');
+  });
+});
+
+/* ── the restart, which is the operator's command and never ours ──────────── */
+
+describe('the Runner restart', () => {
+  it('runs the operator’s command exactly once, and only for the recovery step', async () => {
+    const stub = stubInvoker();
+    await runWith(stub.invoke, EVERYTHING, stub.external);
+    expect(stub.restarts()).toBe(1);
+  });
+
+  it('reports a failed restart as NOT_RUN, because nothing was asked of the CLI', async () => {
+    const stub = stubInvoker({ restartExitCode: 1 });
+    const report = await runWith(stub.invoke, EVERYTHING, stub.external);
+
+    const recovery = report.steps.find((result) => result.step.id === 'strategy-restart-recovery');
+    // FAILED would blame the system under test for the operator's daemon.
+    expect(recovery?.status).toBe('NOT_RUN');
+    expect(recovery?.status === 'NOT_RUN' ? recovery.reason : null).toBe('PREREQUISITE_NOT_MET');
+    expect(recovery?.status === 'NOT_RUN' ? recovery.detail : '').toContain('exited 1');
+
+    // And the job it could not verify is still cancelled.
+    expect(report.steps.find((result) => result.step.id === 'strategy-cancel')?.status).toBe('PASSED');
+  });
+
+  it('fails the recovery step when the SAME Runner instance answers afterwards', async () => {
+    // A restart command that does nothing would otherwise let "the job survived
+    // a restart" be a claim about no restart at all.
+    const stub = stubInvoker({ runner: { instanceId: 'runner-frozen' } });
+    const report = await runWith(stub.invoke, EVERYTHING, stub.external);
+
+    const recovery = report.steps.find((result) => result.step.id === 'strategy-restart-recovery');
+    expect(recovery?.status).toBe('FAILED');
+    expect(recovery?.status === 'FAILED' ? recovery.why : '').toContain('no process was replaced');
+  });
+});
+
+/* ── the Runner probe ─────────────────────────────────────────────────────── */
+
+describe('the Runner gap', () => {
+  const runnerState = async (options: StubOptions) => {
+    const stub = stubInvoker(options);
+    const report = await runWith(stub.invoke, EVERYTHING, stub.external);
+    return report.provisioning.find((state) => state.id === 'runner');
+  };
+
+  it('is MISSING only when a Runner is genuinely not there', async () => {
+    const state = await runnerState({ runnerUnreachable: true });
+    expect(state?.status).toBe('MISSING');
+    expect(state?.observed).toContain('No Runner answered');
+  });
+
+  it('is MISSING when a Runner answers but drives nothing', async () => {
+    // The expensive case: the create would succeed and write a real job that
+    // nothing advances. "Armed and asleep" is not provisioned.
+    const state = await runnerState({ runner: { driving: false } });
+    expect(state?.status).toBe('MISSING');
+    expect(state?.observed).toContain('armed and asleep');
+  });
+
+  it('is UNCHECKED when a reply arrives that names no instance', async () => {
+    const state = await runnerState({ runner: { instanceId: null } });
+    expect(state?.status).toBe('UNCHECKED');
+  });
+
+  it('is SATISFIED only when a named Runner says it is driving', async () => {
+    const state = await runnerState({});
+    expect(state?.status).toBe('SATISFIED');
+    expect(state?.observed).toContain('driving');
+  });
+});
+
+/* ── every step is a command that exists ──────────────────────────────────── */
+
+describe('the plan itself', () => {
+  const context: StepContext = {
+    facts: facts('testnet'),
+    options: EVERYTHING,
+    ledger: {
+      ...emptyLedger(),
+      marketId: 'mkt-1',
+      quoteId: 'q-1',
+      approvalToken: 'appr-1',
+      executionId: 'exec-1',
+      quoteLeg1: 'q-1',
+      quoteLeg2: 'q-2',
+      jobId: 'job-1',
+      runnerInstanceId: 'runner-0',
+    },
+  };
+
+  it('spells every step as a command in the contract, with fields that exist', () => {
+    // The same lint the shipped examples get. A step whose flag is not a field
+    // would exit USAGE against the real binary and report a CLI defect that is
+    // really a harness typo.
+    for (const step of STEPS) {
+      expect(lintInvocation(step.argv(context)), step.id).toEqual([]);
+    }
+  });
+
+  it('reads only from steps that exist and run earlier', () => {
+    const seen = new Set<string>();
+    for (const step of STEPS) {
+      for (const earlier of step.after) {
+        expect([...seen], `${step.id} reads from ${earlier}`).toContain(earlier);
+      }
+      seen.add(step.id);
+    }
   });
 });
 
@@ -168,8 +481,8 @@ describe('the write gate', () => {
 
 describe('a run satisfied entirely by a stub', () => {
   it('is INVALID even though every single step passed on its merits', async () => {
-    const { invoke } = stubInvoker();
-    const report = await runWith(invoke, withOptions({ allowWrite: true }));
+    const stub = stubInvoker();
+    const report = await runWith(stub.invoke, EVERYTHING, stub.external);
 
     // Every step ran and was correct — by the stub's account.
     expect(report.counts.notRun).toBe(0);
@@ -238,11 +551,23 @@ describe('the installed CLI with nothing provisioned', () => {
       }
     }
 
-    const execute = report.steps.find((step) => step.step.id === 'order-execute');
-    expect(execute?.status === 'NOT_RUN' ? execute.reason : null).toBe('WRITE_WITHHELD');
+    for (const id of ['order-execute', 'order-execute-many', 'strategy-arm']) {
+      const step = report.steps.find((result) => result.step.id === id);
+      expect(step?.status === 'NOT_RUN' ? step.reason : null, id).toBe('WRITE_WITHHELD');
+    }
   });
 
-  it('reports all seven provisioning gaps, and never a satisfied one', async () => {
+  it('never runs the operator restart command when nothing armed a strategy', async () => {
+    // `runE2e` builds the real shell runner. It must never reach it: the gap is
+    // MISSING, so the step cannot run, so no command is constructed or spawned.
+    const report = await runE2e({ env: BARE_ENV, processTimeoutMs: 30_000 });
+    const recovery = report.steps.find((result) => result.step.id === 'strategy-restart-recovery');
+    expect(recovery?.status).toBe('NOT_RUN');
+    expect(recovery?.status === 'NOT_RUN' ? recovery.reason : null).toBe('NOT_PROVISIONED');
+    expect(recovery?.status === 'NOT_RUN' ? recovery.missing : []).toContain('runnerRestart');
+  });
+
+  it('reports all ten provisioning gaps, and never a satisfied one', async () => {
     const report = await runE2e({ env: BARE_ENV, processTimeoutMs: 30_000 });
 
     expect(report.provisioning.map((state) => state.id)).toEqual([...GAP_IDS]);
@@ -258,17 +583,27 @@ describe('the installed CLI with nothing provisioned', () => {
     expect(byId.get('delegation')?.status).toBe('UNCHECKED');
     expect(byId.get('ownerRiskProfile')?.status).toBe('UNCHECKED');
     expect(byId.get('baseUrl')?.status).toBe('MISSING');
+    // The Runner probe is local and unconditional, so it IS established here:
+    // nothing is listening, and that is a MISSING rather than an UNCHECKED.
+    expect(byId.get('runner')?.status).toBe('MISSING');
+    // And the two nobody can probe say plainly that they were never supplied.
+    expect(byId.get('ownerAddress')?.status).toBe('MISSING');
+    expect(byId.get('runnerRestart')?.status).toBe('MISSING');
   });
 
   it('renders a provisioning list that names a supplier for every outstanding gap', async () => {
     const report = await runE2e({ env: BARE_ENV, processTimeoutMs: 30_000 });
     const text = render(report);
 
-    expect(text).toContain('Who must supply what (7 outstanding)');
+    expect(text).toContain('Who must supply what (10 outstanding)');
     expect(text).toContain('[OPERATOR]');
     expect(text).toContain('[ACCOUNT_OWNER, OWNER-AUTHENTICATED]');
     for (const id of GAP_IDS) expect(text, id).toContain(id);
-    expect(text).toContain('writes        WITHHELD');
+    // Each capability is withheld on its own line, so no reader can take away
+    // "writes were allowed" from a run where one of the three was.
+    expect(text).toContain('writes        order      WITHHELD');
+    expect(text).toContain('multi-leg  WITHHELD');
+    expect(text).toContain('strategy   WITHHELD');
     // A reader skimming the top must not be able to take away "it passed".
     expect(text.split('\n')[0]).toContain('PARTIAL');
   });
