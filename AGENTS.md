@@ -109,10 +109,11 @@ orchestrates.
 | `packages/sdk` | `@waterx/predict-agent-sdk` | Published surface, implemented |
 | `packages/schema` | `@waterx/predict-agent-schema` | Published surface, implemented |
 | `packages/cli` | `@waterx/predict-agent-cli` | Implemented, reads **and writes** behind an enforced execution policy; `private`, so nothing is published |
-| `packages/runner` | `@waterx/predict-agent-runner` | SQLite/WAL job store, state machine, lease fencing, crash recovery, `UNKNOWN_PENDING` reconciliation, a daemon with authenticated local IPC (ADR-0008) and lease supervision, the one-job/one-pass `driveJob`, the scheduler that calls it on a tick, a price observer over the SDK's indicative quote stream, a signer inside the trust boundary, and the local configuration `runnerd` builds all three from — so a configured process reports `driving: true` and an unconfigured one reports `false` with `driverGaps` naming what to set. `strategy.create` / `get` / `list` / `cancel` / `events` are served over that socket by the same `StrategyService` an embedder holds, under a mandate resolved from **local configuration and never from the request**. **No strategy command exists in the CLI** (backlog 2.8): today the client is an embedding application or a script that opens the socket. `private`, Node 24 floor (ADR-0007) |
+| `packages/runner` | `@waterx/predict-agent-runner` | SQLite/WAL job store, state machine, lease fencing, crash recovery, `UNKNOWN_PENDING` reconciliation, a daemon with authenticated local IPC (ADR-0008) and lease supervision, the one-job/one-pass `driveJob`, the scheduler that calls it on a tick, a price observer over the SDK's indicative quote stream, a signer inside the trust boundary, and the local configuration `runnerd` builds all three from — so a configured process reports `driving: true` and an unconfigured one reports `false` with `driverGaps` naming what to set. `strategy.create` / `get` / `list` / `cancel` / `events` are served over that socket by the same `StrategyService` an embedder holds, under a mandate resolved from **local configuration and never from the request**, and the CLI now reaches them over that socket (backlog 2.8). **There is no drain** (backlog 2.14): `runner.shutdown` is a clean stop that awaits the pass in flight, but nothing gates new admission first, so an upgrade with active jobs is a manual sequence. `private`, Node 24 floor (ADR-0007) |
 | `packages/adapters` | `@waterx/predict-agent-adapters` | The host-neutral instructions, the tool projection of the command contract (OpenAI / Anthropic / MCP shapes from one registry) and the dispatcher that validates and delegates. Delegation is a **subprocess** against the installed `waterx-predict` binary, never a library call. No OpenAPI document is emitted — this repository serves no HTTP surface. `private` |
 | `packages/mcp` | `@waterx/predict-agent-mcp` | Optional MCP stdio adapter: newline-delimited JSON-RPC 2.0 over `initialize` / `ping` / `tools/list` / `tools/call`, tools capability only. A transport and nothing more — the tools, the validation, the instructions and the delegation all come from `packages/adapters`. Zero runtime dependencies beyond it. `private` |
 | `packages/e2e` | `@waterx/predict-agent-e2e` | Harness that drives the installed CLI as a subprocess; `private`, never shipped. The end-to-end has **not run** — nothing here is evidence that it passes |
+| `packages/release` | `@waterx/predict-agent-release` | Release readiness: the CycloneDX 1.6 SBOM generator for each published package (from the **installed** tree, hashed from the lockfile, no timestamp) and the ten-check preflight whose third outcome is `UNRESOLVED` — a fact outside this workspace, refused by `--strict`. No runtime dependencies. `private` **permanently** (ADR-0009), not pending a release |
 
 Dependency direction is one-way and enforced by `tests/workspace.test.ts`: the
 SDK depends on nothing else here, the schema depends on nothing else here, and
@@ -300,6 +301,11 @@ Elsewhere:
 - `agent-instructions/` — **generated**, committed artifact. Never hand-edit; run
   `pnpm instructions:generate`. This is what the MCP adapter returns at
   `initialize` and what a host that cannot run this toolchain reads instead.
+- `sbom/` — **generated**, committed artifacts. Never hand-edit; run
+  `pnpm sbom:generate`. One CycloneDX document per published package, stating
+  what that package installs into a consumer. A licence is never guessed: an
+  undeclared one is read by a human and pinned to an exact version in
+  `packages/release/src/license-review.ts` with its evidence.
 - `tests/` — cross-package invariants only (boundaries, dependency direction,
   published-package hygiene, command-to-SDK-method drift).
 
@@ -548,6 +554,10 @@ Each fans out across the workspace: the root suite covers cross-package
 invariants, then `pnpm -r` runs every package's own. Run a focused suite during
 development with `pnpm --filter <package> run test`, then all three root commands
 before handoff.
+
+If the change touches a dependency, a published manifest or a generated artifact,
+also run `pnpm sbom:generate` and `pnpm release:preflight` and leave the tree
+clean. CI runs both; a stale SBOM tells a scanner the wrong version is installed.
 Documentation-only changes do not require inventing code changes, but still
 inspect links, commands, paths, and claims against the current repository.
 

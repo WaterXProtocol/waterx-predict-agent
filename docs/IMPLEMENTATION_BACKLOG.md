@@ -6,22 +6,36 @@ implemented**. The plan describes the intended system; an ADR constrains how it
 gets built; neither is evidence that anything works.
 
 - Verified: 2026-08-18
-- SDK: `codex/waterx-predict-agent-runtime` @ `682f9af` plus this commit
-- Backend: `codex/waterx-predict-agent-runtime` @ `2aedb8d8` — unchanged by this
-  SDK commit, and **correctly so**: the durable job store is entirely local. No
-  wire surface is touched, no endpoint is added, and the backend stores no job,
-  no target and no conditional order (ADR-0001 §7). There is no paired backend
-  commit for this one. See the Contract sync section.
-- SDK verification: `pnpm typecheck` clean, `pnpm test` 1012/1012 in 50 files
-  (156 SDK, 73 schema, 171 CLI, 408 Runner, 38 adapters, 30 MCP, 90 E2E harness,
-  46 workspace), `pnpm build` clean, and both generators reproduce their
-  committed artifacts byte-for-byte — `pnpm schema:generate` for
-  `schemas/v1/agent-commands.json` and `pnpm instructions:generate` for
-  `agent-instructions/AGENT_INSTRUCTIONS.md`. The Runner suite runs against real SQLite files in a temporary
+- SDK: `codex/waterx-predict-agent-runtime` @ `89cab81` plus this commit
+- Backend: `codex/waterx-predict-agent-runtime` @ `f14d2a5f` — unchanged by the
+  release-readiness work, and **correctly so**: provenance, an SBOM and a support
+  policy are properties of what this repository publishes. No wire surface is
+  touched and no endpoint is added. The backend worktree is clean at that commit
+  and the vendored contract was re-diffed against it below. See the Contract sync
+  section.
+- SDK verification: `pnpm typecheck` clean, `pnpm test` **1080 in 55 files**
+  (162 SDK, 74 schema, 173 CLI, 408 Runner, 38 adapters, 30 MCP, 90 E2E harness,
+  54 release, 51 workspace), `pnpm build` clean, and all **three** generators
+  reproduce their committed artifacts byte-for-byte — `pnpm schema:generate` for
+  `schemas/v1/agent-commands.json`, `pnpm instructions:generate` for
+  `agent-instructions/AGENT_INSTRUCTIONS.md` and `pnpm sbom:generate` for
+  `sbom/v1/*.cdx.json`. The Runner suite runs against real SQLite files in a temporary
   directory that are closed and reopened; it opens no socket and spawns no
   process. The adapter suites are the same: `spawn` and the `CoreInvoker` are
   injected throughout, so nothing there starts the command core, binds a port or
-  reads a real stdin.
+  reads a real stdin. The release suite reads real files in a temporary tree and
+  the repository's own `node_modules`; it installs nothing and reaches no network.
+  The counts above are measured, not carried forward: the previous header claimed
+  1012 in 50 files, which had been stale for several commits.
+- Package install was verified from the packed tarballs, not from the workspace:
+  `npm pack` for `@waterx/predict-agent-sdk` (29 files) and
+  `@waterx/predict-agent-schema` (17 files) carries `dist/`, `LICENSE`,
+  `README.md` and `package.json` and nothing else — no sources, no tests, no
+  `tsconfig`. Both tarballs were installed into a scratch project and imported on
+  **Node 20.19.5, 22.13.1 and 26.3.1** (macOS/arm64), reaching the client, the
+  newly exported contract constants and the schema document. **Linux and Windows
+  are unverified here**; the `floor` job in `.github/workflows/verify.yml` covers
+  Node 20 on Linux, and no Windows runner exists.
 - **No end-to-end run against a live server has happened.** Nothing on this
   machine is provisioned — no `WATERX_PREDICT_*` variable, no config file, and
   no Runner listening on a socket — so the E2E harness (1.11) reports PARTIAL,
@@ -39,7 +53,10 @@ leases it holds and answers an authenticated local socket — and `packages/adap
 and `packages/mcp` now put that same command set in front of a model host, by
 spawning the CLI rather than by importing anything. `packages/e2e` is a test
 harness that drives the installed CLI; it ships to nobody, and a green harness
-suite is not a green end-to-end.
+suite is not a green end-to-end. `packages/release` is the same kind of thing
+from the other end: it inventories what a published package carries into a
+consumer and refuses to release a workspace that is not fit to publish. Both are
+`private` permanently rather than pending a release.
 
 What the CLI writes, it writes one order at a time from a one-shot process. There
 is a daemon now, and there is now also a **job driver** — `driveJob` advances one
@@ -117,15 +134,33 @@ seam for. The SDK has two, and both are correctly disclosed in
 
 `packages/sdk/src/contract.ts` and
 `bucket-backend-mono/apps/waterx/src/predict/agent-api/agent-api.contract.ts`
-were diffed in full at SDK `HEAD` and backend `2aedb8d8`. Below the file header
-(SDK lines 1–28, backend lines 1–22, which differ only in the vendoring notice)
-they are byte-identical. No drift.
+were diffed in full at SDK `HEAD` and backend `f14d2a5f`. Below the file header
+(SDK lines 1–14, backend lines 1–8, which differ only in the vendoring notice)
+they are byte-identical. No drift. The backend commits since the last re-diff
+(`5ab9d9e4`, `f14d2a5f`) added metrics and a performance read whose contract
+types were already vendored; the file itself did not move.
 
 **This commit changes no wire surface.** The durable job store is local by
 decision, not by omission: the backend stores no job, no target and no
 conditional order (ADR-0001 §7), so a durable strategy is a client-side fact and
 there is nothing for the server to learn about it. Nothing under `packages/runner`
 issues a request today, and `packages/sdk/src/contract.ts` is untouched.
+
+**The contract's runtime values are now reachable from the entry point.** They
+were not: `packages/sdk/src/index.ts` re-exported `./contract.ts` with
+`export type *`, which carries no runtime binding, and the `exports` map admits
+only `.`, so a deep import of the built module is blocked as well. Fourteen
+values the SDK already holds — `PREDICT_AGENT_API_ROUTES`,
+`IDEMPOTENCY_KEY_HEADER`, the seven `PREDICT_QUOTE_*` event names and caps,
+`PREDICT_EXECUTION_STREAM`, `PREDICT_AGENT_STREAM_NAMESPACE`,
+`PREDICT_STREAM_READY` and `RETRYABLE_PREDICT_AGENT_ERROR_CODES` — were
+therefore invisible to every installed consumer, who had to hard-code a copy of
+the route it was about to call or the cap a stream enforces. A copy is what
+drifts from the contract this whole section exists to keep synchronised. Fixed in
+`packages/sdk/src/index.ts` and held by `packages/sdk/tests/entry-point.test.ts`
+(3), which imports through the entry point rather than the module so the test
+fails the way a consumer would. This is additive: no export was removed or
+renamed.
 
 **The backend moved first again, for B3.** The quote stream (backend `2aedb8d8`)
 adds `PREDICT_QUOTE_*` events, `PredictQuoteTopic`,
@@ -293,6 +328,7 @@ gaps are owner-authenticated actions no automation here may take.
 | 2.11 | Frozen-share percentage SELL; dynamic fraction as a distinct mode | PARTIAL | ADR-0001 §13, D-15. At creation: exactly one of `buyAmount`, `sellShares`, `sellFractionOfPosition`, `dynamicSellFractionOfPosition` may be given — none is `SIZE_MISSING`, more than one is `SIZE_AMBIGUOUS` listing what was given, and a size is never inferred from the side. `sellFractionOfPosition` is the **default** meaning of "sell half": it resolves against a real position read into a concrete `sellShares` on exact scaled-integer arithmetic (truncating toward zero, and refusing a fraction that resolves to nothing rather than submitting a zero-size order), and the record keeps `positionSharesAtCreation` and `frozenAt` beside it. The read proves absence rather than assuming it: it pages until the server answers `nextCursor: null`, and an unanswered cursor, a repeating cursor or a page bound is `POSITION_LOOKUP_INCONCLUSIVE`, not "you hold none". `dynamicSellFractionOfPosition` is the distinct explicit mode and performs **no** read at creation. `JobLegSizing` persists which mode a leg is in. **The dynamic mode now has its resolution point**: `preflight` re-reads the position at trigger for a `DYNAMIC_FRACTION` leg *only*, sizes off what is held then, and leaves a frozen leg untouched — a frozen job performs no position read at trigger at all. Absence is still proven rather than assumed: an inconclusive lookup **pauses the whole job**, while a *proven* absence, a market/outcome mismatch or a fraction that resolves to zero skips only that leg and leaves its siblings to trade. Covered by `tests/strategy-driver.test.ts`. The gap: as everywhere in 2.6, resolution happens only on a driven pass. |
 | 2.12 | Restart / kill / network-partition tests | PARTIAL | The **restart** half exists at the store layer: `packages/runner/tests/recovery.test.ts` (23) stages each crash point against a real database, closes it, reopens it and asserts what the next Runner does — re-arm on the same key, `UNKNOWN_PENDING` on an unresolved attempt, reconcile on a recorded execution id, and hands off rather than racing when another instance holds the lease. These are in-process reopen tests, not a killed process: no `SIGKILL`, no partition, and no server on the other end. The daemon (2.6) adds start-up recovery and clean shutdown under test — `tests/daemon.test.ts` asserts that a seeded mid-write crash is recovered as `UNKNOWN_PENDING` and stays there, and that a second Runner refuses a live socket — but those daemons are started and stopped in-process. **The restart is now proved end to end through the shipped process**: a daemon with a driver arms and triggers a two-leg job, dies at the ledger row for the second leg, and a *second* daemon is started on the same reopened database with the same gateway — recovery hands it a `RECONCILING` job, its scheduler finishes the run, and the gateway counts exactly two creates for two legs under the keys minted before the crash; the ambiguous-create case runs the same way and counts exactly one create across both processes, with the job still visible in `UNKNOWN_PENDING` (`tests/daemon.test.ts`). **The thing that can now be interrupted mid-order exists, and is tested at every boundary**: `tests/strategy-driver.test.ts` injects the crash at the *store*, so the pass dies with exactly the rows a process killed one instruction earlier would have left, then closes the database, reopens it, runs recovery and counts what the gateway was ever asked to send. The five boundaries are: before the `CREATING` transition (nothing sent; the next pass re-arms and re-uses the **same persisted key**), during the create (one create ever, `UNKNOWN_PENDING` forever, no second order invented), after a recorded create and before the submit (recovery reconciles; zero submits), during the submit (one submit ever, resolved by *reading* the execution rather than resending it), and **between one leg's create and its sibling's** — the leg with no attempt row of any kind is provably one nothing was ever sent for, so the next pass either re-arms the whole job (nothing left the process; every key kept) or finishes the half-sent run under the key already on disk, after fresh authorization, market, position and quote checks. That resume cannot end the job: an order exists on the server, so a refusal, or the job's own `expiresAt` passing, marks the unsent legs `SKIPPED` and leaves the verdict to the read — asserted as one create before the crash and exactly one after it, under the pre-crash key, and as zero creates once the expiry has passed. **Still not covered: a real `SIGKILL`, a network partition, and a server on the other end.** The crash is injected in-process and every gateway is a script. WP11 adds the *instrument* for the missing half but not the evidence: `strategy-restart-recovery` in the E2E plan restarts the Runner with the **operator's own command** (this repository constructs none) and then requires the same `jobId` to be answered by a **different** `runner.instanceId`, still non-terminal, with `openSideEffects` present — so a restart command that did nothing fails the step rather than passing it. It has never run: the `runner` and `runnerRestart` gaps are both MISSING here. |
 | 2.13 | Notification sink (webhook + durable event log) | TODO | D-23 |
+| 2.14 | Runner drain: stop admitting, finish what is in flight | TODO | ADR-0009. The upgrade sequence that ADR requires — **refuse new admission** → let in-flight work reach a terminal or safely resumable state → persist → exit — has no command behind it. `packages/runner/src/ipc/commands.ts` defines five: `runner.status`, `runner.jobs`, `runner.job`, `runner.cancel-job` and `runner.shutdown`. `shutdown` is a clean stop and is careful about the half it covers: `RunnerDaemon.doStop` closes the socket, then awaits `JobScheduler.stop`, which clears the timer and **awaits the pass in flight** before releasing the leases that pass is writing under, so a clean shutdown does not abandon a half-finished create/sign/submit the way a `SIGKILL` would. What it is missing is the first step. There is no state in which the process keeps driving the jobs it holds while refusing to admit new ones: the socket closes at once, so a `strategy create` arriving during a planned upgrade fails on a dropped connection rather than being told the Runner is draining, and a job that needed three more passes is simply left non-terminal for the next process to recover — safe, because the store and the lease make it safe (2.12), but invisible, because nothing reports how much was left. Smallest sufficient shape: a `runner.drain` that flips admission off while the loop keeps ticking, answers `status` with that state, reports the count still non-terminal, and resolves when the count reaches zero or a deadline passes — with an exceeded deadline reported, never silently crossed. Until it exists, `docs/RELEASE.md` says so, ADR-0009 forbids calling `shutdown` a drain, and the daemon stays unpublished. |
 
 **Phase 2 exit criteria**: across a two-hour strategy with forced token expiry, a
 WS gap, and a Runner restart, at most one logical execution results and every leg
@@ -307,7 +343,7 @@ reconciles independently.
 | 3.3 | Server capability advertisement consumed by `describe` | BLOCKED (backend) |
 | 3.4 | Quote-to-fill deviation, WS latency, reject-reason dashboards | PARTIAL (backend) — the quote stream exports freshness (`value_age_seconds`), the WaterX-controlled portion (`delivery_lag_seconds`), frame counts by kind, subscription/stale-topic coverage and rejections by reason (backend `2aedb8d8`); the execution path now adds quote-to-fill deviation, terminal outcomes, reject reasons and revocation-detection latency (backend `5ab9d9e4`, `predict-agent-execution.metrics.ts` + 10 tests, deviation arithmetic in `domain/quote-deviation.ts` + 12). Deviation is signed so that **positive is always worse for the agent** on both sides, and is `null` rather than `0` when the share count or the quote price was not observed — a zero would report a perfect fill where nothing was measurable, and the unmeasurable population is counted separately (`…_unobservable_total` by reason). Revocation latency is published as an **upper bound**: it measures from this process's last allowed write, not from the on-chain revocation, which nothing here observes; a mandate this replica never saw publishes nothing rather than a fabricated zero. The private execution socket — the one carrying fills, and until now the only agent surface exporting nothing — is covered by backend `f14d2a5f` (`predict-agent-stream.metrics.ts` + 6 gateway tests): handshakes by result, replayed frame depth, handshake rejections by reason, and authenticated connections on the pod. A gap is a **label on the handshake counter, not its own series**, so the gap rate is a division inside one series (`GAP / (RESUME + GAP)`) and can distinguish a replay window that is too small from one that is merely well used; `FRESH` is outside that denominator because a client with no cursor asked for no history and could not have missed any. The connection gauge is incremented only after a wallet is established and decremented only in that same branch, so a pod refusing every token cannot drive it negative. **What this does not mean:** these count the socket, not the delivery — the durable record is the outbox and the authoritative one is a REST read, so a quiet `GAP` series proves only that nobody on that pod asked from too far back. And no dashboard and no alert rule is committed — this repository does not own one, and the backend `2aedb8d8`/`5ab9d9e4`/`f14d2a5f` series are Prometheus exports that an owner still has to graph and threshold. |
 | 3.5 | Thin-market large-size and high-subscription load tests | TODO |
-| 3.6 | npm provenance, SBOM, upgrade/rollback docs, beta support policy | TODO — also gates publishing `@waterx/predict-agent-cli`, `@waterx/predict-agent-adapters` and `@waterx/predict-agent-mcp`, all `private` today. D-28 (whether MCP ships in the first wave) is now a release decision here rather than a build one. |
+| 3.6 | npm provenance, SBOM, upgrade/rollback docs, beta support policy | PARTIAL — **the policy and the artifacts exist; nothing has been published, and one gate is unresolved.** ADR-0009 decides D-26 through D-30. `docs/RELEASE.md` is the procedure: what ships, the pre-publish gates, provenance, the SBOM, the support window, upgrade/rollback, and telemetry (none, in any package). Provenance is requested where it cannot be lost by editing a workflow line — `publishConfig: { access: "public", provenance: true }` in each published manifest, asserted by `tests/workspace.test.ts` — and `.github/workflows/release.yml` is `workflow_dispatch`-only with `dry-run` defaulting to `true`, `id-token: write`, and a publish step gated on `dry-run == false`. The SBOM is a committed CycloneDX 1.6 document per published package (`sbom/v1/`), generated by `packages/release` (54 tests) from the **installed** tree rather than from declared ranges, hashed from the lockfile, carrying no timestamp and a content-derived serial so `git diff --exit-code -- sbom/` in CI means something. Licences are never guessed: `xmlhttprequest-ssl@2.1.2` declares none (it uses npm's deprecated `licenses:` array and ships a verbatim MIT text), so a human read it and the finding is pinned to that exact version in `src/license-review.ts` with its evidence, emitted with `waterx:license-source: HUMAN_REVIEW`, and **failed** by the preflight the moment the version it covers stops shipping. `pnpm release:preflight` runs ten checks in three outcomes — PASS, FAIL, and UNRESOLVED for a fact that lives outside this workspace — and `--strict`, which the release workflow runs, refuses on UNRESOLVED. Current state on a built workspace: **9 PASS, 0 FAIL, 1 UNRESOLVED** (`dist-built` is the tenth and fails before `pnpm build`, which is why ordinary CI runs the preflight report-only). The unresolved one is `repository-provenance`: no git remote is configured here, so no `repository` URL is declared, and provenance has nothing to attest the build *to*. That is the blocking gap, and it is an infrastructure fact nobody in this repository can supply. **What this does not mean:** nothing has been published, no provenance attestation has ever been produced, the release workflow has never run, and the SBOM's completeness is only as good as the tree that was installed when it was generated. The **first wave is the SDK and the schema only** (D-28): `@waterx/predict-agent-cli`, `@waterx/predict-agent-adapters`, `@waterx/predict-agent-mcp` and the Runner stay `private` until 1.11 has actually run against a real server and the drain path (2.14) exists. |
 
 ## 6. Backend dependencies
 
@@ -327,21 +363,43 @@ Ordered by what blocks the most SDK work.
 
 ## 7. Open questions not yet ADR'd
 
-D-23 through D-30 remain deliberately undecided. None gates Phase 0 or Phase 1.
-They must be decided before beta:
+D-23 and D-25 remain deliberately undecided. Neither gates Phase 0 or Phase 1.
+D-24 was answered by B8; D-26 through D-30 are decided by ADR-0009 and are kept
+here with their answers rather than deleted, so a reader who remembers the
+question finds the ruling instead of a gap:
 
 | ID | Question | Gates |
 | --- | --- | --- |
 | D-23 | Notification channels | 2.13 |
 | D-24 | Whether agent performance includes direct-chain trades | ~~B8~~ — answered by B8: it does not, and `attributionScope: API_ATTRIBUTED_ONLY` is the only mode the endpoint can produce. Revisiting it would need a chain-side attribution source, not a flag. |
 | D-25 | Historical quote window and granularity | Scenario 1 |
-| D-26 | Runtime auto-update with active jobs | 3.6 |
-| D-27 | Release artifacts (provenance, SBOM, container) | 3.6 |
-| D-28 | Whether MCP ships in the first wave | 3.6 — the adapter is built (3.2) and `private`, so this is now a release decision rather than a build one |
-| D-29 | CLI/local API version support window | 3.6 |
-| D-30 | Telemetry and privacy defaults | 3.6 |
+| D-26 | Runtime auto-update with active jobs | ~~3.6~~ — decided by ADR-0009: **there is no auto-update, on any channel, in any package**. An update is an operator action, and a Runner with active jobs is drained first. The drain that gates admission does not exist yet and is tracked as 2.14, not described as if it did. |
+| D-27 | Release artifacts (provenance, SBOM, container) | ~~3.6~~ — decided by ADR-0009: provenance and a committed CycloneDX SBOM are **mandatory** for every published package; **no container image**, because nothing here is a service and an image would be a second, staler way to install a library. |
+| D-28 | Whether MCP ships in the first wave | ~~3.6~~ — decided by ADR-0009: **no**. The first wave is the SDK and the schema. The MCP server, the adapters, the CLI and the Runner are built and stay `private` until 1.11 has run against a real server and 2.14 exists — an adapter that spawns an unpublished CLI would install into a host that cannot run it. |
+| D-29 | CLI/local API version support window | ~~3.6~~ — decided by ADR-0009: **refuse across a version boundary rather than degrade**; reads may proceed, writes are refused. Supported window is the current minor plus the one before it, with the published packages versioned in lockstep. |
+| D-30 | Telemetry and privacy defaults | ~~3.6~~ — decided by ADR-0009: **none**. No metrics endpoint, no crash reporter, no usage ping, no update check, in any package. Adding any requires a superseding ADR, and it would be opt-in and off by default. |
 
-## 8. Standing rules for updating this file
+## 8. Release-readiness audit — 2026-08-18
+
+An audit of the plan against the paths a consumer can actually reach. Four
+findings; two are fixed in this commit, two are recorded because they cannot be
+fixed here.
+
+| Finding | Disposition |
+| --- | --- |
+| **Fourteen contract constants were unreachable from an installed package.** `export type *` re-exports types and no runtime values, and the `exports` map blocks a deep import, so the routes, the idempotency header and the stream caps existed in the tarball and could not be imported from it. | **Fixed.** `packages/sdk/src/index.ts` exports them by value; `packages/sdk/tests/entry-point.test.ts` imports through the entry point so the test fails the way a consumer would. |
+| **This file's own verification header had been stale for several commits** — 1012 tests in 50 files against a measured 1080 in 55, and a backend pin two commits behind. A status file that reports the wrong number is worse than one that reports none, because the wrong number is quoted. | **Fixed.** Re-measured and re-pinned above, and the counts are now stated per package so the next drift is visible. |
+| **`xmlhttprequest-ssl@2.1.2` declares no `license` field.** It reaches a consumer transitively through `socket.io-client` → `engine.io-client`. A generator that guessed MIT here would be right and would still be guessing. | **Recorded, not guessed.** Read by a human, pinned with its evidence in `packages/release/src/license-review.ts`, emitted as `HUMAN_REVIEW`, and failed by the preflight if the version it covers stops shipping. |
+| **No repository URL is configured**, so npm provenance has nothing to attest the build to. | **Unresolved, and blocking.** The preflight reports it as UNRESOLVED and `--strict` refuses on it, so the release workflow stops before a version is burned. Nobody in this repository can supply a remote. |
+
+What the audit did **not** establish, stated so it is not read into the above:
+no package has been published; no provenance attestation has ever been produced;
+neither workflow in `.github/workflows/` has ever run on a real runner
+(`actionlint` is clean, which is a syntax fact); the install matrix covered
+macOS/arm64 on Node 20, 22 and 26 only; and 1.11 is still the unmoved item —
+nothing here has been driven against a live server.
+
+## 9. Standing rules for updating this file
 
 - Move an item to **DONE** only when the public path *and* its failure/recovery
   behavior are implemented and tested. Documentation or scaffolding is not DONE.
@@ -374,3 +432,10 @@ They must be decided before beta:
   can perform it.
 - When an item moves, update the evidence column with a real path or test name.
   An item with no evidence is not DONE.
+- Removing `private: true` from a package is a release decision, not a build one.
+  It requires the ADR-0009 conditions to hold, and it changes what `sbom/v1/`
+  must contain — `pnpm sbom:check` fails on a published package with no SBOM and
+  on an SBOM belonging to no published package.
+- Re-measure the verification header rather than editing the sentence around it.
+  Every number in it is output from a command that was run in the commit that
+  states it.

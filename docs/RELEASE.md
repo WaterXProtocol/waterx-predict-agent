@@ -151,11 +151,14 @@ There is no auto-update. An update is something an operator does.
 admission → let in-flight work reach a terminal or safely resumable state →
 persist → exit.
 
-> A drain that gates new admission **does not exist yet**. `runner.shutdown`
-> stops the process; it is not a drain and must not be presented as one. Until
-> the drain path lands, the supported upgrade procedure for a Runner with active
-> jobs is: stop submitting work, wait for jobs to reach a resumable state, then
-> shut down and restart on the new version.
+> A drain that gates new admission **does not exist yet** (backlog 2.14).
+> `runner.shutdown` is a clean stop, not a drain, and must not be presented as
+> one. It does close the socket and then await the scheduler pass in flight, so
+> it will not abandon a half-finished create/sign/submit — but it refuses no
+> admission first and reports nothing about what it left unfinished. Until the
+> drain path lands, the supported upgrade procedure for a Runner with active
+> jobs is: stop submitting work, watch `strategy list` until nothing is
+> mid-execution, then shut down and restart on the new version.
 
 **Rollback:** install the previous version and restart. This is safe only while
 the job store schema is backward-compatible. A release that changes the store
