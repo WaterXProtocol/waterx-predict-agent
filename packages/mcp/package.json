@@ -1,9 +1,26 @@
 {
   "name": "@waterx/predict-agent-mcp",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
-  "description": "RESERVED BOUNDARY, NOT IMPLEMENTED. Optional MCP adapter: a thin translation over the same command contract, never a second command surface.",
+  "description": "Optional MCP stdio adapter over the WaterX Predict command contract. A transport and nothing more: the tool definitions, the validation, the instructions and the delegation all come from @waterx/predict-agent-adapters, and every call is executed by the installed `waterx-predict` binary.",
   "license": "MIT",
   "type": "module",
-  "engines": { "node": ">=20" }
+  "bin": { "waterx-predict-mcp": "dist/src/bin/mcp.js" },
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json && node -e \"require('node:fs').chmodSync('dist/src/bin/mcp.js',0o755)\"",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@waterx/predict-agent-adapters": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.12.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.6"
+  }
 }

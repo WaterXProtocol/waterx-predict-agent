@@ -9,8 +9,13 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-import { AGENT_TOOLS, toolNameFor } from '../packages/adapters/src/index.ts';
+import {
+  AGENT_TOOLS,
+  createToolDispatcher,
+  toolNameFor,
+} from '../packages/adapters/src/index.ts';
 import { CAPABILITIES } from '../packages/cli/src/capabilities.ts';
+import { createMcpServer } from '../packages/mcp/src/server.ts';
 import {
   openRunnerSession,
   RUNNER_IPC_PROTOCOL as CLI_IPC_PROTOCOL,
@@ -55,10 +60,7 @@ const INTERNAL = new Set(['cli', 'runner']);
  * or the Runner at all, because an adapter that could import them could
  * reimplement pricing, retry, signing, policy or job state (plan §6.7).
  */
-const ADAPTERS = new Set(['adapters']);
-
-/** Reserved boundaries with no implementation. They must not look like one. */
-const RESERVED = new Set(['mcp']);
+const ADAPTERS = new Set(['adapters', 'mcp']);
 
 /**
  * Test harnesses. They drive the shipped artifacts and are never shipped
@@ -89,7 +91,7 @@ const manifest = (dir: string): PackageManifest =>
 describe('workspace layout', () => {
   it('accounts for every package directory', () => {
     expect(new Set(PACKAGE_DIRS)).toEqual(
-      new Set([...PUBLISHED, ...INTERNAL, ...ADAPTERS, ...RESERVED, ...HARNESS]),
+      new Set([...PUBLISHED, ...INTERNAL, ...ADAPTERS, ...HARNESS]),
     );
   });
 
@@ -174,7 +176,7 @@ describe('dependency direction', () => {
   it('never lets a published package import an unpublished one, in source', () => {
     // A published package importing `@waterx/predict-agent-cli` would name a
     // dependency that does not exist on any registry.
-    const unpublishedNames = [...ADAPTERS, ...RESERVED, ...INTERNAL, ...HARNESS].map(
+    const unpublishedNames = [...ADAPTERS, ...INTERNAL, ...HARNESS].map(
       (dir) => manifest(dir).name ?? dir,
     );
     for (const dir of PUBLISHED) {
@@ -641,6 +643,10 @@ describe('the adapter packages', () => {
       '@waterx/predict-agent-cli',
       '@waterx/predict-agent-schema',
     ]);
+    // MCP is a transport over the adapter core, so it is one edge wide.
+    expect(Object.keys(manifest('mcp').dependencies ?? {})).toEqual([
+      '@waterx/predict-agent-adapters',
+    ]);
     for (const dir of ADAPTERS) {
       for (const specifier of Object.values(manifest(dir).dependencies ?? {})) {
         expect(specifier, dir).toBe('workspace:*');
@@ -674,29 +680,16 @@ describe('the adapter packages', () => {
     );
   });
 
-});
-
-describe('reserved boundaries', () => {
-  it('publishes nothing and claims nothing', () => {
-    // A reserved directory exists so a dependency cannot leak into the SDK
-    // later. It must not read as a shipped capability in the meantime.
-    for (const dir of RESERVED) {
-      const pkg = manifest(dir);
-      expect(pkg.private, dir).toBe(true);
-      expect(pkg.main, dir).toBeUndefined();
-      expect(pkg.exports, dir).toBeUndefined();
-      expect(pkg.bin, dir).toBeUndefined();
-      expect(pkg.dependencies, dir).toBeUndefined();
-      const tracked = readdirSync(`${ROOT}packages/${dir}`)
-        .filter((entry) => entry !== 'node_modules' && !entry.startsWith('.'))
-        .sort();
-      expect(tracked, dir).toEqual(['README.md', 'package.json']);
-    }
-  });
-
-  it('says so in the README', () => {
-    for (const dir of RESERVED) {
-      expect(read(`packages/${dir}/README.md`).toLowerCase(), dir).toContain('not implemented');
+  it('keeps MCP a transport over the adapter core', () => {
+    // Every tool definition, every validation and every refusal has to come
+    // from one place. An MCP server that imported the schema directly could
+    // advertise a tool the function-calling host does not have.
+    for (const file of sourceFiles('packages/mcp/src')) {
+      const source = read(file);
+      expect(source, `${file} imports the schema directly`).not.toContain(
+        "'@waterx/predict-agent-schema'",
+      );
+      expect(source, `${file} imports the CLI`).not.toContain("'@waterx/predict-agent-cli'");
     }
   });
 });
@@ -712,10 +705,40 @@ describe('one command surface, however a host reaches it', () => {
     expect(new Set(AGENT_TOOLS.map((tool) => tool.name)).size).toBe(AGENT_TOOLS.length);
   });
 
-  it('turns an intent into the CLI path the contract names', () => {
-    for (const command of AGENT_COMMANDS) {
-      expect(getToolCli(toolNameFor(command.name)), command.name).toEqual(command.cli.split(' '));
-    }
+  it('runs the same argv whichever adapter the intent arrived through', async () => {
+    // The property the whole work package is for: MCP and a generic
+    // function-calling host are two front doors onto one command core. If the
+    // argv could differ, "the same intent" would be two different orders.
+    const seen: string[][] = [];
+    const dispatcher = createToolDispatcher({
+      invoke: (invocation) => {
+        seen.push([...invocation.argv]);
+        return Promise.resolve({
+          exitCode: 0,
+          stdout: JSON.stringify({ schemaVersion: '1', ok: true, command: invocation.command }),
+          stderr: '',
+        });
+      },
+    });
+    const tool = toolNameFor('market.quote');
+    const input = { marketId: 'mkt_1', outcomeId: 'YES', side: 'BUY', size: { buyAmount: '12.50' } };
+
+    // Front door one: a function-calling host, calling the dispatcher.
+    await dispatcher.call(tool, input);
+    // Front door two: an MCP client, over the JSON-RPC method.
+    await createMcpServer({ dispatcher, instructions: 'test' }).handle({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: { name: tool, arguments: input },
+    });
+
+    expect(seen).toHaveLength(2);
+    expect(seen[0]).toEqual(seen[1]);
+    // And it is the CLI path the contract names, with one validated document.
+    expect(seen[0]?.slice(0, 2)).toEqual(
+      AGENT_COMMANDS.find((command) => command.name === 'market.quote')?.cli.split(' '),
+    );
   });
 });
 
@@ -759,10 +782,6 @@ describe('the command contract compiles to the SDK', () => {
     }
   });
 });
-
-/** The argv prefix a tool routes to, read off the registry. */
-const getToolCli = (name: string): string[] =>
-  (AGENT_TOOLS.find((tool) => tool.name === name)?.annotations.cli ?? '').split(' ');
 
 function sourceFiles(relativeDir: string): string[] {
   const out: string[] = [];

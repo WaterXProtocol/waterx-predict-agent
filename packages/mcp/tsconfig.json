@@ -1,0 +1,26 @@
+{
+  "extends": "./tsconfig.build.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": false,
+    "resolveJsonModule": true,
+    "types": ["node", "vitest/globals"],
+    "rootDir": "../..",
+    // Typecheck against the sibling SOURCE, matching every other package here.
+    // One entry, because this package has one dependency: the adapter core.
+    // Anything it needed from the schema, the SDK or the CLI would have to be
+    // re-exported there, where the tool contract lives.
+    // The schema is listed only because the adapter core's own sources import
+    // it, and typechecking through source follows them. Nothing under `src`
+    // here may import it directly — a workspace test holds that line.
+    "paths": {
+      "@waterx/predict-agent-adapters": ["../adapters/src/index.ts"],
+      "@waterx/predict-agent-schema": ["../schema/src/index.ts"]
+    }
+  },
+  "include": ["src", "tests"],
+  "exclude": ["node_modules", "dist"]
+}
