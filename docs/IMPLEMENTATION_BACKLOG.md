@@ -6,18 +6,22 @@ implemented**. The plan describes the intended system; an ADR constrains how it
 gets built; neither is evidence that anything works.
 
 - Verified: 2026-08-18
-- SDK: `codex/waterx-predict-agent-runtime` @ `711af39` plus this commit
+- SDK: `codex/waterx-predict-agent-runtime` @ `682f9af` plus this commit
 - Backend: `codex/waterx-predict-agent-runtime` @ `2aedb8d8` — unchanged by this
   SDK commit, and **correctly so**: the durable job store is entirely local. No
   wire surface is touched, no endpoint is added, and the backend stores no job,
   no target and no conditional order (ADR-0001 §7). There is no paired backend
   commit for this one. See the Contract sync section.
-- SDK verification: `pnpm typecheck` clean, `pnpm test` 939/939 in 44 files
-  (156 SDK, 73 schema, 171 CLI, 408 Runner, 90 E2E harness, 41 workspace),
-  `pnpm build` clean, `pnpm schema:generate` reproduces the committed artifact
-  byte-for-byte. The Runner suite runs against real SQLite files in a temporary
+- SDK verification: `pnpm typecheck` clean, `pnpm test` 1012/1012 in 50 files
+  (156 SDK, 73 schema, 171 CLI, 408 Runner, 38 adapters, 30 MCP, 90 E2E harness,
+  46 workspace), `pnpm build` clean, and both generators reproduce their
+  committed artifacts byte-for-byte — `pnpm schema:generate` for
+  `schemas/v1/agent-commands.json` and `pnpm instructions:generate` for
+  `agent-instructions/AGENT_INSTRUCTIONS.md`. The Runner suite runs against real SQLite files in a temporary
   directory that are closed and reopened; it opens no socket and spawns no
-  process.
+  process. The adapter suites are the same: `spawn` and the `CoreInvoker` are
+  injected throughout, so nothing there starts the command core, binds a port or
+  reads a real stdin.
 - **No end-to-end run against a live server has happened.** Nothing on this
   machine is provisioned — no `WATERX_PREDICT_*` variable, no config file, and
   no Runner listening on a socket — so the E2E harness (1.11) reports PARTIAL,
@@ -31,8 +35,9 @@ account read plane, **and the market-order write plane** — preview, execute,
 execute-many, get and reconcile, behind an enforced execution policy;
 `packages/runner` now holds the job store, the state machine, lease fencing, crash
 recovery **and a daemon** — a process that recovers at start-up, supervises the
-leases it holds and answers an authenticated local socket — and `packages/mcp` is
-still a reserved boundary with **no implementation**. `packages/e2e` is a test
+leases it holds and answers an authenticated local socket — and `packages/adapters`
+and `packages/mcp` now put that same command set in front of a model host, by
+spawning the CLI rather than by importing anything. `packages/e2e` is a test
 harness that drives the installed CLI; it ships to nobody, and a green harness
 suite is not a green end-to-end.
 
@@ -192,20 +197,20 @@ signing gate are **local** constructs that never appear on the wire.
 | 0.3 | Checked implementation backlog | DONE | This file. |
 | 0.4 | Runner trust boundary + crash/replay threat model | PARTIAL | Three of the five crash points are modelled **and enforced**, with the table written out in the header of `packages/runner/src/recovery.ts` and asserted twice — as a table through `classify`, and end to end against a database that is closed and reopened (`packages/runner/tests/recovery.test.ts`, 23). Crash between key persist and create → re-arm reusing the *same* key; crash between create and submit → `UNKNOWN_PENDING`, never a re-send, and now resolvable: `reconcileJob` reads the recorded execution back and admits only what the server reported (`reconciler.test.ts`, 15). The one crash point that stays unresolvable is a crash *inside* the create, where no execution id was ever recorded — that needs a backend read this API does not have (B9), and it is reported as `INCONCLUSIVE` rather than guessed. Duplicate Runner instances on one store → lease fencing tokens, so the superseded writer fails `LEASE_LOST` rather than interleaving (`store.test.ts`, 37). The gaps: **signer unavailable mid-job** is now modelled at the pass level — a refusal or an unavailable keystore leaves the created execution unsigned, records the reason on the leg as `signRefusedCode`, and hands the job to the reconciler rather than calling the order failed (`tests/strategy-driver.test.ts`) — but not yet against a real keystore process that dies mid-request, and **clock skew vs `expiresAt`** is untouched — recovery expires a job against an instant its caller supplies, and nothing yet reconciles that instant against the server's. |
 | 0.5 | Job state machine specification | PARTIAL | Executable rather than prose: `packages/runner/src/state-machine.ts` is the table, and `tests/state-machine.test.ts` (9) asserts its properties over the whole edge set rather than the handful a feature used — no in-flight state may reach `CANCELLED`/`EXPIRED`, `UNKNOWN_PENDING` has exactly one exit, only `RECONCILING` may reach `FILLED`, terminal states are sinks, and every `WRITE`/`SIGN` state requires a persisted leg. The store enforces that last one at runtime (`NO_IDEMPOTENCY_KEY`). Includes `PAUSED` (ADR-0004) and `UNKNOWN_PENDING`. `driveJob` now enters and leaves `PAUSED` on a market verdict (2.9), so every state in the table is reachable by an implementation rather than only by a test. |
-| 0.6 | CLI command + schema prototype | PARTIAL | Schema half is done (1.2): commands, inputs and the `implementation` mapping are fixed and validated. The CLI half now covers the read plane *and* the market-order write plane (1.3–1.8). The two-host discovery spike required by the plan's exit criteria is still not done — one intent has not yet been issued through the CLI *and* an adapter, because no adapter exists (3.2). |
+| 0.6 | CLI command + schema prototype | PARTIAL | Schema half is done (1.2): commands, inputs and the `implementation` mapping are fixed and validated. The CLI half now covers the read plane *and* the market-order write plane (1.3–1.8). The two-host discovery spike required by the plan's exit criteria is now done (3.1, 3.2): `tests/workspace.test.ts` issues one `market.quote` intent through the generic function-calling dispatcher and through the MCP `tools/call` method and asserts the argv handed to the command core is **identical** — and since both front doors spawn the same CLI binary rather than importing anything, the SDK request below it is the same request by construction. What remains under this item is that the spike is in-process against an injected invoker: no model host has driven either adapter, and no intent from one has reached a server (1.11). |
 | 0.7 | Quote WS protocol + achievable SLO | BLOCKED | Backend. Upstream feed is ~2 s polling; SLO must precede any real-time claim. |
 | 0.8 | Testnet provisioning + owner onboarding runbook | PARTIAL | The runbook and the checkable gap list exist; **nothing is provisioned**. `packages/e2e/src/gaps.ts` names ten gaps. The original seven — base URL, environment label, agent wallet, signer command, default account, delegation, owner risk profile — are unchanged and not restated; WP11 adds the three the durable half needs: `ownerAddress` (whose account a strategy trades), `runner` (a Runner answering its socket **and driving**) and `runnerRestart` (the operator's own way of restarting it). Each carries who supplies it, how, and the command that would settle it; `packages/e2e/README.md` carries the two-actor sequence. `packages/e2e/tests/gaps.test.ts` (9) fails if a gap loses its supplier, if a gap can be checked before a server is reachable, if the two **owner-authenticated** entries (`delegation`, `ownerRiskProfile`) stop saying that this pipeline must not attempt them, or if the restart gap ever grows a `pkill`/signal/pid instruction — this repository must not construct a way to stop a process it did not start. Those two owner-authenticated entries are a human task by ADR-0003 §1 and are not automatable here by design. Verified against this machine: `describe` reports no base URL, no label, no wallet, no signer and no account; `strategy list` gets `RUNNER_UNREACHABLE`; and no owner address or restart command was supplied — so eight gaps are MISSING and both owner-authenticated gaps are UNCHECKED, *not* denied, because no authenticated read happened. |
 
 **Phase 0 exit criteria** (from the plan): one normalized intent produces an
 identical SDK request through the CLI and through one tool adapter, and every
-secret-custody and approval boundary has a named owner. Not met — 0.4 through 0.8
-are open.
+secret-custody and approval boundary has a named owner. The first half is now met
+and asserted (0.6, 3.2). Still not met overall — 0.4, 0.5, 0.7 and 0.8 are open.
 
 ## 3. Phase 1 — universal one-shot interface
 
 | # | Item | Status | Depends on |
 | --- | --- | --- | --- |
-| 1.1 | pnpm workspace split: `sdk` / `cli` / `runner` / `mcp` | DONE | `pnpm-workspace.yaml`, `packages/*/package.json`, `tests/workspace.test.ts`. SDK moved to `packages/sdk` with its published entry points unchanged; `schema` added; `cli`/`runner`/`mcp` are private, source-free reserved boundaries. Dependency direction and published-package hygiene are enforced by test, not convention. |
+| 1.1 | pnpm workspace split: `sdk` / `cli` / `runner` / `mcp` | DONE | `pnpm-workspace.yaml`, `packages/*/package.json`, `tests/workspace.test.ts`. SDK moved to `packages/sdk` with its published entry points unchanged; `schema` added; `cli`/`runner`/`mcp` were private, source-free reserved boundaries at the time, and all three are implemented now (`mcp` by 3.2, alongside `packages/adapters`). Dependency direction and published-package hygiene are enforced by test, not convention. |
 | 1.2 | Versioned runtime command schema (single source of truth) | DONE | `packages/schema/src`, emitted to `schemas/v1/agent-commands.json`; ADR-0006. Eighteen commands, runtime-validated by `validateCommandInput` with no coercion; `packages/schema/tests` (71) cover the validator subset, unsupported-keyword rejection, every published example, BUY/SELL unit and position agreement, decimal/price/address patterns, and byte-for-byte artifact drift. `tests/workspace.test.ts` additionally fails if a contract command is not backed by an AVAILABLE capability, so the contract cannot advertise what no surface runs. |
 | 1.3 | Consistent JSON envelope, symbolic error codes, exit codes | DONE | `packages/cli/src/{envelope,exit-codes,errors}.ts`; `packages/cli/tests/envelope.test.ts` (13). Exactly one parseable document on stdout on every path including an unresolvable command; usage prose on stderr only; the exit code derived from the server's own symbolic code rather than the HTTP status; `retryable` copied from the server, never re-derived. The code table is published by `describe` so a host need not hard-code it. |
 | 1.4 | `describe` | DONE | `packages/cli/src/commands/describe.ts`; `packages/cli/tests/discovery.test.ts` (14). Answers with no configuration, no signer and no network. Reports the policy in force, its source, and that an approval token **is not authentication**; reports `signer.canSignTransactions` from the policy rather than from intent. `serverCapabilities.source` is `STATIC` — this build's own claim, not something the server advertised (3.3/B7 is still blocked), and it is labelled as such rather than presented as negotiated. |
@@ -296,12 +301,12 @@ reconciles independently.
 
 | # | Item | Status |
 | --- | --- | --- |
-| 3.1 | Host-neutral agent instructions | TODO |
-| 3.2 | MCP adapter + one other function-calling adapter, same schema | TODO |
+| 3.1 | Host-neutral agent instructions | DONE — `packages/adapters/src/instructions.ts`, emitted to `agent-instructions/AGENT_INSTRUCTIONS.md` and compared byte-for-byte by `packages/adapters/tests/instructions.test.ts` (6), the same way `schemas/` is. Twenty-eight rules in eight sections, each with a symbolic id (`SIZE_AMBIGUITY_STOPS_BEFORE_A_WRITE`, `RETRY_REPLAYS_THE_SAME_KEY_AND_BYTES`), so a deleted rule fails a test rather than shortening a document and a refusal can cite one by name. The command table in it is generated from the contract, so a host reads the same twenty-three commands, CLI paths and classifications every other surface does. The MCP adapter returns this document verbatim in `InitializeResult.instructions`; a host that cannot run this toolchain reads the committed file. It states the decisions that cost money — a BUY target is the highest executable ask and a SELL target the lowest executable bid, `buyAmount` and `sellShares` are different units with no conversion, decimals are strings, a timeout `may already have executed` and is recovered by reading rather than by a fresh key, `driving: false` means nothing is watching, expiry is mandatory and capped at seven days, `execute-many` is `never atomic`, and an approval token `is not a credential`. |
+| 3.2 | MCP adapter + one other function-calling adapter, same schema | DONE — `packages/adapters` (the shared core, 38 tests) and `packages/mcp` (the optional stdio transport, 30 tests). One registry projects the contract's twenty-three commands into OpenAI, Anthropic and MCP tool shapes; only the wrapper differs, and `tools.test.ts` fails if any host's schema drifts from another's. Each tool carries the transitive `$defs` closure it reaches and no more, so no host receives a dangling `$ref` or twenty-three definitions to list a market. MCP annotations are derived, not listed: `readOnlyHint`/`idempotentHint` from the command's classification, `destructiveHint` from `MOVES_FUNDS`, and `openWorldHint` from the contract's own `Local only:` marker. **Delegation is structural**: an adapter spawns the installed `waterx-predict` binary and never imports the SDK or the Runner — `packages/adapters/tsconfig.json` resolves only the schema, and `tests/workspace.test.ts` fails if either adapter's source names the SDK, the Runner or the CLI as an import — so there is no symbol in scope to reimplement pricing, retry, signing, policy or job state with. The dispatcher validates with the CLI's own validator, forwards one JSON document, relays the envelope verbatim, and never retries. Approval cannot be granted through an adapter: `--approve` digests one exact intent and is refused from the operator-flag allowlist, so a write under the default `interactive` policy is refused `POLICY_DENIED` by the core. `isFullySettled` requires `ok` **and** exit 0, so MCP reports a partially filled `execute-many` with `isError: true` rather than as an unqualified success. `tests/workspace.test.ts` runs one intent through both front doors and asserts identical argv. **What this does not mean:** no adapter has been driven by a real model host, and no OpenAPI document is emitted — this repository serves no HTTP surface, so one would describe an endpoint that does not exist (an adapter that wanted it would build it over the same registry). |
 | 3.3 | Server capability advertisement consumed by `describe` | BLOCKED (backend) |
 | 3.4 | Quote-to-fill deviation, WS latency, reject-reason dashboards | PARTIAL (backend) — the quote stream now exports freshness (`value_age_seconds`), the WaterX-controlled portion (`delivery_lag_seconds`), frame counts by kind, subscription/stale-topic coverage and rejections by reason (backend `2aedb8d8`). Quote-to-fill deviation and execution reject-reason series are still absent, and no dashboard exists. |
 | 3.5 | Thin-market large-size and high-subscription load tests | TODO |
-| 3.6 | npm provenance, SBOM, upgrade/rollback docs, beta support policy | TODO — also gates publishing `@waterx/predict-agent-cli`, which is `private` today |
+| 3.6 | npm provenance, SBOM, upgrade/rollback docs, beta support policy | TODO — also gates publishing `@waterx/predict-agent-cli`, `@waterx/predict-agent-adapters` and `@waterx/predict-agent-mcp`, all `private` today. D-28 (whether MCP ships in the first wave) is now a release decision here rather than a build one. |
 
 ## 6. Backend dependencies
 
@@ -331,7 +336,7 @@ They must be decided before beta:
 | D-25 | Historical quote window and granularity | Scenario 1 |
 | D-26 | Runtime auto-update with active jobs | 3.6 |
 | D-27 | Release artifacts (provenance, SBOM, container) | 3.6 |
-| D-28 | Whether MCP ships in the first wave | 3.2 |
+| D-28 | Whether MCP ships in the first wave | 3.6 — the adapter is built (3.2) and `private`, so this is now a release decision rather than a build one |
 | D-29 | CLI/local API version support window | 3.6 |
 | D-30 | Telemetry and privacy defaults | 3.6 |
 
@@ -343,7 +348,9 @@ They must be decided before beta:
 - Re-diff the vendored contract against the backend whenever a wire surface
   changes, and update the "Contract sync" section with the commits compared.
 - A reserved package boundary is never evidence for the item that names it.
-  `packages/mcp` existing does not advance 3.2, and a Runner that starts, holds
+  `packages/mcp` existing did not advance 3.2 — a projection of the contract, a
+  transport that serves it and a test that runs one intent through both front
+  doors did — and a Runner that starts, holds
   leases and answers a socket does not make 2.6 DONE — a job that nothing drives
   is not a running strategy, however reachable the process holding it is. A
   `JobScheduler` that exists does not change that either: the loop is DONE, but

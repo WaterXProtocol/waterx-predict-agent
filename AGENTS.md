@@ -30,9 +30,11 @@ Keep the product boundary clear:
   agent wallet and reports server decisions; it does not implement, emulate, or
   weaken delegation.
 - Do not add Python, backend condition storage, dashboards, or server code here
-  unless a task explicitly changes this repository's scope. An MCP adapter has a
-  reserved package boundary (`packages/mcp`) and is a thin translation over the
-  command contract when it is built — never a second command surface.
+  unless a task explicitly changes this repository's scope. The adapters
+  (`packages/adapters`, `packages/mcp`) are thin translations over the command
+  contract — never a second command surface. They delegate by spawning the
+  installed `waterx-predict` binary and must not reimplement pricing, retry,
+  signing, policy or job state.
 
 No package here has been published yet. Prefer a coherent, clean public API over
 compatibility scaffolding when a redesign is warranted. A breaking change is
@@ -108,7 +110,8 @@ orchestrates.
 | `packages/schema` | `@waterx/predict-agent-schema` | Published surface, implemented |
 | `packages/cli` | `@waterx/predict-agent-cli` | Implemented, reads **and writes** behind an enforced execution policy; `private`, so nothing is published |
 | `packages/runner` | `@waterx/predict-agent-runner` | SQLite/WAL job store, state machine, lease fencing, crash recovery, `UNKNOWN_PENDING` reconciliation, a daemon with authenticated local IPC (ADR-0008) and lease supervision, the one-job/one-pass `driveJob`, the scheduler that calls it on a tick, a price observer over the SDK's indicative quote stream, a signer inside the trust boundary, and the local configuration `runnerd` builds all three from — so a configured process reports `driving: true` and an unconfigured one reports `false` with `driverGaps` naming what to set. `strategy.create` / `get` / `list` / `cancel` / `events` are served over that socket by the same `StrategyService` an embedder holds, under a mandate resolved from **local configuration and never from the request**. **No strategy command exists in the CLI** (backlog 2.8): today the client is an embedding application or a script that opens the socket. `private`, Node 24 floor (ADR-0007) |
-| `packages/mcp` | `@waterx/predict-agent-mcp` | Reserved boundary, **not implemented** |
+| `packages/adapters` | `@waterx/predict-agent-adapters` | The host-neutral instructions, the tool projection of the command contract (OpenAI / Anthropic / MCP shapes from one registry) and the dispatcher that validates and delegates. Delegation is a **subprocess** against the installed `waterx-predict` binary, never a library call. No OpenAPI document is emitted — this repository serves no HTTP surface. `private` |
+| `packages/mcp` | `@waterx/predict-agent-mcp` | Optional MCP stdio adapter: newline-delimited JSON-RPC 2.0 over `initialize` / `ping` / `tools/list` / `tools/call`, tools capability only. A transport and nothing more — the tools, the validation, the instructions and the delegation all come from `packages/adapters`. Zero runtime dependencies beyond it. `private` |
 | `packages/e2e` | `@waterx/predict-agent-e2e` | Harness that drives the installed CLI as a subprocess; `private`, never shipped. The end-to-end has **not run** — nothing here is evidence that it passes |
 
 Dependency direction is one-way and enforced by `tests/workspace.test.ts`: the
@@ -271,10 +274,32 @@ and opens sockets, and the only place allowed to:
   command shape and because `packages/e2e` may depend on nothing but the CLI and
   the schema. This suite still executes and lints it.
 
+Inside `packages/adapters` — the shared adapter core. Its own `tsconfig.json`
+deliberately resolves the schema and **not** the CLI, so there is no symbol in
+scope to reimplement the core with:
+
+- `src/instructions.ts` — the host-neutral rules, as data. Each is a symbolic id
+  (`SIZE_AMBIGUITY_STOPS_BEFORE_A_WRITE`) so a review or a refusal can cite one
+  and a deleted rule fails a test rather than shortening a document.
+- `src/tools.ts` — the projection. One registry, renamed per host; each tool
+  carries the transitive `$defs` closure it reaches and no more.
+- `src/core.ts` — the subprocess seam and the operator-flag allowlist.
+  `--approve` is refused: the token digests one exact intent, so a pinned one is
+  either useless or a pre-authorised order.
+- `src/dispatch.ts` — validate, delegate, relay. It never retries, never
+  coerces, and `isFullySettled` is false for a partially filled batch.
+
+Inside `packages/mcp` — the transport only: `src/protocol.ts` (the slice of MCP
+spoken, hand-rolled so nothing new runs next to a signer), `src/server.ts` (the
+five methods) and `src/stdio.ts` (newline framing, one request at a time).
+
 Elsewhere:
 
 - `schemas/` — **generated**, committed artifacts. Never hand-edit; run
   `pnpm schema:generate`.
+- `agent-instructions/` — **generated**, committed artifact. Never hand-edit; run
+  `pnpm instructions:generate`. This is what the MCP adapter returns at
+  `initialize` and what a host that cannot run this toolchain reads instead.
 - `tests/` — cross-package invariants only (boundaries, dependency direction,
   published-package hygiene, command-to-SDK-method drift).
 
