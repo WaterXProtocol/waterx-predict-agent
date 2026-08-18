@@ -45,3 +45,39 @@ jobs:
       - run: pnpm instructions:generate
       - name: agent instructions are reproducible
         run: git diff --exit-code -- agent-instructions/
+
+      # The SBOM is held to the same rule. It carries no timestamp and a
+      # content-derived serial precisely so this diff means something: a change
+      # here is a change to what a published package installs into a consumer,
+      # and a stale inventory tells a scanner the wrong version is running.
+      - run: pnpm sbom:generate
+      - name: SBOM is reproducible
+        run: git diff --exit-code -- sbom/
+
+      # Reported, not enforced: unresolved checks are facts nobody has settled
+      # yet, and blocking every branch on them would only teach people to ignore
+      # the output. The release workflow runs the same gate with --strict.
+      - name: release preflight (report only)
+        run: pnpm release:preflight
+
+  # The published packages promise `engines.node: ">=20"`. Verifying only on the
+  # Runner's Node 24 would leave that promise untested, and a consumer on 20 is
+  # the one who would find out.
+  floor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # The Runner needs Node 24 (ADR-0007) and is not published; its suite is
+      # excluded here rather than pinning the whole workspace to the lower floor.
+      - run: pnpm --filter @waterx/predict-agent-sdk --filter @waterx/predict-agent-schema run build
+      - run: pnpm --filter @waterx/predict-agent-sdk --filter @waterx/predict-agent-schema run test

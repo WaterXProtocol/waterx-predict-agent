@@ -19,6 +19,7 @@ wins and the plan should be corrected.
 | [0006](0006-agent-command-schema-mechanism.md) | How the agent command schema is authored and enforced | Accepted | ADR-0001 §5 |
 | [0007](0007-runner-job-store-engine.md) | The Runner's job store engine, and the Node floor it costs | Accepted | ADR-0001 §8, ADR-0002 |
 | [0008](0008-runner-local-ipc.md) | How a local client authenticates to the Runner | Accepted | ADR-0001 §4, §6, ADR-0002 |
+| [0009](0009-release-and-update-policy.md) | What is published, how it is updated, and what it reports home | Accepted | D-26…D-30 |
 
 ## Status vocabulary
 
@@ -26,9 +27,11 @@ wins and the plan should be corrected.
 - **Superseded** — replaced by a later ADR, which must be named.
 - **Deferred** — deliberately not decided; the ADR states what unblocks it.
 
-Decisions D-23…D-30 in the plan remain deliberately undecided and are tracked in
-`docs/IMPLEMENTATION_BACKLOG.md` rather than as ADRs, because none of them gates
-Phase 0 or Phase 1 work.
+Decisions D-23 and D-25 in the plan remain deliberately undecided and are tracked
+in `docs/IMPLEMENTATION_BACKLOG.md` rather than as ADRs, because neither gates
+Phase 0 or Phase 1 work. D-24 was answered structurally by the backend
+performance read (backlog B8). D-26…D-30 became unavoidable at the first publish
+and are decided in ADR-0009.
 
 ## Writing an ADR here
 

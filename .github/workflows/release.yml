@@ -1,0 +1,78 @@
+name: release
+
+# The only path that publishes. Manually dispatched, and a dry run unless
+# someone explicitly says otherwise (ADR-0009).
+#
+# There is deliberately no tag or push trigger. Publishing an executable that
+# can place orders should be an act a person performs with their name on it, not
+# a side-effect of a merge — and a tag is easy to push by accident.
+on:
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: 'Pack and verify without publishing. Set to false to actually publish.'
+        type: boolean
+        default: true
+        required: true
+
+# Least privilege, plus the one token provenance needs. `id-token: write` is
+# what lets the registry attest this build to this repository and this workflow;
+# without it `--provenance` fails rather than silently publishing unattested.
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+
+      # Every generated artifact must still be the generator's output. A release
+      # is the worst moment to discover a hand-edited schema or a stale SBOM.
+      - run: pnpm schema:generate
+      - run: pnpm instructions:generate
+      - run: pnpm sbom:generate
+      - name: generated artifacts are reproducible
+        run: git diff --exit-code -- schemas/ agent-instructions/ sbom/
+
+      # --strict refuses on anything the preflight could not establish, not just
+      # on what it found wrong. An unset repository URL, a dependency whose
+      # licence nobody read: each stops the release here, before a version
+      # number is burned.
+      - name: release preflight (strict)
+        run: pnpm release:preflight:strict
+
+      # Read before publishing: the file list is what a stranger installs.
+      - name: pack
+        run: |
+          pnpm --filter @waterx/predict-agent-sdk exec npm pack --dry-run
+          pnpm --filter @waterx/predict-agent-schema exec npm pack --dry-run
+
+      - name: publish
+        if: ${{ inputs.dry-run == false }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        # `provenance` and `access` come from each package's publishConfig, so
+        # they cannot be lost by editing this line.
+        run: |
+          pnpm --filter @waterx/predict-agent-schema exec npm publish
+          pnpm --filter @waterx/predict-agent-sdk exec npm publish
+
+      - name: dry run summary
+        if: ${{ inputs.dry-run }}
+        run: echo "Dry run. Nothing was published. Re-dispatch with dry-run=false to publish."
