@@ -36,6 +36,7 @@ is absent, rather than a half-driver that could create an order it cannot sign.
 | Stream cursor persistence, monotonic | implemented |
 | Crash recovery, including `UNKNOWN_PENDING` classification | implemented |
 | Daemon process, recovery at start-up, ordered shutdown | implemented |
+| Drain: refuse admission, settle in-flight work, report the deadline | implemented, tested |
 | Authenticated local IPC over a Unix socket (ADR-0008) | implemented |
 | Lease renewal and heartbeat supervision, with abort on loss | implemented |
 | `UNKNOWN_PENDING` resolved from an authoritative REST read | implemented |
@@ -255,13 +256,48 @@ const status = await client.request('runner.status');
 ```
 
 `runner.status`, `runner.jobs`, `runner.job`, `runner.cancel-job`,
-`runner.shutdown` and the five `strategy.*` commands are the whole surface. This
+`runner.drain`, `runner.shutdown` and the five `strategy.*` commands are the
+whole surface. This
 socket is **not** a second command surface: `runner.*` names are about this
 process, `strategy.*` names are about the durable jobs it owns, and an agent
 command from the shared contract (`order.execute`, `market.quote`, …) is
 recognized and then refused `NOT_IMPLEMENTED` naming the missing executor —
 because a client asking a connected Runner to place an order must be told no
 loudly, rather than told the command is unknown, which reads as a typo.
+
+## Upgrading a Runner that is holding jobs
+
+`runner.shutdown` is a clean stop, not a drain: it closes the socket and awaits
+the scheduler pass in flight, so it will not abandon a half-finished
+create/sign/submit — but it refuses no new work first. `runner.drain` is the
+step before it.
+
+```ts
+const report = await client.request('runner.drain', { deadlineMs: 30_000 });
+if (!report.settled) {
+  // `report.settling` names each open attempt: job, leg and kind. Stopping now
+  // leaves them UNKNOWN_PENDING for the next Runner to reconcile. That is a
+  // legitimate choice; it should be a choice.
+}
+await client.request('runner.shutdown', { reason: 'UPGRADE' });
+```
+
+Draining closes admission at both doors at once — a `strategy.create` on the
+socket is refused `RUNNER_DRAINING` and no job is written, and the scheduler
+stops claiming from the store — while every job this Runner already holds keeps
+getting passes.
+
+What it waits for is **this instance's open side-effect attempts**, not merely
+non-terminal jobs. A watching strategy with a seven-day expiry is *safely
+resumable* right now: the store has everything and the next Runner adopts it, so
+waiting for it would make every drain end on its deadline. An open attempt is a
+request that may have reached the server with nobody having seen the answer, and
+that is the thing worth staying alive for. Attempts inherited from a previous
+instance are reported as `inherited` and never waited on, because staying alive
+cannot settle them.
+
+A drain never exits by itself, and admission never reopens. Both are deliberate:
+see `src/drain.ts`.
 
 The `strategy.*` handlers delegate to the same `StrategyService` an embedding
 application gets from `daemon.strategies`. The socket therefore has no sizing
@@ -479,6 +515,7 @@ src/strategy/         normalization, the command core, and what they refuse
 src/strategy/preflight.ts  what is re-read at the trigger, and pause vs stop
 src/strategy/driver.ts     one job, one pass, and what a pass refuses to decide
 src/daemon.ts         start-up order, shutdown, and what the process admits to
+src/drain.ts          refusing admission, and what is worth staying alive for
 src/supervisor.ts     lease renewal, heartbeat, and the two aborts they cause
 src/ipc/              the socket: framing, auth, dispatch, and the client
 src/config.ts         what an operator sets, and what this process will not hold

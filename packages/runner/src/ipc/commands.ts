@@ -141,6 +141,20 @@ export const RUNNER_IPC_COMMANDS: Readonly<Record<string, JsonSchema>> = {
     'jobId',
     'reason',
   ]),
+  /**
+   * Refuse new admission, finish what this instance has in flight, and report.
+   *
+   * Separate from `runner.shutdown`, and deliberately not a flag on it: a drain
+   * that exited on its own would kill the process mid-write on exactly the runs
+   * where the deadline was exceeded (`drain.ts`). The upgrade sequence is drain,
+   * read the report, then shut down.
+   *
+   * There is no `resume`: admission is refused for the life of the process.
+   */
+  'runner.drain': object({
+    deadlineMs: { type: 'integer', minimum: 0, maximum: 3_600_000 },
+    pollIntervalMs: { type: 'integer', minimum: 10, maximum: 60_000 },
+  }),
   'runner.shutdown': object({ reason: nonEmptyString }),
 
   /**

@@ -81,6 +81,14 @@ export {
   type RunnerDaemonHandle,
   type RunnerDaemonOptions,
 } from './daemon.ts';
+export {
+  DrainController,
+  DRAIN_DEFAULTS,
+  type DrainAttempt,
+  type DrainControllerOptions,
+  type DrainOptions,
+  type DrainReport,
+} from './drain.ts';
 export { isJobStoreError, JobStoreError, type JobStoreErrorCode } from './errors.ts';
 export {
   QuoteStreamPriceObserver,

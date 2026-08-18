@@ -94,6 +94,14 @@ export type RunnerIpcErrorCode =
   | 'INVALID_INPUT'
   /** The command is real, and this build cannot perform it. Names the gap. */
   | 'NOT_IMPLEMENTED'
+  /**
+   * This Runner is draining and will not admit new work (ADR-0009, `drain.ts`).
+   *
+   * Distinct from a closed socket on purpose: the caller must be able to tell a
+   * planned upgrade from a crash, because the two differ on whether the request
+   * might have taken effect. This one says plainly that it did not.
+   */
+  | 'RUNNER_DRAINING'
   /** The runtime directory is not private to this uid; the Runner refuses to start. */
   | 'INSECURE_RUNTIME_DIR'
   /** A live Runner is already listening on this socket. */

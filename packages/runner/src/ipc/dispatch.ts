@@ -25,6 +25,7 @@
  *   itself the mandate.
  */
 import type { Clock } from '../clock.ts';
+import type { DrainController, DrainOptions } from '../drain.ts';
 import { isJobStoreError, JobStoreError } from '../errors.ts';
 import type { JobPolicySnapshot } from '../job.ts';
 import type { PriceTopicStatus } from '../prices.ts';
@@ -36,7 +37,12 @@ import type { StrategyRequest } from '../strategy/intent.ts';
 import { cancelStrategy, type StrategyService } from '../strategy/service.ts';
 import type { LeaseKeeper } from '../supervisor.ts';
 import { validateRunnerCommand } from './commands.ts';
-import { isRunnerIpcError, RUNNER_IPC_PROTOCOL_VERSION, type ResponseErrorBody } from './protocol.ts';
+import {
+  isRunnerIpcError,
+  RunnerIpcError,
+  RUNNER_IPC_PROTOCOL_VERSION,
+  type ResponseErrorBody,
+} from './protocol.ts';
 
 export interface RunnerCommandContext {
   readonly store: JobStore;
@@ -66,6 +72,12 @@ export interface RunnerCommandContext {
    */
   readonly priceTopics?: () => readonly PriceTopicStatus[];
   readonly recovery: RecoveryReport | undefined;
+  /**
+   * The drain state of this process. Held by the daemon rather than reconstructed
+   * here, because the scheduler consults the same object before it claims: one
+   * answer to "may this Runner take new work", not two that can disagree.
+   */
+  readonly drain: DrainController;
   requestShutdown(reason: string): void;
 }
 
@@ -85,6 +97,8 @@ export const dispatch = async (
       return job(input, context);
     case 'runner.cancel-job':
       return cancelJob(input, context);
+    case 'runner.drain':
+      return drain(input, context);
     case 'runner.shutdown': {
       const reason = typeof input['reason'] === 'string' ? input['reason'] : 'IPC_REQUEST';
       context.requestShutdown(reason);
@@ -154,6 +168,10 @@ const status = async (context: RunnerCommandContext): Promise<unknown> => {
     // The two fields a caller must read before believing a strategy is running.
     driving: context.driving,
     driverGaps: [...context.driverGaps],
+    // `null` while admission is open. Non-null means this Runner is leaving and
+    // has already refused at least one door, which a client polling status must
+    // see without having to call `runner.drain` to find out.
+    draining: await context.drain.state(),
     prices: priceHealth(context),
     jobs: { total: all.length, byState },
     leasedHere: context.leases.held(),
@@ -175,6 +193,26 @@ const status = async (context: RunnerCommandContext): Promise<unknown> => {
             })),
           },
   };
+};
+
+/**
+ * Close admission and wait, then answer with what settled and what did not.
+ *
+ * The reply is the whole point of the command: an operator deciding whether it is
+ * safe to stop the process needs `settled` and, when it is false, the attempts
+ * that are still open. A drain that reported only success would be a sleep.
+ */
+const drain = async (
+  input: Readonly<Record<string, unknown>>,
+  context: RunnerCommandContext,
+): Promise<unknown> => {
+  const deadlineMs = input['deadlineMs'];
+  const pollIntervalMs = input['pollIntervalMs'];
+  const options: DrainOptions = {
+    ...(typeof deadlineMs === 'number' ? { deadlineMs } : {}),
+    ...(typeof pollIntervalMs === 'number' ? { pollIntervalMs } : {}),
+  };
+  return await context.drain.drain(options);
 };
 
 const jobs = async (
@@ -258,6 +296,17 @@ const createStrategy = async (
   input: Readonly<Record<string, unknown>>,
   context: RunnerCommandContext,
 ): Promise<unknown> => {
+  if (!context.drain.admitting) {
+    // The refusal a drain exists to make possible. Before this existed the socket
+    // simply closed, and a caller could not tell a planned upgrade from a crash —
+    // so it could not tell "your strategy was not armed" from "your strategy may
+    // have been armed". Named, so it can.
+    throw new RunnerIpcError(
+      'RUNNER_DRAINING',
+      `this Runner stopped admitting work at ${context.drain.beganAt ?? 'an earlier instant'} and is finishing what it holds; the strategy was NOT armed. Arm it against the Runner that replaces this one.`,
+      { beganAt: context.drain.beganAt ?? null, instanceId: context.instanceId },
+    );
+  }
   const expiresAt = input['expiresAt'];
   const strategyId = input['strategyId'];
   const request: StrategyRequest = {

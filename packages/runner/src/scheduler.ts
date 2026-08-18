@@ -73,6 +73,15 @@ export interface JobSchedulerOptions {
    * rather than dropped quietly.
    */
   readonly maxJobs?: number;
+  /**
+   * Whether this instance may still take on work it is not already holding.
+   *
+   * Consulted at the top of every claim, so a drain closes this door on the very
+   * next tick rather than at the end of the one in flight. Held jobs keep getting
+   * passes: refusing admission is the first step of the drain sequence, not a
+   * stop (ADR-0009, `drain.ts`). Defaults to always admitting.
+   */
+  readonly admit?: () => boolean;
   /** Diagnostics. Never given a signature, transaction bytes or a token. */
   readonly onEvent?: (event: SchedulerEvent) => void;
 }
@@ -90,6 +99,12 @@ export type SchedulerEvent =
    * exactly like a store with fewer jobs in it.
    */
   | { readonly kind: 'at-capacity'; readonly held: number; readonly deferred: number }
+  /**
+   * A tick that claimed nothing because admission is closed. Emitted once per
+   * tick rather than inferred from an empty `claimed`, which looks identical to a
+   * store with nothing runnable in it.
+   */
+  | { readonly kind: 'admission-closed'; readonly held: number }
   | {
       readonly kind: 'error';
       readonly jobId?: string;
@@ -107,6 +122,8 @@ export interface SchedulerTickReport {
   readonly failures: readonly { readonly jobId: string; readonly message: string }[];
   /** Runnable and unclaimed, because this instance is at `maxJobs`. */
   readonly deferred: number;
+  /** False once a drain has closed admission. Held jobs still got their passes. */
+  readonly admitting: boolean;
   /** True when this call joined a tick already in flight rather than running one. */
   readonly joined?: boolean;
 }
@@ -182,7 +199,10 @@ export class JobScheduler {
 
   private async runTick(): Promise<SchedulerTickReport> {
     const at = this.options.now();
-    const { claimed, deferred } = await this.claim(at);
+    const admitting = this.options.admit?.() ?? true;
+    const { claimed, deferred } = admitting
+      ? await this.claim(at)
+      : this.declineToClaim();
 
     const passes: DriveResult[] = [];
     const released: string[] = [];
@@ -214,7 +234,19 @@ export class JobScheduler {
       released,
       failures,
       deferred,
+      admitting,
     };
+  }
+
+  /**
+   * What a draining tick does instead of claiming: nothing, and says so.
+   *
+   * No store read either — a Runner that is leaving should not be paying for a
+   * list of jobs it has already decided it may not take.
+   */
+  private declineToClaim(): { claimed: readonly string[]; deferred: number } {
+    this.emit({ kind: 'admission-closed', held: this.options.leases.held().length });
+    return { claimed: [], deferred: 0 };
   }
 
   /**

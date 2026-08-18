@@ -40,9 +40,17 @@ operator action: the operator installs a new version and restarts the Runner.
 A Runner with active jobs must be **drained**, not restarted underneath them.
 The drain sequence a release must support is: refuse new job admission →
 let in-flight work reach a terminal or safely resumable state → persist →
-exit. `runner.shutdown` exists and stops the process; a **drain that gates new
-admission first does not exist yet** and is tracked in the backlog rather than
-described here as if it did.
+exit. `runner.shutdown` exists and stops the process, and on its own is a clean
+stop rather than a drain.
+
+> **Status note, 2026-08-18.** When this ADR was accepted the drain did not
+> exist, and this paragraph said so. It now does: `runner.drain`
+> (`packages/runner/src/drain.ts`, backlog 2.14) closes admission at both the
+> socket and the store while held jobs keep getting passes, and reports what is
+> still settling rather than crossing its deadline in silence. The decision
+> above is unchanged — only the sentence describing what had been built. The
+> deliberate reading of "or safely resumable" is that a watching job does not
+> hold a drain open; a job with an open side-effect attempt does.
 
 Rollback is "install the previous version and restart", and it is only safe
 while the job store's schema is backward-compatible. A release that changes the
@@ -88,7 +96,8 @@ tests alone would put the burden of that gap on whoever installs it.
 
 The MCP server publishes when — and only when — 1.11 has actually run against a
 real backend and the Runner's drain path exists. That is a backlog condition,
-not a date.
+not a date. The second half is now met (see the status note above); the first is
+not, and it is the one that matters most, so nothing moves.
 
 ### D-29 — Refuse across a version boundary; never downgrade silently
 

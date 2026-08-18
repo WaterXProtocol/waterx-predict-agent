@@ -15,7 +15,7 @@ has been built and mechanically checked, not one that has been walked.
 | `@waterx/predict-agent-sdk` | Yes | A contract. Verifiable by reading it against the backend wire contract. |
 | `@waterx/predict-agent-schema` | Yes | The command registry every other package validates against. |
 | `@waterx/predict-agent-cli` | No — `private` | Operational software that places orders. Its end-to-end path has never run (backlog 1.11). |
-| `@waterx/predict-agent-runner` | No — `private` | Same, plus it holds the signer and has no drain path yet. |
+| `@waterx/predict-agent-runner` | No — `private` | Same: it holds the signer, and its end-to-end path has never run. The drain path now exists (backlog 2.14); 1.11 still gates it. |
 | `@waterx/predict-agent-adapters` | No — `private` | Built (backlog 3.2). Held with the CLI it instructs an agent to call. |
 | `@waterx/predict-agent-mcp` | No — `private` | Built (backlog 3.2). Held for the same reason; D-28 in ADR-0009. |
 | `@waterx/predict-agent-release` | Never | This tooling. `private` permanently. |
@@ -151,14 +151,38 @@ There is no auto-update. An update is something an operator does.
 admission → let in-flight work reach a terminal or safely resumable state →
 persist → exit.
 
-> A drain that gates new admission **does not exist yet** (backlog 2.14).
-> `runner.shutdown` is a clean stop, not a drain, and must not be presented as
-> one. It does close the socket and then await the scheduler pass in flight, so
-> it will not abandon a half-finished create/sign/submit — but it refuses no
-> admission first and reports nothing about what it left unfinished. Until the
-> drain path lands, the supported upgrade procedure for a Runner with active
-> jobs is: stop submitting work, watch `strategy list` until nothing is
-> mid-execution, then shut down and restart on the new version.
+It is two commands, and they stay two on purpose:
+
+1. `runner.drain` — optionally with `deadlineMs`. Admission closes at both doors
+   immediately: a `strategy.create` arriving on the socket is refused
+   `RUNNER_DRAINING` and no job is written, and the scheduler stops claiming
+   from the store. Jobs this Runner already holds keep getting passes. The call
+   returns when this instance has nothing left in flight, or when the deadline
+   passes — whichever comes first.
+2. Read the report, then `runner.shutdown`.
+
+**Read `settled` before step 2.** `settled: false` means `settling` still names
+open side-effect attempts — requests that may have reached the server and whose
+answers nobody has seen. Shutting down there is legal and sometimes right, but it
+is a choice to leave those jobs `UNKNOWN_PENDING` for the next Runner to
+reconcile, and the report exists so that it is a choice rather than an accident.
+
+Two things the report deliberately does *not* do. It does not wait for jobs to
+become terminal: a watching strategy with a seven-day expiry is *safely
+resumable* right now, so `nonTerminal` is reported as context and the next Runner
+adopts it. And it does not wait on `inherited` attempts — open rows left by a
+previous instance, which staying alive cannot settle, and one class of which
+(the create phase) is unresolvable against the current API at all (backlog B9).
+
+`runner.shutdown` on its own remains a clean stop, not a drain, and must not be
+presented as one: it closes the socket and awaits the scheduler pass in flight —
+so it will not abandon a half-finished create/sign/submit — but it refuses no
+admission first and reports nothing about what it left unfinished.
+
+A drain never exits by itself. Doing so would stop the process mid-write on
+exactly the runs where the deadline was exceeded, which is the failure the drain
+exists to prevent. There is also no way to reopen admission: the way to admit
+again is to start a Runner, which is what the drain was preparing for.
 
 **Rollback:** install the previous version and restart. This is safe only while
 the job store schema is backward-compatible. A release that changes the store

@@ -50,6 +50,7 @@ import { hostname } from 'node:os';
 import { join } from 'node:path';
 
 import { systemClock, type Clock } from './clock.ts';
+import { DrainController, type DrainOptions, type DrainReport } from './drain.ts';
 import { newInstanceId } from './ids.ts';
 import type { JobPolicySnapshot } from './job.ts';
 import { dispatch, toErrorBody, type RunnerCommandContext } from './ipc/dispatch.ts';
@@ -143,6 +144,8 @@ export interface RunnerDaemonOptions {
   readonly tickIntervalMs?: number;
   /** Only meaningful with a `driver`. The most jobs this instance holds at once. */
   readonly maxJobs?: number;
+  /** Injectable so a test can settle a drain without real time passing. */
+  readonly drainSleep?: (ms: number) => Promise<void>;
   /** Diagnostics. Never given a token, a signature or transaction bytes. */
   readonly onEvent?: (event: RunnerDaemonEvent) => void;
 }
@@ -201,6 +204,7 @@ export class RunnerDaemon {
   private readonly leases: LeaseKeeper;
   private readonly strategyService: StrategyService;
   private readonly scheduler: JobScheduler | undefined;
+  private readonly drainController: DrainController;
   private server: RunnerIpcServer | undefined;
   private recovery: RecoveryReport | undefined;
   private startedAt: string | undefined;
@@ -241,6 +245,19 @@ export class RunnerDaemon {
       ...(options.driver === undefined ? {} : { positions: options.driver.gateway }),
     });
 
+    // Built before the scheduler because the scheduler consults it: one object
+    // answers "may this Runner take new work" for both the store door and the
+    // socket door, so a drain cannot close one and leave the other open.
+    this.drainController = new DrainController({
+      store: options.store,
+      leases: this.leases,
+      instanceId: this.instanceIdValue,
+      now: this.now,
+      driving: () => this.driving,
+      tick: async () => await this.scheduler?.tick(),
+      ...(options.drainSleep === undefined ? {} : { sleep: options.drainSleep }),
+    });
+
     this.scheduler =
       options.driver === undefined
         ? undefined
@@ -252,6 +269,7 @@ export class RunnerDaemon {
             driver: options.driver,
             leaseTtlMs: options.leaseTtlMs ?? DEFAULTS.leaseTtlMs,
             tickIntervalMs: options.tickIntervalMs ?? DEFAULTS.tickIntervalMs,
+            admit: () => this.drainController.admitting,
             ...(options.maxJobs === undefined ? {} : { maxJobs: options.maxJobs }),
             onEvent: (event) => {
               this.emit({ kind: 'scheduler', event });
@@ -272,6 +290,22 @@ export class RunnerDaemon {
    */
   get strategies(): StrategyService {
     return this.strategyService;
+  }
+
+  /**
+   * Refuse new admission and wait for this instance's in-flight work.
+   *
+   * Exposed beside the socket rather than only on it, so an embedding application
+   * upgrading in-process runs the same sequence a remote operator does, through
+   * the same controller.
+   */
+  async drain(options: DrainOptions = {}): Promise<DrainReport> {
+    return await this.drainController.drain(options);
+  }
+
+  /** Whether this Runner still takes new work. False for good, once drained. */
+  get admitting(): boolean {
+    return this.drainController.admitting;
   }
 
   /** The mandate this daemon admits strategies under. Configuration, not request. */
@@ -454,6 +488,7 @@ export class RunnerDaemon {
         ? {}
         : { priceTopics: this.options.priceTopics }),
       recovery: this.recovery,
+      drain: this.drainController,
       requestShutdown: (reason) => {
         this.emit({ kind: 'shutdown-requested', reason });
         // Deferred by a tick so the reply is written before the socket closes.

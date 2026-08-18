@@ -407,6 +407,7 @@ describe('what the IPC surface accepts as a command', () => {
   it('lists only the runner-local and strategy commands', () => {
     expect(listRunnerIpcCommands()).toEqual([
       'runner.cancel-job',
+      'runner.drain',
       'runner.job',
       'runner.jobs',
       'runner.shutdown',
