@@ -9,6 +9,7 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
+import { AGENT_TOOLS, toolNameFor } from '../packages/adapters/src/index.ts';
 import { CAPABILITIES } from '../packages/cli/src/capabilities.ts';
 import {
   openRunnerSession,
@@ -48,6 +49,14 @@ const PUBLISHED = new Set(['sdk', 'schema']);
  */
 const INTERNAL = new Set(['cli', 'runner']);
 
+/**
+ * Thin adapters over the command core. Unpublishable for the same reason the
+ * CLI is, and held to a stricter rule than either: they may not reach the SDK
+ * or the Runner at all, because an adapter that could import them could
+ * reimplement pricing, retry, signing, policy or job state (plan §6.7).
+ */
+const ADAPTERS = new Set(['adapters']);
+
 /** Reserved boundaries with no implementation. They must not look like one. */
 const RESERVED = new Set(['mcp']);
 
@@ -80,7 +89,7 @@ const manifest = (dir: string): PackageManifest =>
 describe('workspace layout', () => {
   it('accounts for every package directory', () => {
     expect(new Set(PACKAGE_DIRS)).toEqual(
-      new Set([...PUBLISHED, ...INTERNAL, ...RESERVED, ...HARNESS]),
+      new Set([...PUBLISHED, ...INTERNAL, ...ADAPTERS, ...RESERVED, ...HARNESS]),
     );
   });
 
@@ -165,7 +174,7 @@ describe('dependency direction', () => {
   it('never lets a published package import an unpublished one, in source', () => {
     // A published package importing `@waterx/predict-agent-cli` would name a
     // dependency that does not exist on any registry.
-    const unpublishedNames = [...RESERVED, ...INTERNAL, ...HARNESS].map(
+    const unpublishedNames = [...ADAPTERS, ...RESERVED, ...INTERNAL, ...HARNESS].map(
       (dir) => manifest(dir).name ?? dir,
     );
     for (const dir of PUBLISHED) {
@@ -608,6 +617,65 @@ describe('the e2e harness package', () => {
   });
 });
 
+describe('the adapter packages', () => {
+  it('stay unpublishable', () => {
+    // Same release gate as the CLI: real code, real tests, and a name nobody
+    // has claimed on any registry.
+    for (const dir of ADAPTERS) {
+      const pkg = manifest(dir);
+      expect(pkg.private, dir).toBe(true);
+      expect(pkg.type, dir).toBe('module');
+      expect(pkg.engines?.node, dir).toBe('>=20');
+      for (const script of ['build', 'typecheck', 'test']) {
+        expect(pkg.scripts?.[script], `${dir}: ${script}`).toBeTypeOf('string');
+      }
+    }
+  });
+
+  it('can reach the command core and the contract, and nothing else', () => {
+    // The adapter core resolves the CLI to find its binary, and the schema to
+    // project and validate. An edge to the SDK or the Runner would put the
+    // pricing, retry, signing and job-state code inside an adapter's import
+    // graph, which is the one thing plan §6.7 forbids.
+    expect(Object.keys(manifest('adapters').dependencies ?? {}).sort()).toEqual([
+      '@waterx/predict-agent-cli',
+      '@waterx/predict-agent-schema',
+    ]);
+    for (const dir of ADAPTERS) {
+      for (const specifier of Object.values(manifest(dir).dependencies ?? {})) {
+        expect(specifier, dir).toBe('workspace:*');
+      }
+    }
+  });
+
+  it('never imports the SDK or the Runner, in source', () => {
+    // The structural half of "must not reimplement". There is no symbol in
+    // scope to reimplement pricing, retry, signing, policy or job state with.
+    for (const dir of ADAPTERS) {
+      for (const file of sourceFiles(`packages/${dir}/src`)) {
+        for (const name of ['@waterx/predict-agent-sdk', '@waterx/predict-agent-runner']) {
+          expect(read(file), `${file} imports ${name}`).not.toContain(name);
+        }
+      }
+    }
+  });
+
+  it('delegates to the CLI as a process, never as a library', () => {
+    // The adapter core names the CLI package exactly once — to resolve the
+    // path of the binary it spawns. A static import would let a later change
+    // call an internal function instead of the command surface, and lose the
+    // exit code, the redaction and the single-envelope guarantee with it.
+    const importsCli = sourceFiles('packages/adapters/src').filter((file) =>
+      /^import .*'@waterx\/predict-agent-cli/mu.test(read(file)),
+    );
+    expect(importsCli).toEqual([]);
+    expect(read('packages/adapters/src/core.ts')).toContain(
+      "resolve('@waterx/predict-agent-cli/package.json')",
+    );
+  });
+
+});
+
 describe('reserved boundaries', () => {
   it('publishes nothing and claims nothing', () => {
     // A reserved directory exists so a dependency cannot leak into the SDK
@@ -629,6 +697,24 @@ describe('reserved boundaries', () => {
   it('says so in the README', () => {
     for (const dir of RESERVED) {
       expect(read(`packages/${dir}/README.md`).toLowerCase(), dir).toContain('not implemented');
+    }
+  });
+});
+
+describe('one command surface, however a host reaches it', () => {
+  it('advertises every contract command as exactly one tool', () => {
+    // A command missing from the tool registry is reachable from a terminal
+    // and not from a model host; an extra one is a capability an adapter
+    // invented.
+    expect(AGENT_TOOLS.map((tool) => tool.command)).toEqual(
+      AGENT_COMMANDS.map((command) => command.name),
+    );
+    expect(new Set(AGENT_TOOLS.map((tool) => tool.name)).size).toBe(AGENT_TOOLS.length);
+  });
+
+  it('turns an intent into the CLI path the contract names', () => {
+    for (const command of AGENT_COMMANDS) {
+      expect(getToolCli(toolNameFor(command.name)), command.name).toEqual(command.cli.split(' '));
     }
   });
 });
@@ -673,6 +759,10 @@ describe('the command contract compiles to the SDK', () => {
     }
   });
 });
+
+/** The argv prefix a tool routes to, read off the registry. */
+const getToolCli = (name: string): string[] =>
+  (AGENT_TOOLS.find((tool) => tool.name === name)?.annotations.cli ?? '').split(' ');
 
 function sourceFiles(relativeDir: string): string[] {
   const out: string[] = [];

@@ -1,0 +1,23 @@
+{
+  "extends": "./tsconfig.build.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": false,
+    "resolveJsonModule": true,
+    "types": ["node", "vitest/globals"],
+    "rootDir": "../..",
+    // Typecheck against the sibling SOURCE, matching every other package here.
+    // Only the schema is listed: this package deliberately takes no static
+    // import of the CLI. It locates the installed binary at runtime, which is
+    // what makes "the adapter cannot reimplement the core" structural rather
+    // than a review habit — there is no symbol here to reimplement it with.
+    "paths": {
+      "@waterx/predict-agent-schema": ["../schema/src/index.ts"]
+    }
+  },
+  "include": ["src", "tests"],
+  "exclude": ["node_modules", "dist"]
+}

@@ -10,7 +10,8 @@
     "typecheck": "tsc -p tsconfig.json && pnpm -r typecheck",
     "test": "vitest run && pnpm -r test",
     "build": "pnpm -r build",
-    "schema:generate": "pnpm --filter @waterx/predict-agent-schema run generate"
+    "schema:generate": "pnpm --filter @waterx/predict-agent-schema run generate",
+    "instructions:generate": "pnpm --filter @waterx/predict-agent-adapters run generate"
   },
   "devDependencies": {
     "@types/node": "^24.12.0",

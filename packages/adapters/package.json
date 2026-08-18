@@ -1,0 +1,29 @@
+{
+  "name": "@waterx/predict-agent-adapters",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Host-neutral agent instructions and the thin adapter core: the command contract rendered as tool definitions, and a dispatcher that delegates every call to the installed `waterx-predict` binary. Implements no pricing, retry, signing, policy or job state of its own. Ships the generic function-calling adapter; `@waterx/predict-agent-mcp` is the same core behind an MCP transport.",
+  "license": "MIT",
+  "type": "module",
+  "bin": { "waterx-predict-tools": "dist/src/bin/tools.js" },
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json && node -e \"require('node:fs').chmodSync('dist/src/bin/tools.js',0o755)\"",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "generate": "pnpm run build && node dist/src/generate.js ../../agent-instructions/AGENT_INSTRUCTIONS.md",
+    "generate:check": "pnpm run build && node dist/src/generate.js ../../agent-instructions/AGENT_INSTRUCTIONS.md --check"
+  },
+  "dependencies": {
+    "@waterx/predict-agent-cli": "workspace:*",
+    "@waterx/predict-agent-schema": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.12.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.6"
+  }
+}

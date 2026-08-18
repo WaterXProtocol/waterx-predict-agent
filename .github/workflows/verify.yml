@@ -37,3 +37,11 @@ jobs:
       - run: pnpm schema:generate
       - name: schema artifact is reproducible
         run: git diff --exit-code -- schemas/
+
+      # And the same rule for the host-neutral instructions. This is the
+      # document the MCP adapter returns at `initialize` and the one a host
+      # that cannot run this toolchain reads instead, so a hand edit here would
+      # give two hosts different rules.
+      - run: pnpm instructions:generate
+      - name: agent instructions are reproducible
+        run: git diff --exit-code -- agent-instructions/
