@@ -253,7 +253,11 @@ and opens sockets, and the only place allowed to:
   because a printed recovery instruction once used a flag spelling that exits
   `USAGE`.
 - `examples/` — executable, and executed by the suite with nothing provisioned to
-  prove they refuse with a named supplier rather than a stack trace.
+  prove they refuse with a named supplier rather than a stack trace. The stream
+  example is the one exception to "examples live here": it is
+  `packages/sdk/examples/watch-quotes.mjs`, because a subscription is not a
+  command shape and because `packages/e2e` may depend on nothing but the CLI and
+  the schema. This suite still executes and lints it.
 
 Elsewhere:
 

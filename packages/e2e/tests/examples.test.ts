@@ -11,7 +11,7 @@
  * path, and nothing here should be read as though it did.
  */
 import { execFileSync, spawnSync } from 'node:child_process';
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -25,16 +25,42 @@ const EXAMPLES = readdirSync(EXAMPLES_DIR)
   .filter((name) => name.endsWith('.sh') && !name.startsWith('_'))
   .sort();
 
+/** The one example that is not a shell script, and not in this package. */
+const WATCH_EXAMPLE = join(PACKAGE_DIR, '../sdk/examples/watch-quotes.mjs');
+
 const read = (path: string): string => readFileSync(path, 'utf8');
 
 describe('the shipped examples', () => {
-  it('ships the four this work package calls for, and no stream or Runner example', () => {
+  it('ships every path the north star needs, and nothing undocumented', () => {
     expect(EXAMPLES).toEqual([
       'delegation-revocation.sh',
+      'multi-leg-entry.sh',
+      'north-star-bot.sh',
       'one-shot-entry.sh',
       'reconciliation.sh',
+      'restart-recovery.sh',
       'slippage-rejection.sh',
+      'target-exit.sh',
     ]);
+  });
+
+  // The stream example lives with the package that implements the stream, and
+  // is executed from here for the same reason as the others. It is a library
+  // example because there is no CLI command for a subscription: a command that
+  // answers once is the wrong shape for something that lives as long as the
+  // process holding it.
+  it('keeps the stream example with the SDK, not here', () => {
+    expect(EXAMPLES.some((name) => name.includes('watch'))).toBe(false);
+    expect(readFileSync(WATCH_EXAMPLE, 'utf8')).toContain('streamTriggerPrice');
+  });
+
+  // The READMEs tell a reader to run `./target-exit.sh`. A file committed
+  // without its executable bit answers that with "permission denied", which
+  // reads as a broken example rather than a missing chmod.
+  it('ships every example executable, as its documentation says to run it', () => {
+    for (const path of [...EXAMPLES.map((name) => join(EXAMPLES_DIR, name)), WATCH_EXAMPLE]) {
+      expect(statSync(path).mode & 0o100, path).toBe(0o100);
+    }
   });
 
   it('is syntactically valid shell', () => {
@@ -93,6 +119,26 @@ describe('the shipped examples', () => {
       expect(source, name).not.toMatch(/say .*\$APPROVAL/u);
       expect(source, name).not.toMatch(/privateKey|PRIVATE_KEY|--key\b/u);
     }
+    const watch = readFileSync(WATCH_EXAMPLE, 'utf8');
+    expect(watch).not.toMatch(/privateKey|PRIVATE_KEY/u);
+    // The stream example signs a login challenge and must never print what came
+    // back, nor be able to sign anything that moves funds.
+    expect(watch).not.toMatch(/say\(.*signature/u);
+    expect(watch).toContain('never signs a transaction');
+  });
+
+  it('checks the invocations documented in the stream example too', () => {
+    for (const argv of extractInvocations(readFileSync(WATCH_EXAMPLE, 'utf8'))) {
+      expect(lintInvocation(argv).map((v) => v.message), argv.join(' ')).toEqual([]);
+    }
+  });
+
+  it('points at the stream example from the bot that would want it', () => {
+    // A composed example that names a file which does not exist is worse than
+    // one that names nothing: the reader assumes the mistake is theirs.
+    const bot = read(join(EXAMPLES_DIR, 'north-star-bot.sh'));
+    expect(bot).toContain('../../sdk/examples/watch-quotes.mjs');
+    expect(existsSync(join(EXAMPLES_DIR, '../../sdk/examples/watch-quotes.mjs'))).toBe(true);
   });
 });
 
@@ -130,5 +176,22 @@ describe('an example with nothing provisioned', () => {
     // Nothing crashed on the way there.
     expect(result.stderr).not.toContain('Traceback');
     expect(result.stderr).not.toMatch(/^\s*at .*\(/mu);
+  });
+
+  // Same standard for the stream example, which cannot use the CLI at all: it
+  // must refuse before it opens a socket, and say who supplies what.
+  it('the stream example refuses before it connects', () => {
+    const result = spawnSync('node', [WATCH_EXAMPLE, '--marketId', 'mkt_example', '--seconds', '1'], {
+      encoding: 'utf8',
+      env: { PATH: process.env.PATH ?? '/usr/bin:/bin' },
+      timeout: 30_000,
+    });
+
+    expect(result.status, result.stderr).toBe(3);
+    expect(result.stderr).toContain('NOT PROVISIONED');
+    expect(result.stderr).toMatch(/OPERATOR|ACCOUNT OWNER/u);
+    expect(result.stderr).not.toMatch(/^\s*at .*\(/mu);
+    // It got nowhere near a connection, so it printed no frame and no summary.
+    expect(result.stderr).not.toContain('Watching');
   });
 });

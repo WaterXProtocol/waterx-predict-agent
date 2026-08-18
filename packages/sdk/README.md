@@ -346,6 +346,17 @@ can no longer prove the feed is live. Updates are change-only, so a quiet market
 and a dead socket are indistinguishable by frame arrival alone, and a watcher that
 is never told will keep serving an hour-old price.
 
+To watch a market directly rather than through a wait, `examples/watch-quotes.mjs`
+subscribes to one topic, prints every frame and every `UNAVAILABLE` reason, and
+says when a target *would* fire — against the ask for a BUY and the bid for a
+SELL, and never against a stale frame. It is a non-production example: it refuses
+an unlabelled environment, and its signer cannot sign a transaction at all.
+
+```sh
+pnpm build   # the example imports this package's build output
+node packages/sdk/examples/watch-quotes.mjs --marketId <id> --side BUY --target 0.60
+```
+
 ## Execution stream
 
 `waitFor: 'TERMINAL'` polls `getExecution` by default. Ask for the stream and a

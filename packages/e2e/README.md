@@ -167,6 +167,19 @@ documented recovery command spelling a flag the CLI does not accept.
 | `slippage-rejection.sh` | Price protection refusing an order rather than filling it worse |
 | `delegation-revocation.sh` | What a revoked delegation looks like, and why `null` is not a revocation |
 | `reconciliation.sh` | Recovering an execution whose outcome is unknown, without resubmitting it |
+| `multi-leg-entry.sh` | Several orders in one call — client-side, non-atomic, per-leg outcomes |
+| `target-exit.sh` | Arming a durable SELL on the local Runner that fires later, without you |
+| `restart-recovery.sh` | Killing the Runner and proving the same job — not a copy — came back |
+| `north-star-bot.sh` | The whole thing: buy under a ceiling, sell half at a target, stop in three days |
 
-Examples that need streams, the Runner or strategies are not here; they belong
-with the components that implement them.
+The last four need a local Runner. Start one in another terminal
+(`waterx-predict-runnerd`) and leave it running: the first Runner is
+self-hosted, so the device it runs on has to stay awake for a strategy to be
+advanced. An armed job survives a restart either way; nothing advances it while
+no Runner is up.
+
+The stream example is not here. It lives at
+`packages/sdk/examples/watch-quotes.mjs`, with the package that implements the
+stream, because a subscription lives as long as the process holding it and there
+is no CLI command shaped like that. This package's tests still execute it, and
+lint the commands it prints.

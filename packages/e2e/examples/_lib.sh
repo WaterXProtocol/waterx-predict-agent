@@ -14,6 +14,7 @@ set -euo pipefail
 EXIT_OK=0
 EXIT_CONFIG=3
 EXIT_POLICY=5
+EXIT_UNAVAILABLE=7
 EXIT_REJECTED=10
 EXIT_AMBIGUOUS=11
 
@@ -75,6 +76,12 @@ require_configured() {
   fi
 
   ENVIRONMENT="$(field data.api.environment)"
+
+  # `interactive`, `delegated-auto` or `read-only`. An example that places more
+  # than one order in a call has to know which one it is running under: under
+  # `interactive` an unapproved write is refused locally and costs nothing, and
+  # under `delegated-auto` the same call TRADES.
+  POLICY_MODE="$(field data.policy.mode)"
 }
 
 # Refuses to go on unless the deployment is labelled non-production.
@@ -96,4 +103,60 @@ require_non_production() {
       exit "$EXIT_CONFIG"
       ;;
   esac
+}
+
+# The owner's Sui address, for the commands that arm something.
+#
+# Deliberately NOT defaulted from the configuration, and not derived from the
+# agent wallet: nothing this process holds knows who the owner is, and inventing
+# one would attribute a later trade to the wrong account. `accountId` and
+# `agentWallet` are defaulted by the CLI; this is the one identity field that an
+# ACCOUNT OWNER has to hand over.
+require_owner_address() {
+  OWNER_ADDRESS="${WATERX_PREDICT_OWNER_ADDRESS:-}"
+  if [ -z "$OWNER_ADDRESS" ]; then
+    say "NOT PROVISIONED: no owner address."
+    say "  The ACCOUNT OWNER supplies their own 0x… Sui address; export it as"
+    say "  WATERX_PREDICT_OWNER_ADDRESS. It is not defaulted and not derivable"
+    say "  from the agent wallet — a strategy armed under the wrong owner is a"
+    say "  trade attributed to the wrong account."
+    exit "$EXIT_CONFIG"
+  fi
+}
+
+# Stops unless a local Runner answers, and says whether it is DRIVING.
+#
+# Reachable is not running. A Runner with no signer, no gateway or no price feed
+# still stores a strategy and still answers reads, and a job it holds is one
+# nothing will ever advance. The distinction is on every reply, so an example
+# that arms something has to look at it rather than at the exit code alone.
+#
+# Sets: RUNNER_INSTANCE_ID, RUNNER_DRIVING ("true" or "false").
+require_runner() {
+  try waterx-predict strategy list
+  if [ "$STATUS" -eq "$EXIT_UNAVAILABLE" ]; then
+    say "NOT PROVISIONED: no local Runner answered."
+    say "  OPERATOR starts one in another terminal and leaves it running:"
+    say "    waterx-predict-runnerd"
+    say "  The Runner is self-hosted: this device stays awake and online, or"
+    say "  nothing watches the market. There is no managed runner."
+    exit "$EXIT_CONFIG"
+  fi
+  if [ "$STATUS" -ne "$EXIT_OK" ]; then
+    say "The Runner refused a read: $(field error.code) — $(field error.message)"
+    exit "$STATUS"
+  fi
+
+  RUNNER_INSTANCE_ID="$(field data.runner.instanceId)"
+  RUNNER_DRIVING="$(field data.runner.driving)"
+  say "Runner: $RUNNER_INSTANCE_ID, driving=$RUNNER_DRIVING."
+}
+
+# An ISO-8601 instant N hours from now, for `expiresAt`.
+#
+# `expiresAt` is mandatory and capped at seven days in this beta. The cap is
+# REFUSED and never clamped, so this helper computes a real horizon rather than
+# passing something the Runner would have to correct.
+hours_from_now() {
+  node -e 'process.stdout.write(new Date(Date.now() + Number(process.argv[1]) * 3600000).toISOString())' "$1"
 }
