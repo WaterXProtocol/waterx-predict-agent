@@ -105,6 +105,7 @@ command is not a breaking change.
 | `account.positions` | `account positions` | `getPositions` | read | NONE |
 | `account.executions` | `account executions` | `listExecutions` | read | NONE |
 | `account.fills` | `account fills` | `getFills` | read | NONE |
+| `account.performance` | `account performance` | `getPerformance` | read | NONE |
 | `order.preview` | `order preview` | — runtime, local | read | MINTS_QUOTE |
 | `order.get` | `order get` | `getExecution` | read | NONE |
 | `order.reconcile` | `order reconcile` | `waitForExecution` | read | NONE |

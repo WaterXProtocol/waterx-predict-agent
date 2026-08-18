@@ -417,6 +417,48 @@ describe('reads', () => {
     );
     expect(calls[0]?.method).toBe('GET');
   });
+
+  it('reads performance without a strategy filter', async () => {
+    const { client, calls } = makeClient([
+      json(200, { accountId: '0xacct', attributionScope: 'API_ATTRIBUTED_ONLY' }),
+    ]);
+
+    await client.getPerformance('0xacct');
+
+    // No `?strategyId=`: the server runs forbidNonWhitelisted and an empty value
+    // is a 400, not "no filter".
+    expect(calls[0]?.url).toBe(
+      'https://api.test/agent-api/v1/predict/accounts/0xacct/performance',
+    );
+  });
+
+  it('sends the strategy filter when one is given', async () => {
+    const { client, calls } = makeClient([json(200, { strategyId: 'momentum v2' })]);
+
+    await client.getPerformance('0xacct', 'momentum v2');
+
+    expect(new URL(calls[0]!.url).searchParams.get('strategyId')).toBe('momentum v2');
+  });
+
+  it('returns null rates as null rather than coercing them to zero', async () => {
+    // The distinction the whole read hangs on: `null` is "nothing has closed",
+    // `"0"` is "everything lost", and a strategy sizing off the wrong one would
+    // shut itself down on its first day.
+    const { client } = makeClient([
+      json(200, {
+        orders: { created: 3, terminal: 0, inFlight: 3, successRate: null, terminalRate: null },
+        realized: { closedExits: 0, winRate: null, realizedPnl: '0' },
+        excluded: { exitsWithoutAttributedBasis: 0, claimedPositions: 4, openPositions: 1 },
+      }),
+    ]);
+
+    const performance = await client.getPerformance('0xacct');
+
+    expect(performance.orders.successRate).toBeNull();
+    expect(performance.realized.winRate).toBeNull();
+    // And the population that was left out is carried through untouched.
+    expect(performance.excluded.claimedPositions).toBe(4);
+  });
 });
 
 /**

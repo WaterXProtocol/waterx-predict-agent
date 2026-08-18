@@ -1022,6 +1022,137 @@ export interface ListFillsResponseBody extends PredictPagedListResponse {
   fills: PredictFill[];
 }
 
+/* ── Performance ─────────────────────────────────────────────────────────── */
+
+/**
+ * A ratio in the inclusive range `0`–`1`, as a decimal string at 4 dp.
+ *
+ * A separate alias from `DecimalString` on purpose: these are NOT money and must
+ * not be summed, converted, or compared against a balance. Null everywhere the
+ * denominator is zero — a rate over no trades is undefined, and reporting `"0"`
+ * there would read as "everything lost".
+ */
+export type RatioString = string;
+
+/**
+ * What population a performance figure was computed over.
+ *
+ * `API_ATTRIBUTED_ONLY` is the only value this API produces, and the only one it
+ * can honestly produce. See `PredictAgentPerformanceResponseBody`.
+ */
+export type PredictPerformanceAttributionScope = 'API_ATTRIBUTED_ONLY' | (string & {});
+
+/** Order lifecycle counts. Every execution this agent created on this account. */
+export interface PredictOrderOutcomeStats {
+  created: number;
+  /** Reached a terminal status: FILLED + REJECTED + CANCELLED + EXPIRED. */
+  terminal: number;
+  filled: number;
+  rejected: number;
+  cancelled: number;
+  expired: number;
+  /** `created − terminal`. Still moving; counted in neither rate. */
+  inFlight: number;
+  /**
+   * `filled / terminal` — of the orders that FINISHED, how many filled.
+   *
+   * The denominator is deliberately terminal, not created: dividing by created
+   * would make a burst of still-in-flight orders look like a fall in success
+   * rate, when nothing has failed yet.
+   */
+  successRate: RatioString | null;
+  /** `terminal / created` — how much of the history has actually settled. */
+  terminalRate: RatioString | null;
+}
+
+/**
+ * One rejection bucket. `errorCode` and `stage` are null together only for a
+ * terminal rejection recorded before either was known, which should not happen
+ * and is surfaced rather than folded into a neighbouring bucket.
+ */
+export interface PredictRejectionReasonCount {
+  errorCode: PredictAgentErrorCode | null;
+  stage: PredictRejectionStage | null;
+  count: number;
+}
+
+/**
+ * Realized money, over SELL executions this API filled whose cost basis it also
+ * recorded.
+ *
+ * `realizedPnl` is `grossProceeds − costBasis`, signed. The basis is the exact
+ * amount the close released from deployed budget — the contract's own
+ * `split_cost`, not a proportion inferred here — so this figure reconciles
+ * against the allowance ledger by construction.
+ */
+export interface PredictRealizedStats {
+  /** Exits counted. A partial exit counts once, on the portion sold. */
+  closedExits: number;
+  wins: number;
+  losses: number;
+  breakEven: number;
+  /** `wins / closedExits`. Null when nothing has closed. */
+  winRate: RatioString | null;
+  grossProceeds: DecimalString;
+  costBasis: DecimalString;
+  /** Signed: a losing period is negative. */
+  realizedPnl: DecimalString;
+}
+
+/**
+ * What this API knows it did NOT count, as counts rather than as prose.
+ *
+ * These are published beside the totals because every one of them makes realized
+ * PnL an understatement or an overstatement in a specific direction, and an agent
+ * sizing off a win rate needs to see the size of the hole.
+ */
+export interface PredictPerformanceExclusions {
+  /**
+   * Filled SELLs closing a position this API never opened, so no cost basis
+   * exists. Their proceeds are NOT in `grossProceeds` — counting them would
+   * report the whole exit as profit.
+   */
+  exitsWithoutAttributedBasis: number;
+  /**
+   * Positions resolved and claimed rather than sold. The payout is collected from
+   * the FE and never passes through this API, so the winning side of a resolved
+   * market is invisible here — this is the exclusion that biases `winRate`
+   * DOWNWARD, and by the most.
+   */
+  claimedPositions: number;
+  /** Positions still carrying deployed cost. Unrealized; see `/positions`. */
+  openPositions: number;
+}
+
+/**
+ * Agent performance, over the orders this API executed (spec §19.2).
+ *
+ * SCOPE, STATED BEFORE THE NUMBERS. `attributionScope` is `API_ATTRIBUTED_ONLY`
+ * and there is no other mode. The same delegated key can trade this market
+ * directly on chain; that activity never had an execution row, was never
+ * reserved against the allowance, and is not represented here at ANY confidence.
+ * Blending it in would require inventing an entry price for a trade this backend
+ * never priced, and the resulting win rate would look complete while being wrong.
+ * So the incompleteness is named in `excluded` instead of smoothed away.
+ *
+ * There is no time window. Every figure is lifetime-to-date for the (account,
+ * agent[, strategy]) triple, because the claim exclusions below have no recorded
+ * instant to window on and a windowed total would silently disagree with them.
+ */
+export interface PredictAgentPerformanceResponseBody {
+  accountId: string;
+  agentWallet: string;
+  /** Echo of the `strategyId` filter, or null when the read was unfiltered. */
+  strategyId: string | null;
+  attributionScope: PredictPerformanceAttributionScope;
+  orders: PredictOrderOutcomeStats;
+  /** Descending by count, then by code. Empty when nothing was rejected. */
+  rejections: PredictRejectionReasonCount[];
+  realized: PredictRealizedStats;
+  excluded: PredictPerformanceExclusions;
+  asOf: Iso8601;
+}
+
 /* ── Routes ──────────────────────────────────────────────────────────────── */
 
 /**
@@ -1043,6 +1174,7 @@ export const PREDICT_AGENT_API_ROUTES = {
   effectiveLimits: 'agent-api/v1/predict/accounts/:accountId/effective-limits',
   positions: 'agent-api/v1/predict/accounts/:accountId/positions',
   fills: 'agent-api/v1/predict/accounts/:accountId/fills',
+  performance: 'agent-api/v1/predict/accounts/:accountId/performance',
   listExecutions: 'agent-api/v1/predict/accounts/:accountId/executions',
   riskProfile: 'agent-api/v1/predict/accounts/:accountId/agents/:agentWallet/risk-profile',
   listRiskProfiles: 'agent-api/v1/predict/accounts/agents/risk-profiles',

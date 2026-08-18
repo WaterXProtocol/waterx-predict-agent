@@ -429,9 +429,19 @@ describe('read commands', () => {
   });
 
   it('requires the account on every account-scoped read', () => {
-    for (const name of ['account.allowance', 'account.positions', 'account.executions', 'account.fills']) {
+    const scoped = ['account.allowance', 'account.positions', 'account.executions', 'account.fills', 'account.performance'];
+    for (const name of scoped) {
       expect(reject(name, {})).toMatch(/accountId.*is required/u);
     }
+  });
+
+  it('narrows performance by strategy, and refuses a window it does not compute', () => {
+    accept('account.performance', { accountId: ACCOUNT_ID, strategyId: 'take-profit' });
+    // Every figure is lifetime-to-date. Accepting `since` and ignoring it would
+    // hand back a total the caller believes is windowed.
+    expect(reject('account.performance', { accountId: ACCOUNT_ID, since: '2026-01-01' })).toMatch(
+      /since/u,
+    );
   });
 
   it('prices a quote with the same size rules as an order', () => {

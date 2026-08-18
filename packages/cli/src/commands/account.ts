@@ -150,6 +150,33 @@ export async function accountFills(context: CommandContext): Promise<unknown> {
 }
 
 /**
+ * Order outcomes, rejection reasons and realized PnL, lifetime-to-date.
+ *
+ * The scope is reported as a field and repeated as a caveat rather than being
+ * left in documentation. A win rate is the number an agent will size against,
+ * and this one is computed over API-attributed activity only — the caveats name
+ * which way each hole in it bends the answer, because "incomplete" without a
+ * direction is not actionable.
+ */
+export async function accountPerformance(context: CommandContext): Promise<unknown> {
+  const client = await context.client();
+  const strategyId =
+    typeof context.input.strategyId === 'string' ? context.input.strategyId : undefined;
+  const performance = await client.getPerformance(accountId(context), strategyId, context.signal());
+  return {
+    ...performance,
+    caveats: [
+      '`attributionScope` is API_ATTRIBUTED_ONLY and there is no other mode. A direct-chain trade by the same delegated key is not represented here at any confidence.',
+      '`successRate` divides by TERMINAL orders, not by created, so orders still in flight neither raise nor lower it. `terminalRate` says how much of the history has settled.',
+      'Every rate is null — not `"0"` — when its denominator is zero. A rate over no trades is undefined, and `"0"` would read as "everything lost".',
+      '`excluded.claimedPositions` is the population that biases `winRate` DOWNWARD, and by the most: a resolved market is claimed from the FE, so the winning side never passes through this API.',
+      '`realized` counts only exits whose cost basis this API recorded. `excluded.exitsWithoutAttributedBasis` is the rest, and their proceeds are absent from `grossProceeds` rather than counted as pure profit.',
+      'There is no time window. Every figure is lifetime-to-date, because the exclusions have no recorded instant to window on and a windowed total would silently disagree with them.',
+    ],
+  };
+}
+
+/**
  * The mandate as the server states it: limits, allowance, hour consumed,
  * delegation, and every reason a write would be refused right now.
  *

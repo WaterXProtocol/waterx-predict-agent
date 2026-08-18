@@ -124,7 +124,7 @@ export function createMcpServer(options: McpServerOptions): McpServer {
           return isNotification ? null : success(id, {});
 
         case 'tools/list':
-          // No pagination: twenty-three tools fit in one response, and a
+          // No pagination: twenty-four tools fit in one response, and a
           // `nextCursor` this server would never honour is worse than none.
           return success(id, { tools: toMcpTools() });
 

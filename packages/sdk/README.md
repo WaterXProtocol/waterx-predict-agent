@@ -178,6 +178,7 @@ for (const entry of results) {
 | `listExecutions(accountId, page?)` | Your order history on that account, newest first |
 | `getFills(accountId, page?)` | Filled executions only, by fill time |
 | `getPositions(accountId, page?)` | Positions you opened, with cost basis |
+| `getPerformance(accountId, strategyId?)` | Order outcomes, rejection reasons and realized PnL, lifetime-to-date |
 | `getAllowance(accountId)` | API allowance, real balance, and the binding minimum |
 | `getEffectiveLimits(accountId)` | The mandate: limits, window usage, delegation, blockers |
 | `searchMarkets(query)` | Free text → one market id, **resolved server-side** |
@@ -191,6 +192,17 @@ credential can see its limits and can never raise them. `limits: null` means no
 owner granted this agent a risk profile; that is denial, not an unlimited
 default. A `null` delegation permission means the on-chain read **failed**, which
 is not the same as `false`.
+
+`getPerformance` is scoped `API_ATTRIBUTED_ONLY` and there is no other mode: the
+same delegated key can trade directly on chain, and that activity never had an
+execution row to attribute, so it is absent rather than blended in at a guess.
+`successRate` divides by **terminal** orders, not by created, so orders still in
+flight cannot look like failures. Every rate is `null` — not `"0"` — when its
+denominator is zero. `excluded` counts what was left out: `claimedPositions` is
+the one that biases `winRate` downward and by the most, because a resolved market
+is claimed from the FE and its payout never passes through this API. There is no
+time window; every figure is lifetime-to-date, because the exclusions have no
+recorded instant to window on.
 
 `searchMarkets` sends the text and returns the server's `resolution` unchanged.
 `marketId` is non-null only when exactly one market matched, and `matchCount` is

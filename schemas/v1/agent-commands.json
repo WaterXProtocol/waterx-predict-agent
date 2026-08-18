@@ -1076,6 +1076,61 @@
       ]
     },
     {
+      "name": "account.performance",
+      "cli": "account performance",
+      "summary": "Read order outcomes, rejection reasons and realized PnL for this agent.",
+      "description": "Lifetime-to-date, with the scope stated before the numbers: attributionScope is API_ATTRIBUTED_ONLY and there is no other mode, so a direct-chain trade by the same delegated key is absent at ANY confidence. successRate divides by TERMINAL orders rather than created, so a burst of in-flight orders does not read as a fall in success. Every rate is null and not \"0\" when its denominator is zero — a rate over no trades is undefined. Realized PnL covers only exits whose cost basis this API recorded; excluded counts the populations left out, and claimedPositions — resolved markets collected from the FE — biases winRate DOWNWARD and by the most. There is no time window, because the exclusions have no recorded instant to window on.",
+      "classification": "read",
+      "sideEffects": [
+        "NONE"
+      ],
+      "longRunning": false,
+      "idempotency": {
+        "required": false,
+        "callerSupplied": "UNSUPPORTED",
+        "note": "A read is safe to repeat; no key applies."
+      },
+      "confirmation": "NOT_REQUIRED",
+      "implementation": {
+        "kind": "sdk",
+        "method": "getPerformance"
+      },
+      "input": {
+        "type": "object",
+        "required": [
+          "accountId"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "accountId": {
+            "$ref": "#/$defs/accountId"
+          },
+          "strategyId": {
+            "title": "Strategy id",
+            "description": "Narrow every figure to one strategy label. Matched exactly. Omit for the whole agent.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        }
+      },
+      "examples": [
+        {
+          "title": "Read performance",
+          "input": {
+            "accountId": "0x1111111111111111111111111111111111111111111111111111111111111111"
+          }
+        },
+        {
+          "title": "Narrow to one strategy",
+          "input": {
+            "accountId": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "strategyId": "take-profit-example"
+          }
+        }
+      ]
+    },
+    {
       "name": "order.preview",
       "cli": "order preview",
       "summary": "Resolve, price and policy-check an order without placing it.",

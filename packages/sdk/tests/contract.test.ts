@@ -36,6 +36,7 @@ describe('vendored wire contract', () => {
       effectiveLimits: 'agent-api/v1/predict/accounts/:accountId/effective-limits',
       positions: 'agent-api/v1/predict/accounts/:accountId/positions',
       fills: 'agent-api/v1/predict/accounts/:accountId/fills',
+      performance: 'agent-api/v1/predict/accounts/:accountId/performance',
       listExecutions: 'agent-api/v1/predict/accounts/:accountId/executions',
       riskProfile: 'agent-api/v1/predict/accounts/:accountId/agents/:agentWallet/risk-profile',
       listRiskProfiles: 'agent-api/v1/predict/accounts/agents/risk-profiles',

@@ -396,6 +396,39 @@ const accountFills: AgentCommandSpec = {
   examples: [{ title: 'List fills', input: { accountId: EXAMPLE_ACCOUNT_ID, limit: 50 } }],
 };
 
+const accountPerformance: AgentCommandSpec = {
+  ...readOnly,
+  name: 'account.performance',
+  cli: 'account performance',
+  summary: 'Read order outcomes, rejection reasons and realized PnL for this agent.',
+  description:
+    'Lifetime-to-date, with the scope stated before the numbers: attributionScope is API_ATTRIBUTED_ONLY and there is no other mode, so a direct-chain trade by the same delegated key is absent at ANY confidence. successRate divides by TERMINAL orders rather than created, so a burst of in-flight orders does not read as a fall in success. Every rate is null and not "0" when its denominator is zero — a rate over no trades is undefined. Realized PnL covers only exits whose cost basis this API recorded; excluded counts the populations left out, and claimedPositions — resolved markets collected from the FE — biases winRate DOWNWARD and by the most. There is no time window, because the exclusions have no recorded instant to window on.',
+  implementation: { kind: 'sdk', method: 'getPerformance' },
+  input: {
+    type: 'object',
+    required: ['accountId'],
+    additionalProperties: false,
+    properties: {
+      accountId: { $ref: '#/$defs/accountId' },
+      strategyId: {
+        title: 'Strategy id',
+        description:
+          'Narrow every figure to one strategy label. Matched exactly. Omit for the whole agent.',
+        type: 'string',
+        minLength: 1,
+        maxLength: 128,
+      },
+    },
+  },
+  examples: [
+    { title: 'Read performance', input: { accountId: EXAMPLE_ACCOUNT_ID } },
+    {
+      title: 'Narrow to one strategy',
+      input: { accountId: EXAMPLE_ACCOUNT_ID, strategyId: 'take-profit-example' },
+    },
+  ],
+};
+
 /**
  * The preview intent: the order intent, minus the two fields a preview cannot
  * take a position on.
@@ -1044,6 +1077,7 @@ export const AGENT_COMMANDS: readonly AgentCommandSpec[] = [
   accountPositions,
   accountExecutions,
   accountFills,
+  accountPerformance,
   orderPreview,
   orderGet,
   orderReconcile,

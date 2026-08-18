@@ -245,6 +245,7 @@ Generated from the command contract. `write` commands are gated by the execution
 | `account.positions` | `account positions` | `waterx_predict_account_positions` | read | NOT_REQUIRED | List positions this agent opened, with cost basis and unrealized PnL. |
 | `account.executions` | `account executions` | `waterx_predict_account_executions` | read | NOT_REQUIRED | List this agent’s executions on one account. |
 | `account.fills` | `account fills` | `waterx_predict_account_fills` | read | NOT_REQUIRED | List confirmed fills, with the quote each was priced against. |
+| `account.performance` | `account performance` | `waterx_predict_account_performance` | read | NOT_REQUIRED | Read order outcomes, rejection reasons and realized PnL for this agent. |
 | `order.preview` | `order preview` | `waterx_predict_order_preview` | read | NOT_REQUIRED | Resolve, price and policy-check an order without placing it. |
 | `order.get` | `order get` | `waterx_predict_order_get` | read | NOT_REQUIRED | Read one execution by id. |
 | `order.reconcile` | `order reconcile` | `waterx_predict_order_reconcile` | read | NOT_REQUIRED | Wait for one execution to reach a terminal state. |

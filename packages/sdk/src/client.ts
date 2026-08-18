@@ -29,6 +29,7 @@ import {
   type ListPositionsResponseBody,
   PREDICT_AGENT_API_ROUTES,
   type PredictAgentListQuery,
+  type PredictAgentPerformanceResponseBody,
   type PredictAllowanceResponseBody,
   type PredictEffectiveLimitsResponseBody,
   type PredictMarketResolution,
@@ -694,6 +695,38 @@ export class PredictAgentClient {
       method: 'GET',
       path: PREDICT_AGENT_API_ROUTES.fills.replace(':accountId', accountId),
       query: pageQuery(page),
+      authenticated: true,
+      idempotent: true,
+      ...(signal !== undefined ? { signal } : {}),
+    });
+  }
+
+  /**
+   * Order-outcome rates and realized PnL for this agent, over the orders THIS API
+   * executed and nothing else.
+   *
+   * `attributionScope` is `API_ATTRIBUTED_ONLY` and there is no other mode. The
+   * same delegated key can trade these markets directly on chain; that activity
+   * is not represented here at any confidence, and `excluded` counts what was
+   * left out — positions that were CLAIMED rather than sold never pass through
+   * this API at all, so they bias `winRate` downward by the most.
+   *
+   * Every rate is `null`, not `"0"`, when its denominator is zero. A strategy
+   * that sizes off a win rate must branch on that: `"0"` reads as "everything
+   * lost", and `null` means "nothing has closed yet".
+   *
+   * Lifetime-to-date, with no time window — the exclusions have no recorded
+   * instant, so a windowed total would silently disagree with them.
+   */
+  async getPerformance(
+    accountId: string,
+    strategyId?: string,
+    signal?: AbortSignal,
+  ): Promise<PredictAgentPerformanceResponseBody> {
+    return await this.transport.request<PredictAgentPerformanceResponseBody>({
+      method: 'GET',
+      path: PREDICT_AGENT_API_ROUTES.performance.replace(':accountId', accountId),
+      ...(strategyId !== undefined ? { query: { strategyId } } : {}),
       authenticated: true,
       idempotent: true,
       ...(signal !== undefined ? { signal } : {}),

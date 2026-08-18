@@ -134,6 +134,13 @@ export const CAPABILITIES: readonly Capability[] = [
     summary: 'Confirmed fills, with the quote each was priced against.',
   },
   {
+    id: 'account performance',
+    command: 'account.performance',
+    status: 'AVAILABLE',
+    summary:
+      'Order outcomes, rejection reasons and realized PnL over API-attributed activity only, with the excluded populations counted rather than smoothed away.',
+  },
+  {
     id: 'account risk-limits',
     command: 'account.risk-limits',
     status: 'AVAILABLE',

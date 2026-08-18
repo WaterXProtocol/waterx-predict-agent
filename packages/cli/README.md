@@ -131,6 +131,7 @@ it without reconciling is how an agent places the same order twice.
 | `market search` | available; the **server** resolves the text, exits 11 unless exactly one matched |
 | `account status`, `account allowance`, `account positions`, `account executions`, `account fills` | available |
 | `account risk-limits` | available; reads the mandate, cannot raise it |
+| `account performance` | available; **API-attributed only**, with the excluded populations counted rather than hidden |
 | `order preview` | available; places nothing, signs nothing |
 | `order execute`, `order execute-many` | available; subject to the execution policy |
 | `order get`, `order reconcile` | available; reads only |

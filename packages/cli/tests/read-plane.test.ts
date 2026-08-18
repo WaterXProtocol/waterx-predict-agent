@@ -505,6 +505,73 @@ describe('account reads', () => {
     expect(data.caveats.join(' ')).toMatch(/null rather than zero/u);
   });
 
+  it('reports performance with its scope, and leaves an undefined rate null', async () => {
+    const result = await invoke(
+      ['account', 'performance', '--accountId', ACCOUNT_ID],
+      withAuth({
+        [`GET ${ACCOUNT_PATH}/performance`]: {
+          status: 200,
+          body: {
+            accountId: ACCOUNT_ID,
+            agentWallet: '0xagent',
+            strategyId: null,
+            attributionScope: 'API_ATTRIBUTED_ONLY',
+            orders: { created: 2, terminal: 0, filled: 0, rejected: 0, cancelled: 0, expired: 0, inFlight: 2, successRate: null, terminalRate: '0.0000' },
+            rejections: [],
+            realized: { closedExits: 0, wins: 0, losses: 0, breakEven: 0, winRate: null, grossProceeds: '0', costBasis: '0', realizedPnl: '0' },
+            excluded: { exitsWithoutAttributedBasis: 0, claimedPositions: 3, openPositions: 1 },
+            asOf: '2026-01-01T00:00:00.000Z',
+          },
+        },
+      }),
+    );
+    const data = result.envelope.data as {
+      attributionScope: string;
+      orders: { successRate: string | null };
+      realized: { winRate: string | null };
+      caveats: string[];
+    };
+
+    expect(result.exit).toBe(EXIT_CODES.OK);
+    expect(data.attributionScope).toBe('API_ATTRIBUTED_ONLY');
+    // Null, not "0". A success rate over nothing terminal is undefined, and a
+    // zero here would read as two failed orders.
+    expect(data.orders.successRate).toBeNull();
+    expect(data.realized.winRate).toBeNull();
+    expect(data.caveats.join(' ')).toMatch(/API_ATTRIBUTED_ONLY/u);
+    expect(data.caveats.join(' ')).toMatch(/claimedPositions.*DOWNWARD/u);
+    // No filter asked for, so none sent: an empty `strategyId=` would narrow to
+    // a strategy label that is the empty string.
+    expect(new URL(result.fetches.at(-1)!.url).searchParams.has('strategyId')).toBe(false);
+  });
+
+  it('narrows performance to one strategy by sending the label to the server', async () => {
+    const result = await invoke(
+      ['account', 'performance', '--accountId', ACCOUNT_ID, '--strategyId', 'take-profit'],
+      withAuth({
+        [`GET ${ACCOUNT_PATH}/performance`]: {
+          status: 200,
+          body: {
+            accountId: ACCOUNT_ID,
+            agentWallet: '0xagent',
+            strategyId: 'take-profit',
+            attributionScope: 'API_ATTRIBUTED_ONLY',
+            orders: { created: 0, terminal: 0, filled: 0, rejected: 0, cancelled: 0, expired: 0, inFlight: 0, successRate: null, terminalRate: null },
+            rejections: [],
+            realized: { closedExits: 0, wins: 0, losses: 0, breakEven: 0, winRate: null, grossProceeds: '0', costBasis: '0', realizedPnl: '0' },
+            excluded: { exitsWithoutAttributedBasis: 0, claimedPositions: 0, openPositions: 0 },
+            asOf: '2026-01-01T00:00:00.000Z',
+          },
+        },
+      }),
+    );
+
+    expect(result.exit).toBe(EXIT_CODES.OK);
+    // Filtered server-side. Filtering here would mean re-deriving totals the
+    // server computed, from rows this CLI never saw.
+    expect(new URL(result.fetches.at(-1)!.url).searchParams.get('strategyId')).toBe('take-profit');
+  });
+
   it('refuses an account read with no account, before authenticating', async () => {
     const result = await invoke(['account', 'positions'], { env: CONFIGURED_ENV });
 
