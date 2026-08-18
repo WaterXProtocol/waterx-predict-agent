@@ -1,0 +1,333 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.6",
+  "version": 1,
+  "metadata": {
+    "component": {
+      "type": "library",
+      "bom-ref": "pkg:npm/%40waterx/predict-agent-sdk@0.1.0",
+      "name": "@waterx/predict-agent-sdk",
+      "version": "0.1.0",
+      "purl": "pkg:npm/%40waterx/predict-agent-sdk@0.1.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "waterx:engines.node",
+          "value": ">=20"
+        }
+      ]
+    },
+    "tools": {
+      "components": [
+        {
+          "type": "application",
+          "name": "@waterx/predict-agent-release",
+          "version": "0.1.0"
+        }
+      ]
+    },
+    "properties": [
+      {
+        "name": "waterx:scope",
+        "value": "RUNTIME_DEPENDENCIES_ONLY. devDependencies and build tooling are excluded."
+      },
+      {
+        "name": "waterx:resolution",
+        "value": "INSTALLED_TREE. Versions come from node_modules on disk, not from a manifest range."
+      },
+      {
+        "name": "waterx:timestamp",
+        "value": "OMITTED_FOR_REPRODUCIBILITY. The build date is the release commit date."
+      }
+    ]
+  },
+  "components": [
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/%40socket.io/component-emitter@3.1.2",
+      "name": "@socket.io/component-emitter",
+      "version": "3.1.2",
+      "purl": "pkg:npm/%40socket.io/component-emitter@3.1.2",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "f410b1170bdb1a0fd1b192bdb635ddf2ce147304743167854355c428841556f00627220d76ba8a31c4d1c8ba0af11b1ed468f32d5f5cc23595d6895745611754"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/debug@4.4.3",
+      "name": "debug",
+      "version": "4.4.3",
+      "purl": "pkg:npm/debug@4.4.3",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "446c305a7c10be455f6af295b76d8518bc3ec5849dcc04709b4aeee83853540dee994e6165cdbc57790ee2cb6062bcab4e52e9baf808f468a28e5b408cd6dca8"
+        }
+      ],
+      "properties": [
+        {
+          "name": "waterx:engines.node",
+          "value": ">=6.0"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/engine.io-client@6.6.6",
+      "name": "engine.io-client",
+      "version": "6.6.6",
+      "purl": "pkg:npm/engine.io-client@6.6.6",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "898e9075fb4b43da7288fa17d3cd9ba5ffeed547b09ce689aed24817d4f4fbe401df8959ae3d2e3fe43f6e3f00954b00c6a867913576052f120594b13a6a15e5"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/engine.io-parser@5.2.3",
+      "name": "engine.io-parser",
+      "version": "5.2.3",
+      "purl": "pkg:npm/engine.io-parser@5.2.3",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "1ea0f7c9305f9c1c48adb9ccd43a03e8f72af0d1029e1f1de00b35420874cf91a0de345122a8a3babcb408bde086efde740ae9518898a90883510048b389e9dd"
+        }
+      ],
+      "properties": [
+        {
+          "name": "waterx:engines.node",
+          "value": ">=10.0.0"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/ms@2.1.3",
+      "name": "ms",
+      "version": "2.1.3",
+      "purl": "pkg:npm/ms@2.1.3",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "e85973b9b4cb646dc9d9afcd542025784863ceae68c601f268253dc985ef70bb2fa1568726afece715c8ebf5d73fab73ed1f7100eb479d23bfb57b45dd645394"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/socket.io-client@4.8.3",
+      "name": "socket.io-client",
+      "version": "4.8.3",
+      "purl": "pkg:npm/socket.io-client@4.8.3",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "b8fd1ba635ab8d0994b790d31eaf51ba8081745245d7471d5fd5fe6b7ebc8ff16dd3099a560c65ae3bcade48ef80238338c30ecfd95c691cf19aca346d3599fe"
+        }
+      ],
+      "properties": [
+        {
+          "name": "waterx:engines.node",
+          "value": ">=10.0.0"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/socket.io-parser@4.2.7",
+      "name": "socket.io-parser",
+      "version": "4.2.7",
+      "purl": "pkg:npm/socket.io-parser@4.2.7",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "207fe249e3bd4fa833d4a90595e1835a41bd377765e235d5614b4c848a87d7431dd2db4c7abf2750d5a23f50cab8daf26c3db106b8b12c97420bd27a102a1892"
+        }
+      ],
+      "properties": [
+        {
+          "name": "waterx:engines.node",
+          "value": ">=10.0.0"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/ws@8.21.3",
+      "name": "ws",
+      "version": "8.21.3",
+      "purl": "pkg:npm/ws@8.21.3",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "db4d5367f90f5b1a0faff38a5a3aae651d5258a5dcbf1747f9ed71af1f3d6f761b9b32cc1422df9da1b51c52205b324e11667b32fa4afbea1d66e7e0611e7447"
+        }
+      ],
+      "properties": [
+        {
+          "name": "waterx:engines.node",
+          "value": ">=10.0.0"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/xmlhttprequest-ssl@2.1.2",
+      "name": "xmlhttprequest-ssl",
+      "version": "2.1.2",
+      "purl": "pkg:npm/xmlhttprequest-ssl@2.1.2",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "4c453e9c95545270380982452ef2b95fd00e787e0abc3be121f9b4bd5d4669046d7219c6d2180ae69f21c3fc63bfc72e9d6602b223c2483cce6cfca1130ab729"
+        }
+      ],
+      "properties": [
+        {
+          "name": "waterx:engines.node",
+          "value": ">=0.4.0"
+        },
+        {
+          "name": "waterx:license-source",
+          "value": "HUMAN_REVIEW. The package declares no licence. No `license` field. The manifest uses npm's deprecated `licenses: [{type: \"MIT\"}]` array form, and the package ships a verbatim MIT text at LICENSE (Copyright (c) 2010 passive.ly LLC). Reached only as a transitive dependency of socket.io-client via engine.io-client. Reviewed 2026-08-18 during the WP14 release audit."
+        }
+      ]
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "pkg:npm/%40waterx/predict-agent-sdk@0.1.0",
+      "dependsOn": [
+        "pkg:npm/socket.io-client@4.8.3"
+      ]
+    },
+    {
+      "ref": "pkg:npm/%40socket.io/component-emitter@3.1.2",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:npm/debug@4.4.3",
+      "dependsOn": [
+        "pkg:npm/ms@2.1.3"
+      ]
+    },
+    {
+      "ref": "pkg:npm/engine.io-client@6.6.6",
+      "dependsOn": [
+        "pkg:npm/%40socket.io/component-emitter@3.1.2",
+        "pkg:npm/debug@4.4.3",
+        "pkg:npm/engine.io-parser@5.2.3",
+        "pkg:npm/ws@8.21.3",
+        "pkg:npm/xmlhttprequest-ssl@2.1.2"
+      ]
+    },
+    {
+      "ref": "pkg:npm/engine.io-parser@5.2.3",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:npm/ms@2.1.3",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:npm/socket.io-client@4.8.3",
+      "dependsOn": [
+        "pkg:npm/%40socket.io/component-emitter@3.1.2",
+        "pkg:npm/debug@4.4.3",
+        "pkg:npm/engine.io-client@6.6.6",
+        "pkg:npm/socket.io-parser@4.2.7"
+      ]
+    },
+    {
+      "ref": "pkg:npm/socket.io-parser@4.2.7",
+      "dependsOn": [
+        "pkg:npm/%40socket.io/component-emitter@3.1.2",
+        "pkg:npm/debug@4.4.3"
+      ]
+    },
+    {
+      "ref": "pkg:npm/ws@8.21.3",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:npm/xmlhttprequest-ssl@2.1.2",
+      "dependsOn": []
+    }
+  ],
+  "serialNumber": "urn:uuid:15328338-024a-82b6-b0ef-3a74f50647b6"
+}

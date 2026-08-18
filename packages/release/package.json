@@ -1,0 +1,26 @@
+{
+  "name": "@waterx/predict-agent-release",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Release readiness for the workspace: the CycloneDX SBOM of every published package, generated from what is actually installed, and the mechanical preflight that must pass before anything is published. Ships to nobody.",
+  "license": "MIT",
+  "type": "module",
+  "bin": { "waterx-predict-release-preflight": "dist/src/bin/preflight.js" },
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json && node -e \"require('node:fs').chmodSync('dist/src/bin/preflight.js',0o755)\"",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "generate": "pnpm run build && node dist/src/generate.js ../../sbom/v1",
+    "generate:check": "pnpm run build && node dist/src/generate.js ../../sbom/v1 --check",
+    "preflight": "pnpm run build && node dist/src/bin/preflight.js"
+  },
+  "devDependencies": {
+    "@types/node": "^24.12.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.6"
+  }
+}

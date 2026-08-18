@@ -1,0 +1,58 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.6",
+  "version": 1,
+  "metadata": {
+    "component": {
+      "type": "library",
+      "bom-ref": "pkg:npm/%40waterx/predict-agent-schema@0.1.0",
+      "name": "@waterx/predict-agent-schema",
+      "version": "0.1.0",
+      "purl": "pkg:npm/%40waterx/predict-agent-schema@0.1.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "waterx:engines.node",
+          "value": ">=20"
+        }
+      ]
+    },
+    "tools": {
+      "components": [
+        {
+          "type": "application",
+          "name": "@waterx/predict-agent-release",
+          "version": "0.1.0"
+        }
+      ]
+    },
+    "properties": [
+      {
+        "name": "waterx:scope",
+        "value": "RUNTIME_DEPENDENCIES_ONLY. devDependencies and build tooling are excluded."
+      },
+      {
+        "name": "waterx:resolution",
+        "value": "INSTALLED_TREE. Versions come from node_modules on disk, not from a manifest range."
+      },
+      {
+        "name": "waterx:timestamp",
+        "value": "OMITTED_FOR_REPRODUCIBILITY. The build date is the release commit date."
+      }
+    ]
+  },
+  "components": [],
+  "dependencies": [
+    {
+      "ref": "pkg:npm/%40waterx/predict-agent-schema@0.1.0",
+      "dependsOn": []
+    }
+  ],
+  "serialNumber": "urn:uuid:004f0173-06aa-8632-997f-3044c29c75d8"
+}

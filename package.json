@@ -11,7 +11,11 @@
     "test": "vitest run && pnpm -r test",
     "build": "pnpm -r build",
     "schema:generate": "pnpm --filter @waterx/predict-agent-schema run generate",
-    "instructions:generate": "pnpm --filter @waterx/predict-agent-adapters run generate"
+    "instructions:generate": "pnpm --filter @waterx/predict-agent-adapters run generate",
+    "sbom:generate": "pnpm --filter @waterx/predict-agent-release run generate",
+    "sbom:check": "pnpm --filter @waterx/predict-agent-release run generate:check",
+    "release:preflight": "pnpm --filter @waterx/predict-agent-release run preflight",
+    "release:preflight:strict": "pnpm --filter @waterx/predict-agent-release run preflight -- --strict"
   },
   "devDependencies": {
     "@types/node": "^24.12.0",

@@ -69,6 +69,13 @@ const ADAPTERS = new Set(['adapters', 'mcp']);
  */
 const HARNESS = new Set(['e2e']);
 
+/**
+ * Release tooling. It inspects the workspace — manifests, the installed tree,
+ * the lockfile — to produce the SBOMs and run the publish gate, and it is the
+ * one package here that is `private` permanently rather than pending (ADR-0009).
+ */
+const TOOLING = new Set(['release']);
+
 interface PackageManifest {
   readonly name?: string;
   readonly private?: boolean;
@@ -79,6 +86,7 @@ interface PackageManifest {
   readonly exports?: unknown;
   readonly files?: readonly string[];
   readonly license?: string;
+  readonly publishConfig?: Readonly<Record<string, unknown>>;
   readonly engines?: Readonly<Record<string, string>>;
   readonly dependencies?: Readonly<Record<string, string>>;
   readonly devDependencies?: Readonly<Record<string, string>>;
@@ -91,7 +99,7 @@ const manifest = (dir: string): PackageManifest =>
 describe('workspace layout', () => {
   it('accounts for every package directory', () => {
     expect(new Set(PACKAGE_DIRS)).toEqual(
-      new Set([...PUBLISHED, ...INTERNAL, ...ADAPTERS, ...HARNESS]),
+      new Set([...PUBLISHED, ...INTERNAL, ...ADAPTERS, ...HARNESS, ...TOOLING]),
     );
   });
 
@@ -176,7 +184,7 @@ describe('dependency direction', () => {
   it('never lets a published package import an unpublished one, in source', () => {
     // A published package importing `@waterx/predict-agent-cli` would name a
     // dependency that does not exist on any registry.
-    const unpublishedNames = [...ADAPTERS, ...INTERNAL, ...HARNESS].map(
+    const unpublishedNames = [...ADAPTERS, ...INTERNAL, ...HARNESS, ...TOOLING].map(
       (dir) => manifest(dir).name ?? dir,
     );
     for (const dir of PUBLISHED) {
@@ -225,6 +233,65 @@ describe('published package hygiene', () => {
         expect(pkg.scripts?.[script], `${dir}: ${script}`).toBeTypeOf('string');
       }
     }
+  });
+
+  it('asks the registry for public access and a provenance attestation', () => {
+    // A scoped package defaults to *restricted*: publishing one without this
+    // fails at the registry with the version already burned. `provenance` is
+    // what ties a tarball to the commit and workflow that built it (ADR-0009);
+    // without it a consumer cannot tell this package from one someone else
+    // pushed under the same name.
+    for (const dir of PUBLISHED) {
+      expect(manifest(dir).publishConfig, dir).toEqual({ access: 'public', provenance: true });
+    }
+  });
+
+  it('has a committed SBOM, and no SBOM for a package nobody publishes', () => {
+    // The inventory is part of the release, not an attachment produced at
+    // publish time, so it is reviewable in the same diff as the change that
+    // moved a dependency.
+    const expected = [...PUBLISHED]
+      .map((dir) => `${(manifest(dir).name ?? dir).replace(/^@/u, '').replace(/\//gu, '-')}.cdx.json`)
+      .sort();
+    expect(readdirSync(`${ROOT}sbom/v1`).filter((name) => name.endsWith('.cdx.json')).sort()).toEqual(
+      expected,
+    );
+  });
+});
+
+describe('the release tooling package', () => {
+  it('is private permanently, not pending a release', () => {
+    // Every other unpublished package here is waiting on backlog 3.6. This one
+    // is workspace tooling: it reads manifests and the lockfile to build the
+    // SBOMs and gate the publish, and it ships to nobody (ADR-0009).
+    const pkg = manifest('release');
+    expect(pkg.private).toBe(true);
+    expect(pkg.type).toBe('module');
+    for (const script of ['build', 'typecheck', 'test', 'generate', 'preflight']) {
+      expect(pkg.scripts?.[script], script).toBeTypeOf('string');
+    }
+  });
+
+  it('depends on nothing in the workspace, so it can audit all of it', () => {
+    // It resolves the installed tree from disk rather than importing a package
+    // it is meant to describe — a dependency edge here would put the auditor
+    // inside the thing being audited.
+    const workspaceNames = new Set(PACKAGE_DIRS.map((dir) => manifest(dir).name));
+    const pkg = manifest('release');
+    const edges = [
+      ...Object.keys(pkg.dependencies ?? {}),
+      ...Object.keys(pkg.devDependencies ?? {}),
+    ].filter((name) => workspaceNames.has(name));
+    expect(edges).toEqual([]);
+    expect(Object.keys(pkg.dependencies ?? {})).toEqual([]);
+  });
+
+  it('is reachable from the workspace root as a release gate', () => {
+    const scripts = (readJson('package.json') as PackageManifest).scripts ?? {};
+    for (const script of ['sbom:generate', 'sbom:check', 'release:preflight', 'release:preflight:strict']) {
+      expect(scripts[script], script).toContain('@waterx/predict-agent-release');
+    }
+    expect(scripts['release:preflight:strict']).toContain('--strict');
   });
 });
 
