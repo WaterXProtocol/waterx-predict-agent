@@ -1,0 +1,26 @@
+{
+  "name": "@waterx/predict-agent-signer-browser",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A SIGNER_PROTOCOL v1 provider that asks a browser wallet, so no key ever enters a process this workspace runs. Serves a single-use loopback page, decodes the transaction so the wallet can render it, and returns a signature — never an execution.",
+  "license": "MIT",
+  "type": "module",
+  "bin": { "waterx-predict-browser-signer": "dist/src/bin/signer.js" },
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json && node -e \"require('node:fs').chmodSync('dist/src/bin/signer.js',0o755)\"",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@mysten/sui": "^2.9.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.12.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.6"
+  }
+}

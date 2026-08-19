@@ -35,6 +35,14 @@ export interface ClientFactoryOptions {
    * doctor's reachability probe); a signer without one signs no transaction.
    */
   readonly gate?: SigningGate | undefined;
+  /**
+   * A session token to open with, outranking the configured one.
+   *
+   * Separate from `config.token` because a cached session is not configuration:
+   * it is a credential this runtime minted earlier and may reuse, and the config
+   * file is refused outright for holding anything credential-shaped.
+   */
+  readonly token?: string | undefined;
 }
 
 export function createClient(options: ClientFactoryOptions): PredictAgentClient {
@@ -52,7 +60,9 @@ export function createClient(options: ClientFactoryOptions): PredictAgentClient 
     signer,
     // A supplied token is used as-is and may still be replaced by the SDK's
     // bounded re-authentication when the server rejects it.
-    ...(config.token !== undefined ? { token: config.token } : {}),
+    ...(options.token ?? config.token) !== undefined
+      ? { token: (options.token ?? config.token) as string }
+      : {},
   });
 }
 

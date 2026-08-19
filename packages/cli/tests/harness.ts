@@ -30,6 +30,8 @@ export interface Invocation {
   readonly runnerDials: readonly string[];
   /** Every frame the CLI wrote, parsed. The hello is the first of them. */
   readonly runnerFrames: readonly Record<string, unknown>[];
+  /** Everything written through the credential-file seam. */
+  readonly secretWrites: readonly { readonly path: string; readonly contents: string }[];
 }
 
 export interface Envelope {
@@ -72,6 +74,10 @@ export interface InvokeOptions {
    * cases where a Runner is there and this process must refuse to talk to it.
    */
   readonly pathStat?: PathStat;
+  /** Enables the session cache's ownership check. Absent leaves it disabled. */
+  readonly uid?: number;
+  /** Moves the clock, for expiry. */
+  readonly nowIso?: string;
 }
 
 /** A fake Runner: a handshake, and one canned answer per command. */
@@ -296,6 +302,7 @@ export async function invoke(
 
   // A Runner mints this at every start; the CLI reads it out of the runtime
   // directory. Merged under `files` so a test can still blank it.
+  const secretWrites: { path: string; contents: string }[] = [];
   const files: Record<string, string> = {
     ...(script !== undefined ? { [`${RUNNER_DIR}/runner.token`]: `${RUNNER_TOKEN}\n` } : {}),
     ...options.files,
@@ -363,7 +370,14 @@ export async function invoke(
     readFile: (path) => files[path] ?? null,
     homeDir: () => options.homeDir ?? null,
     readStdin: () => Promise.resolve(options.stdin ?? ''),
-    now: () => new Date('2026-08-12T00:00:00.000Z'),
+    // The session cache writes through this seam, so a test asserts what would
+    // land on disk without a test ever touching a real credential file.
+    writeSecretFile: (path, contents) => {
+      secretWrites.push({ path, contents });
+      files[path] = contents;
+    },
+    ...(options.uid === undefined ? {} : { uid: options.uid }),
+    now: () => new Date(options.nowIso ?? '2026-08-12T00:00:00.000Z'),
     newRequestId: () => 'req-fixed-0001',
     nodeVersion: 'v20.19.0',
   };
@@ -385,5 +399,6 @@ export async function invoke(
     signerRuns,
     runnerDials: runnerRecord.dials,
     runnerFrames: runnerRecord.frames,
+    secretWrites,
   };
 }

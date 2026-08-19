@@ -28,6 +28,10 @@ import {
   RUNNER_IPC_PROTOCOL as RUNNER_IPC_PROTOCOL_SELF,
 } from '../packages/runner/src/ipc/protocol.ts';
 import { SIGNER_PROTOCOL as RUNNER_SIGNER_PROTOCOL } from '../packages/runner/src/signer.ts';
+import {
+  parseRequest as parseSignerRequest,
+  SIGNER_PROTOCOL as BROWSER_SIGNER_PROTOCOL,
+} from '../packages/signer-browser/src/index.ts';
 import { JOB_STATES } from '../packages/runner/src/state-machine.ts';
 import { AGENT_COMMANDS, type JsonSchema } from '../packages/schema/src/index.ts';
 import { PredictAgentClient } from '../packages/sdk/src/index.ts';
@@ -70,6 +74,18 @@ const ADAPTERS = new Set(['adapters', 'mcp']);
 const HARNESS = new Set(['e2e']);
 
 /**
+ * Signer providers: the one thing here a KEY HOLDER runs.
+ *
+ * Its own category because it sits outside both trust boundaries. The CLI and
+ * the Runner invoke it as a PROCESS over `SIGNER_PROTOCOL` and must never import
+ * it — a signer reachable as a library is a signer whose refusals can be
+ * bypassed by calling past them. It also carries the Sui SDK, which is exactly
+ * the dependency the CLI's budget exists to keep out; putting it here is what
+ * lets the CLI stay dependency-free while an operator still gets a signer.
+ */
+const PROVIDERS = new Set(['signer-browser']);
+
+/**
  * Release tooling. It inspects the workspace — manifests, the installed tree,
  * the lockfile — to produce the SBOMs and run the publish gate, and it is the
  * one package here that is `private` permanently rather than pending (ADR-0009).
@@ -99,7 +115,7 @@ const manifest = (dir: string): PackageManifest =>
 describe('workspace layout', () => {
   it('accounts for every package directory', () => {
     expect(new Set(PACKAGE_DIRS)).toEqual(
-      new Set([...PUBLISHED, ...INTERNAL, ...ADAPTERS, ...HARNESS, ...TOOLING]),
+      new Set([...PUBLISHED, ...INTERNAL, ...ADAPTERS, ...HARNESS, ...TOOLING, ...PROVIDERS]),
     );
   });
 
@@ -477,7 +493,20 @@ describe('the local signing protocol', () => {
     // other at it unchanged — a drift here would be discovered by a signer
     // refusing a request in the middle of a triggered order.
     expect(RUNNER_SIGNER_PROTOCOL).toEqual(CLI_SIGNER_PROTOCOL);
-    // Pinned, so a change to both at once is still a decision someone states.
+    // And the provider that implements it. Two runtimes agreeing on a contract
+    // neither of them can satisfy would be agreement about nothing, so the third
+    // copy — the one a key holder actually runs — is held to the same shape, and
+    // then fed a request built from that shape to prove it parses it.
+    expect(BROWSER_SIGNER_PROTOCOL).toEqual(CLI_SIGNER_PROTOCOL);
+    for (const shape of CLI_SIGNER_PROTOCOL.requests) {
+      const request: Record<string, unknown> = { version: 1, type: shape.type };
+      for (const field of shape.fields) {
+        if (field === 'version' || field === 'type') continue;
+        request[field] = field === 'agentWallet' ? '0xagent' : Buffer.from('x').toString('base64');
+      }
+      expect(parseSignerRequest(JSON.stringify(request)).type).toBe(shape.type);
+    }
+    // Pinned, so a change to all three at once is still a decision someone states.
     expect(RUNNER_SIGNER_PROTOCOL.version).toBe(1);
   });
 

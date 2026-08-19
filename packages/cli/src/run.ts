@@ -12,7 +12,7 @@
  */
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { readFileSync, statSync } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { connect } from 'node:net';
 import { homedir } from 'node:os';
 
@@ -21,6 +21,7 @@ import type { PredictAgentClient } from '@waterx/predict-agent-sdk';
 
 import { CAPABILITIES, getCapability, type Capability } from './capabilities.ts';
 import { createClient, deadline, toEnvelopeError } from './client.ts';
+import { readCachedSession, writeCachedSession, type SessionCacheIo } from './session-cache.ts';
 import {
   accountAllowance,
   accountExecutions,
@@ -100,6 +101,16 @@ export interface CliIo {
   homeDir(): string | null;
   readStdin(): Promise<string>;
   now(): Date;
+  /**
+   * Writes a credential file, creating it `0600` inside a `0700` directory.
+   *
+   * Optional, and its absence disables the session cache rather than falling
+   * back to a laxer write: a token written with the wrong mode is worse than a
+   * token minted again.
+   */
+  writeSecretFile?(path: string, contents: string): void;
+  /** This process's uid, for the cache's ownership check. Absent disables it. */
+  readonly uid?: number | undefined;
   /** Injected so an envelope is reproducible in a test. */
   newRequestId(): string;
   readonly nodeVersion: string;
@@ -404,20 +415,65 @@ function createContext(
   // signer this run builds shares it. A command that never authorizes a write
   // leaves it empty, and an empty gate signs nothing.
   const gate = new SigningGate(config.policy.mode);
+
+  /**
+   * The session cache, or a pair of no-ops.
+   *
+   * Disabled — silently, and without falling back to anything weaker — whenever
+   * a piece it needs is absent: no home directory, no way to write a 0600 file,
+   * no uid to check ownership against, or no base URL to key on. The cost of
+   * being disabled is one signature per command; the cost of a laxer cache is a
+   * credential somewhere nobody agreed to put one.
+   */
+  const cache = ((): {
+    read: () => string | undefined;
+    write: (session: { token: string; expiresIn?: number | undefined }) => void;
+  } => {
+    const home = io.homeDir();
+    const write = io.writeSecretFile?.bind(io);
+    const uid = io.uid;
+    if (home === null || home === '' || write === undefined || uid === undefined) {
+      return { read: () => undefined, write: () => undefined };
+    }
+    if (config.baseUrl === undefined) return { read: () => undefined, write: () => undefined };
+    const cacheIo: SessionCacheIo = {
+      stat: io.pathStat,
+      readFile: (path) => io.readFile(path),
+      writeFile: write,
+      now: () => io.now().getTime(),
+    };
+    const key = { baseUrl: config.baseUrl, agentWallet: config.agentWallet };
+    return {
+      read: () => readCachedSession(cacheIo, home, key, uid),
+      write: (session) => {
+        writeCachedSession(cacheIo, home, key, session, uid);
+      },
+    };
+  })();
   /**
    * Build, then open a session unless the caller supplied a token. Memoized as a
    * PROMISE rather than as a client, so `account status`'s two concurrent reads
    * sign one challenge between them instead of one each.
    */
   const open = async (): Promise<PredictAgentClient> => {
+    // A cached session is tried before a signature is asked for. Registered with
+    // the redactor the moment it is read, because from here on it is a live
+    // credential this process holds and nothing it prints may carry it back out.
+    const cached = config.token === undefined ? cache.read() : undefined;
+    if (cached !== undefined) options.onSecret(cached);
     const client = createClient({
       config,
       fetch: io.fetch,
       runSigner: io.runSigner,
       onDiagnostic: diagnostic,
       gate,
+      ...(cached === undefined ? {} : { token: cached }),
     });
-    if (config.token === undefined) await client.authenticate();
+    if (config.token === undefined && cached === undefined) {
+      const session = await client.authenticate();
+      options.onSecret(session.token);
+      cache.write(session);
+    }
     return client;
   };
 
@@ -516,6 +572,18 @@ export function createNodeIo(overrides: Partial<CliIo> = {}): CliIo {
       }
     },
     readStdin: readAllStdin,
+    // Creates the directory 0700 and the file 0600, and writes through a
+    // temporary file so a crash mid-write leaves the previous session intact
+    // rather than a truncated one that reads as "no cache" on a good day and as
+    // a malformed credential on a bad one.
+    writeSecretFile: (path, contents) => {
+      const dir = path.slice(0, path.lastIndexOf('/'));
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
+      const temporary = `${path}.${String(process.pid)}.tmp`;
+      writeFileSync(temporary, contents, { mode: 0o600 });
+      renameSync(temporary, path);
+    },
+    uid: typeof process.getuid === 'function' ? process.getuid() : undefined,
     now: () => new Date(),
     newRequestId: () => randomUUID(),
     nodeVersion: process.version,
