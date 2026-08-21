@@ -101,9 +101,16 @@ const toQuoteRequest = (leg: NormalizedLeg): CreateQuoteRequestBody => ({
  * Optional fields are omitted rather than sent as null: the wire contract's
  * optionality means "absent", and an explicit null is a different request.
  */
+/**
+ * `referenceQuoteId` is passed through only when the caller supplied one.
+ *
+ * Omitted, the SDK mints the quote immediately before the create — which for a
+ * leg of `execute-many` is the only moment a live quote can exist, because it
+ * falls after every earlier leg has finished.
+ */
 function toIntent(
   leg: NormalizedLeg,
-  referenceQuoteId: string,
+  referenceQuoteId: string | undefined,
   idempotencyKey: string | undefined,
 ): ExecuteMarketOrderIntent {
   return {
@@ -112,7 +119,7 @@ function toIntent(
     outcomeId: leg.outcomeId as PredictOutcomeId,
     side: leg.side,
     size: sizeOf(leg),
-    referenceQuoteId,
+    ...(referenceQuoteId !== undefined ? { referenceQuoteId } : {}),
     maxSlippageBps: leg.maxSlippageBps,
     ...(leg.positionId !== null ? { positionId: leg.positionId } : {}),
     ...(leg.worstAcceptablePrice !== null
@@ -145,6 +152,30 @@ function waitOptions(context: CommandContext): ExecuteMarketOrderOptions {
 
 /** Room for the in-flight read that discovers the wait has expired. */
 const WAIT_SLACK_MS = 15_000;
+
+/**
+ * The caller's quote, when they minted one at the right moment.
+ *
+ * `undefined` is not a missing value here — it hands the timing to the SDK, which
+ * mints the quote immediately before the create. That is the only correct choice
+ * inside `execute-many`: a quote lives seconds, so pre-minting a batch's quotes
+ * guarantees the second leg's has died by the time its turn comes (backlog 1.11).
+ *
+ * What is still refused is a quote that is present and malformed. Absence is a
+ * decision; an empty string is a mistake.
+ */
+const optionalQuoteId = (input: Readonly<Record<string, unknown>>): string | undefined => {
+  const id = input.referenceQuoteId;
+  if (id === undefined) return undefined;
+  if (typeof id !== 'string' || id === '') {
+    throw new CliError(
+      'INVALID_INPUT',
+      '`referenceQuoteId` was given but is not a non-empty string. Omit it to have the quote minted when the order is placed, or pass one from `market quote`.',
+      { field: 'referenceQuoteId' },
+    );
+  }
+  return id;
+};
 
 const requireQuoteId = (input: Readonly<Record<string, unknown>>): string => {
   const id = input.referenceQuoteId;
@@ -339,8 +370,12 @@ function capacityAbsence(
  * caller-asserted, and the quote is minted here so the estimate below is against
  * a price that exists rather than one the caller remembered.
  */
-export async function orderPreview(context: CommandContext): Promise<unknown> {
-  const leg = normalizeLeg(context.input);
+/**
+ * One leg, priced and policy-checked. The body of what `order preview` has
+ * always done, now reachable per leg so a batch can be previewed the same way a
+ * single order is — see {@link orderPreview}.
+ */
+async function previewOneLeg(context: CommandContext, leg: NormalizedLeg): Promise<unknown> {
   const client = await context.client();
 
   // One account read covers both halves of the policy picture — the allowance a
@@ -465,6 +500,58 @@ export async function orderPreview(context: CommandContext): Promise<unknown> {
     ],
   };
 }
+
+/**
+ * `order preview` — one intent, or a whole batch.
+ *
+ * A batch has to be previewable for the same reason a single order does: under
+ * `interactive` the write needs an approval, and an approval is a digest of the
+ * exact intent. Before this, `order execute-many` had no preview at all, so the
+ * only way to learn a batch's token was to be REFUSED once and read it out of
+ * the error — a flow that works but cannot honestly be written down as the way
+ * to place a multi-leg order.
+ *
+ * The batch token is not a new idea here: `batchApprovalToken` already derives it
+ * from the per-leg tokens in order, precisely so a caller could reproduce it.
+ * What was missing was somewhere to get it without computing a SHA-256 by hand.
+ *
+ * Legs are previewed CONCURRENTLY, which is safe because a preview signs nothing
+ * and places nothing — the sequencing that matters belongs to `execute-many`,
+ * where each leg is quoted in its own turn.
+ */
+export async function orderPreview(context: CommandContext): Promise<unknown> {
+  const orders = context.input['orders'];
+  if (orders === undefined) return await previewOneLeg(context, normalizeLeg(context.input));
+
+  if (!Array.isArray(orders) || orders.length === 0) {
+    throw new CliError('INVALID_INPUT', '`orders` must be a non-empty array of order intents.');
+  }
+  const legs = (orders as Record<string, unknown>[]).map((order) => normalizeLeg(order));
+  const previews = await Promise.all(legs.map((leg) => previewOneLeg(context, leg)));
+  const token = batchApprovalToken(legs);
+  const mode = context.config.policy.mode;
+
+  return {
+    placed: false,
+    atomic: false,
+    legs: previews,
+    policy: {
+      mode,
+      source: context.config.policy.source,
+      approvalToken: token,
+      ...(mode === 'interactive'
+        ? { decision: 'APPROVAL_REQUIRED', approveWith: `--approve ${token}` }
+        : {}),
+      note: 'One token approves the whole batch, in this order. Reordering the legs is a different intent and a different token, because a batch that stops on the first failure is not the same batch reversed.',
+    },
+    caveats: [
+      'A preview places nothing and signs nothing. Every leg below is priced against a quote that has already begun expiring.',
+      'This is client-side orchestration, not a backend batch: legs succeed or fail independently and nothing is rolled back.',
+      'Each leg is quoted again, in its own turn, when `order execute-many` runs it. The prices here are indicative of that moment, not of it.',
+    ],
+  };
+}
+
 
 /* ── order execute ─────────────────────────────────────────────────────────── */
 
@@ -690,7 +777,7 @@ export async function orderExecuteMany(context: CommandContext): Promise<unknown
   }
   const orders = raw as Record<string, unknown>[];
   const legs = orders.map((order) => normalizeLeg(order));
-  const quoteIds = orders.map((order) => requireQuoteId(order));
+  const quoteIds = orders.map((order) => optionalQuoteId(order));
   // One key per LEG, not one per call: the legs are separate logical intents and
   // sharing a key between them would make the second a duplicate of the first.
   const keys = orders.map((order) => idempotencyKeyOf(order));
@@ -699,7 +786,7 @@ export async function orderExecuteMany(context: CommandContext): Promise<unknown
 
   const client = await context.client();
   const results = await client.executeMany(
-    legs.map((leg, index) => toIntent(leg, quoteIds[index] ?? '', keys[index])),
+    legs.map((leg, index) => toIntent(leg, quoteIds[index], keys[index])),
     {
       ...waitOptions(context),
       ...(typeof context.input.concurrency === 'number'

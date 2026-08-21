@@ -50,9 +50,20 @@ describe('the command registry', () => {
   });
 
   it('closes every command input, so a typo is an error and not a silently dropped field', () => {
+    // A command whose input is a choice of shapes carries the guarantee on each
+    // BRANCH, not on the wrapper — so the check descends rather than relaxing.
+    // Accepting an open wrapper would let a typo ride along inside whichever
+    // branch happened to match.
+    const shapes = (input: (typeof AGENT_COMMANDS)[number]['input']): readonly JsonSchema[] =>
+      Array.isArray(input.oneOf) ? (input.oneOf as JsonSchema[]) : [input];
+
     for (const command of AGENT_COMMANDS) {
-      expect(command.input.additionalProperties, command.name).toBe(false);
-      expect(command.input.type, command.name).toBe('object');
+      const branches = shapes(command.input);
+      expect(branches.length, command.name).toBeGreaterThan(0);
+      for (const branch of branches) {
+        expect(branch.additionalProperties, command.name).toBe(false);
+        expect(branch.type, command.name).toBe('object');
+      }
     }
   });
 
@@ -368,9 +379,20 @@ describe('order.execute price protection', () => {
     );
   });
 
-  it('requires a reference quote', () => {
+  it('accepts an intent with no reference quote, and one that names its own', () => {
+    // A quote lives seconds, and the one instant it is certainly still alive is
+    // immediately before the create. Inside `order execute-many` that instant
+    // falls after every earlier leg has finished, so it is not one a caller can
+    // stand in: requiring the id made a correct two-leg batch impossible, and the
+    // second leg failed QUOTE_EXPIRED having sent nothing (backlog 1.11).
+    //
+    // Omitted, the runtime mints it when the order is actually placed. Supplied,
+    // it is honoured verbatim — the contract still carries the field, because a
+    // caller that DID quote at the right moment must be able to say so.
     const { referenceQuoteId: _omitted, ...unquoted } = BUY;
-    expect(reject('order.execute', unquoted)).toMatch(/referenceQuoteId.*is required/u);
+    accept('order.execute', unquoted);
+    accept('order.execute', BUY);
+    expect(reject('order.execute', { ...BUY, referenceQuoteId: 7 })).toMatch(/expected string/u);
   });
 });
 

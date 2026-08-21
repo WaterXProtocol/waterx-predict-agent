@@ -467,12 +467,39 @@ const orderPreview: AgentCommandSpec = {
     kind: 'runtime',
     note: 'Composes getMarket() and getQuote() with the local execution policy. Places no order and signs no transaction.',
   },
+  // One intent, or a whole batch. Both, because `order execute-many` needs an
+  // approval too, and before this there was nowhere to obtain one: the only way
+  // to learn a batch's token was to be refused once and read it out of the error.
+  // A refusal is a workable way to discover a value and an unwritable way to
+  // document a workflow.
   input: {
-    type: 'object',
-    required: [...PREVIEW_REQUIRED],
-    additionalProperties: false,
-    properties: PREVIEW_PROPERTIES,
-    allOf: [...ORDER_INTENT_RULES],
+    oneOf: [
+      {
+        title: 'One order',
+        type: 'object',
+        required: [...PREVIEW_REQUIRED],
+        additionalProperties: false,
+        properties: PREVIEW_PROPERTIES,
+        allOf: [...ORDER_INTENT_RULES],
+      },
+      {
+        title: 'A batch, in the order it would run',
+        type: 'object',
+        required: ['orders'],
+        additionalProperties: false,
+        properties: {
+          orders: {
+            title: 'Legs',
+            description:
+              'The same legs `order execute-many` would take, in the same order. The approval returned binds this sequence: reordering it is a different intent, because a batch that stops on the first failure is not the same batch reversed.',
+            type: 'array',
+            minItems: 1,
+            maxItems: 20,
+            items: { $ref: '#/$defs/orderIntent' },
+          },
+        },
+      },
+    ],
   },
   examples: [
     {

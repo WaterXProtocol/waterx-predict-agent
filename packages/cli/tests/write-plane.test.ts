@@ -747,6 +747,97 @@ describe('order get and order reconcile', () => {
   }, 15_000);
 });
 
+describe('previewing a batch', () => {
+  // Two legs on ONE market, differing by size. That is enough to be two distinct
+  // intents with two distinct per-leg tokens, and it keeps the test's stubbed
+  // reads to the routes that already exist.
+  const batch = () => ({
+    orders: [
+      { ...BUY, size: { buyAmount: '10' } },
+      { ...BUY, size: { buyAmount: '20' } },
+    ],
+  });
+
+  it('answers with one token that `execute-many` then accepts', async () => {
+    // The gap this closes: `order execute-many` needs an approval under
+    // `interactive`, and before this the only way to learn a batch's token was to
+    // be REFUSED once and read it out of the error. Workable to discover a value;
+    // impossible to write down as the way to place a multi-leg order.
+    const preview = await invoke(
+      ['order', 'preview', '--input', JSON.stringify(batch())],
+      { ...withPolicy({ mode: 'interactive' }), routes: { ...READ_ROUTES } },
+    );
+    const data = preview.envelope.data as {
+      placed: boolean;
+      atomic: boolean;
+      legs: unknown[];
+      policy: { approvalToken: string; decision: string; approveWith: string };
+    };
+
+    if (!preview.envelope.ok) {
+      throw new Error(`preview failed: ${JSON.stringify(preview.envelope.error).slice(0, 300)}`);
+    }
+    expect(data.placed).toBe(false);
+    expect(data.atomic).toBe(false);
+    expect(data.legs).toHaveLength(2);
+    expect(data.policy.decision).toBe('APPROVAL_REQUIRED');
+    expect(data.policy.approveWith).toBe(`--approve ${data.policy.approvalToken}`);
+    // Nothing was placed to earn that token.
+    expect(preview.fetches.some((call) => call.url.endsWith('/executions'))).toBe(false);
+
+    const executed = await invoke(
+      [
+        'order',
+        'execute-many',
+        '--input',
+        JSON.stringify(batch()),
+        '--approve',
+        data.policy.approvalToken,
+      ],
+      {
+        ...withPolicy({ mode: 'interactive' }),
+        routes: {
+          ...READ_ROUTES,
+          [`POST ${EXECUTIONS_PATH}`]: created(),
+          [submitPath()]: submitted(),
+        },
+      },
+    );
+
+    // The whole point: the token the preview handed over is the one the write
+    // demands. Two surfaces that disagreed here would leave the operator with a
+    // preview that proves nothing.
+    expect(executed.envelope.ok).toBe(true);
+    const policy = (executed.envelope.data as { policy: { approvalToken: string } }).policy;
+    expect(policy.approvalToken).toBe(data.policy.approvalToken);
+  });
+
+  it('binds the ORDER of the legs, so a reversed batch is a different intent', async () => {
+    const forward = await invoke(
+      ['order', 'preview', '--input', JSON.stringify(batch())],
+      { ...withPolicy({ mode: 'interactive' }), routes: { ...READ_ROUTES } },
+    );
+    const reversed = await invoke(
+      ['order', 'preview', '--input', JSON.stringify({ orders: [...batch().orders].reverse() })],
+      { ...withPolicy({ mode: 'interactive' }), routes: { ...READ_ROUTES } },
+    );
+
+    const tokenOf = (r: typeof forward) =>
+      (r.envelope.data as { policy: { approvalToken: string } }).policy.approvalToken;
+    // A batch that stops on the first failure is not the same batch reversed.
+    expect(tokenOf(forward)).not.toBe(tokenOf(reversed));
+  });
+
+  it('refuses an empty batch rather than approving nothing', async () => {
+    const result = await invoke(
+      ['order', 'preview', '--input', JSON.stringify({ orders: [] })],
+      { ...withPolicy({ mode: 'interactive' }), routes: { ...READ_ROUTES } },
+    );
+    expect(result.envelope.ok).toBe(false);
+    expect(result.envelope.error?.code).toBe('INVALID_INPUT');
+  });
+});
+
 describe('order execute-many is never atomic', () => {
   const SECOND_MARKET = `0x${'e'.repeat(63)}5`;
   const legs = (overrides: Record<string, unknown>[] = [{}, {}]) =>
