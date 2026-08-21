@@ -24,11 +24,16 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      # BUILD FIRST. The packages resolve each other through node_modules, and
+      # their `types` point into `dist/` — so on a clean checkout, where no
+      # `dist/` exists yet, `runner` cannot see the SDK's types at all and
+      # typecheck fails with "Cannot find module @waterx/predict-agent-sdk". A
+      # working tree hides this: `dist/` is left over from the last local build.
+      - run: pnpm build
+
       - run: pnpm typecheck
 
       - run: pnpm test
-
-      - run: pnpm build
 
       # The committed artifact is the one adapters read. A generator that no
       # longer reproduces it byte-for-byte means the schema and the contract
