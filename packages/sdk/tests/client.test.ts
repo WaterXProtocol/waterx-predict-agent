@@ -7,7 +7,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PredictAgentClient } from '../src/client.ts';
-import { PredictAgentApiError, PredictAgentTransportError } from '../src/errors.ts';
+import {
+  PredictAgentApiError,
+  PredictAgentTransportError,
+  PredictAgentUnresolvedWrite,
+} from '../src/errors.ts';
 import type { AgentSigner } from '../src/signer.ts';
 
 const AGENT = '0xagent';
@@ -140,6 +144,61 @@ describe('executeMarketOrder', () => {
       .map((call) => call.headers['Idempotency-Key']);
     expect(keys).toHaveLength(2);
     expect(new Set(keys).size).toBe(1);
+  });
+
+  it('keeps the generated key on an unresolved create', async () => {
+    // The key is generated INSIDE this call when the caller supplies none, so a
+    // plain throw takes it with the stack frame — and it is the only handle a
+    // safe retry has. Without it the caller's options are to give up or to place
+    // a second order.
+    const { client, calls } = makeClient([apiError(503, 'RECONCILIATION_REQUIRED', false)]);
+
+    const error = await client.executeMarketOrder(intent).catch((thrown: unknown) => thrown);
+
+    expect(error).toBeInstanceOf(PredictAgentUnresolvedWrite);
+    expect((error as PredictAgentUnresolvedWrite).idempotencyKey).toBe(
+      calls[0]?.headers['Idempotency-Key'],
+    );
+    // Still a PredictAgentApiError, so existing catch blocks keep working.
+    expect(error).toBeInstanceOf(PredictAgentApiError);
+  });
+
+  it('carries the execution id the server named', async () => {
+    const { client } = makeClient([
+      () =>
+        new Response(
+          JSON.stringify({
+            error: {
+              code: 'RECONCILIATION_REQUIRED',
+              message: 'the submission did not return an answer',
+              retryable: false,
+              executionId: 'exe_stranded',
+            },
+          }),
+          { status: 503, headers: { 'content-type': 'application/json' } },
+        ),
+    ]);
+
+    const error = await client.executeMarketOrder(intent).catch((thrown: unknown) => thrown);
+
+    expect((error as PredictAgentUnresolvedWrite).executionId).toBe('exe_stranded');
+  });
+
+  it('reports an unresolved SUBMIT as unfinished, not as a failed order', async () => {
+    // The execution exists by then. Throwing here would report a live order as a
+    // failure, and a caller that believes a failure retries — which is the
+    // duplicate this whole design exists to prevent.
+    const { client } = makeClient([
+      json(201, CREATED),
+      apiError(503, 'RECONCILIATION_REQUIRED', false),
+    ]);
+
+    const result = await client.executeMarketOrder(intent);
+
+    expect(result.executionId).toBe(CREATED.executionId);
+    expect(result.timedOut).toBe(true);
+    expect(result.terminal).toBe(false);
+    expect(result.idempotencyKey).toBeDefined();
   });
 
   it('honours a caller-supplied key so a retry survives a process restart', async () => {

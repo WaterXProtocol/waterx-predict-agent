@@ -94,6 +94,36 @@ export function isRetryable(error: unknown): boolean {
 }
 
 /**
+ * A write whose outcome is unknown, carrying everything needed to find out.
+ *
+ * Thrown instead of the bare server error when `executeMarketOrder` cannot
+ * establish what happened. The distinction matters because of what a caller does
+ * next: an error that merely says RECONCILIATION_REQUIRED tells a strategy the
+ * order may exist and gives it no way to ask, and a strategy that cannot ask is
+ * a strategy that eventually places the order again.
+ *
+ * `idempotencyKey` is the part that was genuinely lost: when the caller did not
+ * supply one, the SDK generates it inside the call, so on a throw it vanished
+ * with the stack frame — and it is exactly the handle a safe retry needs.
+ */
+export class PredictAgentUnresolvedWrite extends PredictAgentApiError {
+  /** The key this attempt was made under. Retry with THIS, never a fresh one. */
+  readonly idempotencyKey: string;
+
+  constructor(cause: PredictAgentApiError, idempotencyKey: string) {
+    super(cause.httpStatus, {
+      code: cause.code,
+      message: cause.message,
+      retryable: cause.retryable,
+      ...(cause.executionId === undefined ? {} : { executionId: cause.executionId }),
+      ...(cause.details === undefined ? {} : { details: cause.details }),
+    });
+    this.name = 'PredictAgentUnresolvedWrite';
+    this.idempotencyKey = idempotencyKey;
+  }
+}
+
+/**
  * Codes that say the write's OUTCOME is unknown, not that it failed.
  *
  * The server reaches for these when it could not learn what became of something

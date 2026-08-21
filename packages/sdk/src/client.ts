@@ -38,7 +38,12 @@ import {
 } from './contract.ts';
 import { targetReached } from './decimal.ts';
 import { pageQuery } from './pagination.ts';
-import { isStaleQuote, PredictAgentApiError } from './errors.ts';
+import {
+  isAmbiguousOutcome,
+  isStaleQuote,
+  PredictAgentApiError,
+  PredictAgentUnresolvedWrite,
+} from './errors.ts';
 import {
   type ExecutionStream,
   SocketExecutionStream,
@@ -491,6 +496,13 @@ export class PredictAgentClient {
           },
         );
       } catch (error: unknown) {
+        // An unknown outcome must not leave with the key still inside this frame.
+        // The caller may never have chosen one — the SDK generates it here — and
+        // without it there is no safe way to ask what happened, only a second
+        // order.
+        if (isAmbiguousOutcome(error) && error instanceof PredictAgentApiError) {
+          throw new PredictAgentUnresolvedWrite(error, idempotencyKey);
+        }
         // Bounded: a market whose quotes expire faster than we can use them is a
         // condition to report, not one to spin on.
         if (!mintedHere || !isStaleQuote(error) || attempt >= QUOTE_REFRESH_ATTEMPTS) throw error;
@@ -530,7 +542,11 @@ export class PredictAgentClient {
         idempotencyKey,
       };
     } catch (error: unknown) {
-      if (!isAbortLike(error)) throw error;
+      // Past this line the execution EXISTS, so an unknown outcome is the same
+      // situation a deadline is: this process stopped being able to watch. It
+      // resolves the same way — with the execution id intact — rather than as a
+      // throw a caller would read as "the order failed".
+      if (!isAbortLike(error) && !isAmbiguousOutcome(error)) throw error;
       return {
         executionId: created.executionId,
         // The last status anybody observed. Reported as-is rather than guessed
