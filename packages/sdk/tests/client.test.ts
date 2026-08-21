@@ -128,7 +128,7 @@ describe('executeMarketOrder', () => {
     // A timeout mid-create must resolve to the original execution, never place a
     // second order — which only holds if the key does not change.
     const { client, calls } = makeClient([
-      apiError(503, 'SPONSOR_UNAVAILABLE', true),
+      apiError(504, 'EXECUTION_TIMEOUT', true),
       json(201, CREATED),
       json(202, SUBMITTED),
     ]);
@@ -168,20 +168,26 @@ describe('executeMarketOrder', () => {
 
   it('retries an error the server called transient', async () => {
     const { client, calls } = makeClient([
-      apiError(409, 'SLIPPAGE_EXCEEDED', true),
-      apiError(409, 'SLIPPAGE_EXCEEDED', true),
-      apiError(409, 'SLIPPAGE_EXCEEDED', true),
+      apiError(429, 'RATE_LIMITED', true),
+      apiError(429, 'RATE_LIMITED', true),
+      apiError(429, 'RATE_LIMITED', true),
     ]);
 
     await expect(client.executeMarketOrder(intent)).rejects.toThrow(PredictAgentApiError);
     expect(calls).toHaveLength(3);
   });
 
-  it('surfaces an unrecognised error body as a transport error, not a fabricated code', async () => {
-    // A proxy's HTML 502 must not become a code an agent branches on.
-    const { client } = makeClient([() => new Response('<html>502</html>', { status: 502 })]);
+  it('does not resend bytes that cannot succeed however often they are sent', async () => {
+    // The server's `retryable` answers "can this intent succeed later". The
+    // transport asks the narrower question — "can resending exactly what I sent
+    // succeed" — and for a slippage refusal the answer is no: the intent was
+    // accepted before it was refused, so the key is now bound to a terminal
+    // attempt and the same key will resolve to it forever. Resending burned the
+    // retry budget and delayed the real answer by the whole backoff.
+    const { client, calls } = makeClient([apiError(409, 'SLIPPAGE_EXCEEDED', true)]);
 
-    await expect(client.executeMarketOrder(intent)).rejects.toThrow(PredictAgentTransportError);
+    await expect(client.executeMarketOrder(intent)).rejects.toThrow(PredictAgentApiError);
+    expect(calls.filter((call) => call.url.endsWith('/executions'))).toHaveLength(1);
   });
 
   it('waits for a terminal status when asked', async () => {
@@ -234,6 +240,54 @@ describe('quoting a leg when it runs', () => {
     // Priced against the quote it just minted, not against anything the caller
     // could have been holding since before this call.
     expect((calls[1]?.body as { referenceQuoteId?: string }).referenceQuoteId).toBe('q-fresh');
+  });
+
+  it('mints a fresh quote when the server says the one it sent expired', async () => {
+    // An executable quote lives about three seconds. Resending the same body
+    // cannot win that race, because the quote it names is already gone — only a
+    // rebuilt request can.
+    const { client, calls } = makeClient([
+      json(200, QUOTE('q-first')),
+      apiError(409, 'QUOTE_EXPIRED', true),
+      json(200, QUOTE('q-second')),
+      json(201, CREATED),
+      json(202, SUBMITTED),
+    ]);
+
+    await client.executeMarketOrder(unquoted);
+
+    const creates = calls.filter((call) => call.url.endsWith('/executions'));
+    expect(creates).toHaveLength(2);
+    expect((creates[1]?.body as { referenceQuoteId?: string }).referenceQuoteId).toBe('q-second');
+    // Same key throughout: an earlier attempt that reached the server after all
+    // must resolve to that execution, not open a second one.
+    expect(new Set(creates.map((call) => call.headers['Idempotency-Key'])).size).toBe(1);
+  });
+
+  it('gives up rather than spinning on a market it cannot quote fast enough', async () => {
+    const { client, calls } = makeClient([
+      json(200, QUOTE('q-1')),
+      apiError(409, 'QUOTE_EXPIRED', true),
+      json(200, QUOTE('q-2')),
+      apiError(409, 'QUOTE_EXPIRED', true),
+      json(200, QUOTE('q-3')),
+      apiError(409, 'QUOTE_EXPIRED', true),
+    ]);
+
+    await expect(client.executeMarketOrder(unquoted)).rejects.toThrow(PredictAgentApiError);
+    expect(calls.filter((call) => call.url.endsWith('/executions'))).toHaveLength(3);
+  });
+
+  it('does not replace a quote the caller chose', async () => {
+    // A caller-supplied quote may encode a decision this method cannot see —
+    // waitForPriceAndExecute passes one it has already checked against a target
+    // price, and swapping it would fire the order at a price that does not
+    // qualify.
+    const { client, calls } = makeClient([apiError(409, 'QUOTE_EXPIRED', true)]);
+
+    await expect(client.executeMarketOrder(intent)).rejects.toThrow(PredictAgentApiError);
+    expect(calls.filter((call) => call.url.endsWith('/quotes'))).toHaveLength(0);
+    expect(calls.filter((call) => call.url.endsWith('/executions'))).toHaveLength(1);
   });
 
   it('uses a supplied quote as-is, and mints nothing', async () => {

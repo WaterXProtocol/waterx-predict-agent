@@ -51,6 +51,34 @@ export function isPredictAgentApiError(error: unknown): error is PredictAgentApi
 }
 
 /**
+ * Codes that are retryable as an INTENT but not as the same bytes.
+ *
+ * The server's `retryable` answers "can this intent succeed later". The transport
+ * asks a narrower question — "can resending exactly what I sent succeed" — and
+ * for these three the answer is no, however many times it asks:
+ *
+ *   QUOTE_EXPIRED       the request names a quote that is gone. An executable
+ *                       quote lives about three seconds, so the copy in the
+ *                       already-serialized body is dead for good; only a REBUILT
+ *                       request can succeed.
+ *   SLIPPAGE_EXCEEDED   decided after the intent was accepted, which leaves the
+ *                       execution terminal. The Idempotency-Key is spent: the
+ *                       same key now resolves to that failed attempt forever.
+ *   SPONSOR_UNAVAILABLE same shape — accepted, then terminal, same spent key.
+ *
+ * Resending burned the retry budget on requests that could not succeed and
+ * delayed the real answer by the whole backoff. Excluding them here does not make
+ * the intent unretryable; it moves the retry to the layer that can actually
+ * rebuild it, which for a stale quote is `executeMarketOrder`, and for a spent
+ * key is the caller, under a new one.
+ */
+const NOT_RESENDABLE_AS_IS: ReadonlySet<PredictAgentErrorCode> = new Set([
+  'QUOTE_EXPIRED',
+  'SLIPPAGE_EXCEEDED',
+  'SPONSOR_UNAVAILABLE',
+]);
+
+/**
  * Whether an error is worth another attempt of the SAME request.
  *
  * A transport error counts as retryable ONLY because every retryable call site in
@@ -59,8 +87,15 @@ export function isPredictAgentApiError(error: unknown): error is PredictAgentApi
  * that property: "the socket died" does not tell you whether the server acted.
  */
 export function isRetryable(error: unknown): boolean {
-  if (error instanceof PredictAgentApiError) return error.retryable;
+  if (error instanceof PredictAgentApiError) {
+    return error.retryable && !NOT_RESENDABLE_AS_IS.has(error.code);
+  }
   return error instanceof PredictAgentTransportError;
+}
+
+/** The one NOT_RESENDABLE_AS_IS code a caller can fix by rebuilding the request. */
+export function isStaleQuote(error: unknown): boolean {
+  return error instanceof PredictAgentApiError && error.code === 'QUOTE_EXPIRED';
 }
 
 /**

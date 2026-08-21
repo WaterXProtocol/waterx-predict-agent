@@ -38,7 +38,7 @@ import {
 } from './contract.ts';
 import { targetReached } from './decimal.ts';
 import { pageQuery } from './pagination.ts';
-import { PredictAgentApiError } from './errors.ts';
+import { isStaleQuote, PredictAgentApiError } from './errors.ts';
 import {
   type ExecutionStream,
   SocketExecutionStream,
@@ -245,6 +245,14 @@ export type ExecuteManyResult =
   | { ok: false; index: number; error: unknown }
   | { ok: false; index: number; skipped: true };
 
+/**
+ * How many times `executeMarketOrder` will mint a fresh quote after the server
+ * says the previous one expired. Three: enough to ride out a slow round trip,
+ * few enough that a market quoting faster than we can trade is reported rather
+ * than spun on.
+ */
+const QUOTE_REFRESH_ATTEMPTS = 3;
+
 const DEFAULT_POLL_MS = 1_000;
 const DEFAULT_TIMEOUT_MS = 60_000;
 /** Default ceiling on a price wait. Long, because a target may be hours away. */
@@ -445,20 +453,49 @@ export class PredictAgentClient {
 
     // Minted HERE when the caller left it out, so the quote is as young as it can
     // be. Doing this per leg is the entire reason the field is optional; see it.
-    const quoteId =
-      referenceQuoteId ??
-      (
-        await this.getQuote(
-          { marketId: rest.marketId, outcomeId: rest.outcomeId, side: rest.side, size: rest.size },
-          options.signal,
-        )
-      ).quoteId;
-    const body = { ...rest, referenceQuoteId: quoteId };
-
-    const created = await this.createExecution(body, {
-      idempotencyKey,
-      ...(options.signal !== undefined ? { signal: options.signal } : {}),
-    });
+    //
+    // And re-minted if it goes stale anyway. An executable quote lives about
+    // three seconds, so a slow round trip or a paused event loop is enough to
+    // lose the race; resending the same body cannot win it, because the quote it
+    // names is already gone. Only a quote this method minted is replaced — one
+    // the CALLER chose is honoured as given, because it may encode a decision
+    // this method cannot see (waitForPriceAndExecute passes a quote it has
+    // already checked against a target price, and silently swapping it would fire
+    // the order at a price that does not qualify).
+    //
+    // The Idempotency-Key does NOT change across these attempts. It is what makes
+    // the retry safe: if an earlier attempt reached the server after all, the key
+    // resolves to that execution instead of opening a second one.
+    const mintedHere = referenceQuoteId === undefined;
+    let created: CreateExecutionResponseBody | undefined;
+    for (let attempt = 1; created === undefined; attempt += 1) {
+      const quoteId =
+        referenceQuoteId ??
+        (
+          await this.getQuote(
+            {
+              marketId: rest.marketId,
+              outcomeId: rest.outcomeId,
+              side: rest.side,
+              size: rest.size,
+            },
+            options.signal,
+          )
+        ).quoteId;
+      try {
+        created = await this.createExecution(
+          { ...rest, referenceQuoteId: quoteId },
+          {
+            idempotencyKey,
+            ...(options.signal !== undefined ? { signal: options.signal } : {}),
+          },
+        );
+      } catch (error: unknown) {
+        // Bounded: a market whose quotes expire faster than we can use them is a
+        // condition to report, not one to spin on.
+        if (!mintedHere || !isStaleQuote(error) || attempt >= QUOTE_REFRESH_ATTEMPTS) throw error;
+      }
+    }
 
     // Past this line the execution EXISTS. A caller's deadline expiring from here
     // on is not "nothing happened" — it is "this process stopped being able to
