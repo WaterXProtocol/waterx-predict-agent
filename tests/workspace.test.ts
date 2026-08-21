@@ -32,6 +32,7 @@ import {
   parseRequest as parseSignerRequest,
   SIGNER_PROTOCOL as BROWSER_SIGNER_PROTOCOL,
 } from '../packages/signer-browser/src/index.ts';
+import { SIGNER_PROTOCOL as KEYSTORE_SIGNER_PROTOCOL } from '../packages/signer-keystore/src/index.ts';
 import { JOB_STATES } from '../packages/runner/src/state-machine.ts';
 import { AGENT_COMMANDS, type JsonSchema } from '../packages/schema/src/index.ts';
 import { PredictAgentClient } from '../packages/sdk/src/index.ts';
@@ -83,7 +84,7 @@ const HARNESS = new Set(['e2e']);
  * the dependency the CLI's budget exists to keep out; putting it here is what
  * lets the CLI stay dependency-free while an operator still gets a signer.
  */
-const PROVIDERS = new Set(['signer-browser']);
+const PROVIDERS = new Set(['signer-browser', 'signer-keystore']);
 
 /**
  * Release tooling. It inspects the workspace — manifests, the installed tree,
@@ -498,6 +499,10 @@ describe('the local signing protocol', () => {
     // copy — the one a key holder actually runs — is held to the same shape, and
     // then fed a request built from that shape to prove it parses it.
     expect(BROWSER_SIGNER_PROTOCOL).toEqual(CLI_SIGNER_PROTOCOL);
+    // Two providers, one contract. They serve opposite modes — one asks a person,
+    // one runs unattended — and an operator who configured either must be able to
+    // swap in the other without the runtimes noticing.
+    expect(KEYSTORE_SIGNER_PROTOCOL).toEqual(CLI_SIGNER_PROTOCOL);
     for (const shape of CLI_SIGNER_PROTOCOL.requests) {
       const request: Record<string, unknown> = { version: 1, type: shape.type };
       for (const field of shape.fields) {
@@ -506,7 +511,7 @@ describe('the local signing protocol', () => {
       }
       expect(parseSignerRequest(JSON.stringify(request)).type).toBe(shape.type);
     }
-    // Pinned, so a change to all three at once is still a decision someone states.
+    // Pinned, so a change to all four at once is still a decision someone states.
     expect(RUNNER_SIGNER_PROTOCOL.version).toBe(1);
   });
 

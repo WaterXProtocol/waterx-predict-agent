@@ -14,7 +14,7 @@ import { buildPage } from '../src/page.ts';
 import { parseRequest, sameAddress, SIGNER_PROTOCOL, SignerRefusal } from '../src/protocol.ts';
 import { signInBrowser } from '../src/sign.ts';
 
-const WALLET = '0x26266b1381bcf03ab3acc37c1e87beffb52d49f345248bc3efb9114176990ae4';
+const WALLET = '0x7777777777777777777777777777777777777777777777777777777777777777';
 
 const personal = {
   version: 1,
