@@ -203,6 +203,137 @@ describe('executeMarketOrder', () => {
   });
 });
 
+describe('quoting a leg when it runs', () => {
+  const unquoted = {
+    accountId: '0xacct',
+    marketId: '0xmarket',
+    outcomeId: 'YES' as const,
+    side: 'BUY' as const,
+    size: { buyAmount: '50' },
+    maxSlippageBps: 100,
+  };
+  const QUOTE = (id: string) => ({
+    quoteId: id,
+    marketId: '0xmarket',
+    outcomeId: 'YES',
+    side: 'BUY',
+    expectedPrice: '0.5',
+    expiresAt: '2026-07-30T00:00:03.000Z',
+  });
+
+  it('mints the quote itself when the intent carries none', async () => {
+    const { client, calls } = makeClient([
+      json(200, QUOTE('q-fresh')),
+      json(201, CREATED),
+      json(202, SUBMITTED),
+    ]);
+
+    await client.executeMarketOrder(unquoted);
+
+    expect(calls[0]?.url).toBe('https://api.test/agent-api/v1/predict/quotes');
+    // Priced against the quote it just minted, not against anything the caller
+    // could have been holding since before this call.
+    expect((calls[1]?.body as { referenceQuoteId?: string }).referenceQuoteId).toBe('q-fresh');
+  });
+
+  it('uses a supplied quote as-is, and mints nothing', async () => {
+    const { client, calls } = makeClient([json(201, CREATED), json(202, SUBMITTED)]);
+
+    await client.executeMarketOrder(intent);
+
+    expect(calls.some((c) => c.url.endsWith('/quotes'))).toBe(false);
+    expect((calls[0]?.body as { referenceQuoteId?: string }).referenceQuoteId).toBe('q-ref');
+  });
+
+  it('quotes each leg AFTER the previous one has been submitted', async () => {
+    // The bug this exists to prevent: a caller that pre-mints a batch's quotes
+    // is already wrong by the time leg two runs, because leg one's
+    // create/sign/submit outlives a quote that lives seconds. So the order of
+    // calls — not merely the count — is the assertion.
+    const { client, calls } = makeClient([
+      json(200, QUOTE('q-leg-1')),
+      json(201, CREATED),
+      json(202, SUBMITTED),
+      json(200, QUOTE('q-leg-2')),
+      json(201, CREATED),
+      json(202, SUBMITTED),
+    ]);
+
+    const results = await client.executeMany([unquoted, unquoted], { concurrency: 1 });
+
+    expect(results.every((entry) => entry.ok)).toBe(true);
+    expect(calls.map((c) => c.url.replace('https://api.test/agent-api/v1/predict/', ''))).toEqual([
+      'quotes',
+      'executions',
+      'executions/exec-1/submit',
+      'quotes',
+      'executions',
+      'executions/exec-1/submit',
+    ]);
+    // Each leg priced against its own quote, minted in its own turn.
+    expect((calls[1]?.body as { referenceQuoteId?: string }).referenceQuoteId).toBe('q-leg-1');
+    expect((calls[4]?.body as { referenceQuoteId?: string }).referenceQuoteId).toBe('q-leg-2');
+  });
+});
+
+describe('a deadline that expires after the order exists', () => {
+  const abort = (): Response => {
+    // What a caller's AbortSignal.timeout produces, as the transport surfaces it.
+    throw Object.assign(new Error('The operation was aborted due to timeout'), {
+      name: 'TimeoutError',
+    });
+  };
+
+  it('reports UNKNOWN with the execution id, never a failure', async () => {
+    // The order was created and may already be filled. Calling that a failure is
+    // how a caller retries and places it twice — the exact duplicate this design
+    // exists to prevent (plan §9).
+    const { client } = makeClient([json(201, CREATED), abort, abort, abort]);
+
+    const result = await client.executeMarketOrder(intent);
+
+    expect(result.timedOut).toBe(true);
+    expect(result.terminal).toBe(false);
+    expect(result.executionId).toBe('exec-1');
+    // The handle `order reconcile` needs, kept rather than thrown away.
+    expect(result.idempotencyKey).toBeTypeOf('string');
+    expect(result.fee).toEqual({ available: false, reason: 'NO_FILL_OBSERVED' });
+  });
+
+  it('still throws when the create itself is aborted', async () => {
+    // Before the create there is nothing to be ambiguous about: no order exists,
+    // and reporting one as maybe-live would send a caller to reconcile nothing.
+    const { client } = makeClient([abort]);
+    await expect(client.executeMarketOrder(intent)).rejects.toThrow();
+  });
+
+  it('still throws when the server REFUSES the submit', async () => {
+    // A refusal is not a deadline. Swallowing it into `timedOut` would turn a
+    // definitive "no" into "maybe", which is worse than either.
+    const { client } = makeClient([json(201, CREATED), apiError(409, 'SLIPPAGE_EXCEEDED', false)]);
+    await expect(client.executeMarketOrder(intent)).rejects.toBeInstanceOf(PredictAgentApiError);
+  });
+
+  it('leaves a batch leg reported as ok-but-unknown rather than failed', async () => {
+    const { client } = makeClient([
+      json(201, CREATED),
+      json(202, SUBMITTED),
+      json(201, CREATED),
+      abort,
+      abort,
+      abort,
+    ]);
+
+    const results = await client.executeMany([intent, intent], { concurrency: 1 });
+
+    expect(results[0]?.ok).toBe(true);
+    // The second leg placed an order. `ok: false` here would be the CLI printing
+    // FAILED for a live order, which is what this test exists to stop.
+    expect(results[1]?.ok).toBe(true);
+    expect(results[1]).toMatchObject({ result: { timedOut: true, executionId: 'exec-1' } });
+  });
+});
+
 describe('executeMany', () => {
   it('reports each leg independently', async () => {
     const { client } = makeClient([json(201, CREATED), json(202, SUBMITTED)]);

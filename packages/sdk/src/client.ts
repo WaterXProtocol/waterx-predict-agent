@@ -127,9 +127,41 @@ export interface PredictAgentClientOptions extends TransportOptions {
   streamConnector?: StreamConnector;
 }
 
+/**
+ * Whether a thrown value is a deadline or a cancellation rather than a refusal.
+ *
+ * The distinction decides whether an order that already exists is reported as
+ * FAILED or as UNKNOWN, so it is made on the error's own identity — a
+ * `TimeoutError`/`AbortError` `DOMException`, possibly wrapped by the transport —
+ * and never on a message. It walks `cause` because that is where the transport
+ * keeps the original.
+ */
+const isAbortLike = (error: unknown): boolean => {
+  for (let value: unknown = error, depth = 0; value !== undefined && depth < 5; depth += 1) {
+    const named = value as { name?: unknown; cause?: unknown };
+    if (named.name === 'AbortError' || named.name === 'TimeoutError') return true;
+    value = named.cause;
+  }
+  return false;
+};
+
 export interface ExecuteMarketOrderIntent
   extends Omit<CreateExecutionRequestBody, 'referenceQuoteId'> {
-  referenceQuoteId: string;
+  /**
+   * The quote this order is priced against, if the caller already minted one.
+   *
+   * **Optional, and usually better left out.** A quote lives seconds, and the one
+   * instant at which it is certainly still alive is immediately before the create
+   * — which, for a leg inside {@link PredictAgentClient.executeMany}, is a moment
+   * only this client knows, because it falls after every earlier leg finished. A
+   * caller that mints a whole batch's quotes up front cannot be right: the first
+   * leg's create/sign/submit outlives the second leg's quote, and that leg fails
+   * `QUOTE_EXPIRED` having sent nothing.
+   *
+   * Omit it and the quote is minted here, from this intent's own market, outcome,
+   * side and size, at the moment the order is actually placed (plan §5.5).
+   */
+  referenceQuoteId?: string;
   /**
    * Supply this to make a retry idempotent ACROSS process restarts. Omitted, the
    * client generates one per call, which covers in-process retries only.
@@ -409,33 +441,75 @@ export class PredictAgentClient {
     options: ExecuteMarketOrderOptions = {},
   ): Promise<ExecuteMarketOrderResult> {
     const idempotencyKey = intent.idempotencyKey ?? randomUUID();
-    const { idempotencyKey: _ignored, ...body } = intent;
+    const { idempotencyKey: _ignored, referenceQuoteId, ...rest } = intent;
+
+    // Minted HERE when the caller left it out, so the quote is as young as it can
+    // be. Doing this per leg is the entire reason the field is optional; see it.
+    const quoteId =
+      referenceQuoteId ??
+      (
+        await this.getQuote(
+          { marketId: rest.marketId, outcomeId: rest.outcomeId, side: rest.side, size: rest.size },
+          options.signal,
+        )
+      ).quoteId;
+    const body = { ...rest, referenceQuoteId: quoteId };
 
     const created = await this.createExecution(body, {
       idempotencyKey,
       ...(options.signal !== undefined ? { signal: options.signal } : {}),
     });
 
-    const signature = await signBase64(this.signer, created.sponsoredTransactionBytes);
-    const submitted = await this.submitExecution(
-      created.executionId,
-      signature,
-      options.signal,
-    );
+    // Past this line the execution EXISTS. A caller's deadline expiring from here
+    // on is not "nothing happened" — it is "this process stopped being able to
+    // watch", and the order may already be filled. Throwing here would report a
+    // live order as a failure, and a caller that believes a failure retries: that
+    // is the duplicate this whole design exists to prevent (plan §9:
+    // EXECUTION_TIMEOUT and UNKNOWN_PENDING must never map to a failed trade).
+    //
+    // So an ABORT after the create resolves the same way a wait that ran out of
+    // time already does: `timedOut: true`, with the execution id intact, which is
+    // the handle `order reconcile` needs. Anything that is NOT an abort still
+    // throws — a rejected submit is a real refusal and must stay one.
+    try {
+      const signature = await signBase64(this.signer, created.sponsoredTransactionBytes);
+      const submitted = await this.submitExecution(
+        created.executionId,
+        signature,
+        options.signal,
+      );
 
-    const outcome =
-      options.waitFor === 'TERMINAL'
-        ? await this.waitForExecution(created.executionId, options)
-        : toExecutionOutcome(submitted, false);
+      const outcome =
+        options.waitFor === 'TERMINAL'
+          ? await this.waitForExecution(created.executionId, options)
+          : toExecutionOutcome(submitted, false);
 
-    return {
-      ...outcome,
+      return {
+        ...outcome,
       // The submit's digest is kept as a fallback: a later read may not carry one
       // yet, and losing it would cost the caller the only on-chain handle it has.
-      transactionDigest: outcome.transactionDigest ?? submitted.transactionDigest,
-      enforcedWorstPrice: created.enforcedWorstPrice,
-      idempotencyKey,
-    };
+        transactionDigest: outcome.transactionDigest ?? submitted.transactionDigest,
+        enforcedWorstPrice: created.enforcedWorstPrice,
+        idempotencyKey,
+      };
+    } catch (error: unknown) {
+      if (!isAbortLike(error)) throw error;
+      return {
+        executionId: created.executionId,
+        // The last status anybody observed. Reported as-is rather than guessed
+        // forward: the order may have moved since, which is exactly the point.
+        status: created.status,
+        terminal: false,
+        timedOut: true,
+        transactionDigest: undefined,
+        fill: undefined,
+        // Nothing was observed, which is not the same as no fee. The reason says so.
+        fee: { available: false, reason: 'NO_FILL_OBSERVED' },
+        remainingAllowance: undefined,
+        enforcedWorstPrice: created.enforcedWorstPrice,
+        idempotencyKey,
+      };
+    }
   }
 
   /**

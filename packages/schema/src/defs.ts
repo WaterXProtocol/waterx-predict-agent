@@ -293,13 +293,27 @@ export const ORDER_INTENT_PROPERTIES: Readonly<Record<string, JsonSchema>> = {
   idempotencyKey: { $ref: '#/$defs/idempotencyKey' },
 };
 
+/**
+ * `referenceQuoteId` is deliberately NOT here.
+ *
+ * A quote lives seconds. The one moment it is certainly still alive is
+ * immediately before the create — and inside `order execute-many` that moment
+ * falls after every earlier leg has finished, so it is not a moment a caller can
+ * be standing in. Requiring it made a correct two-leg batch impossible: the
+ * first leg's create/sign/submit outlives the second leg's quote, and that leg
+ * fails `QUOTE_EXPIRED` having sent nothing. Observed, not theorised — see
+ * backlog 1.11.
+ *
+ * Supplying one is still allowed and still honoured verbatim. Omitting it hands
+ * the timing to the runtime that knows when the order is actually placed, which
+ * is what plan §5.5 asks for.
+ */
 export const ORDER_INTENT_REQUIRED: readonly string[] = [
   'accountId',
   'marketId',
   'outcomeId',
   'side',
   'size',
-  'referenceQuoteId',
   'maxSlippageBps',
 ];
 
