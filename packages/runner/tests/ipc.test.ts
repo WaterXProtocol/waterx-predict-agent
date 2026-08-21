@@ -796,6 +796,24 @@ describe('the client', () => {
     expect(await rejectsCode(pending)).toBe('CONNECTION_CLOSED');
   });
 
+  it('reports a socket error as a closed connection, not in the OS wording', async () => {
+    // The test above passes on macOS for the wrong reason: tearing the Runner
+    // down there emits only `close`. On Linux the socket emits `error` with
+    // ECONNRESET first, and passing that through gave the caller a raw Node
+    // error whose code is outside the protocol's declared union — so a `switch`
+    // on RunnerIpcError.code fell through on every real deployment while every
+    // developer's machine stayed green.
+    const client = await connect();
+    const pending = client.request('hang');
+    const reset = Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' });
+    (client as unknown as { socket: { emit(event: string, error: Error): void } }).socket.emit(
+      'error',
+      reset,
+    );
+
+    expect(await rejectsCode(pending)).toBe('CONNECTION_CLOSED');
+  });
+
   it('gives up on a socket that never answers the handshake', async () => {
     const quiet = join(dir.dir, 'quiet.sock');
     const accepted: Socket[] = [];

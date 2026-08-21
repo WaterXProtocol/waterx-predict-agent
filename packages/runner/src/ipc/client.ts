@@ -187,7 +187,22 @@ export class RunnerIpcClient {
       this.rejectAll(new RunnerIpcError('CONNECTION_CLOSED', 'the Runner closed the connection'));
     });
     this.socket.on('error', (error) => {
-      this.rejectAll(error);
+      // A socket error means the connection is gone, which for a caller is the
+      // same fact as a clean close — and it must arrive as the same CODE. The
+      // difference between the two is the operating system's, not the protocol's:
+      // tearing the Runner down emits only `close` on macOS but `error` with
+      // ECONNRESET first on Linux, so passing the raw Node error through handed
+      // every real deployment an error outside the declared union, and a caller
+      // branching on `RunnerIpcError.code` fell through its own switch.
+      //
+      // The original is kept as `detail.cause`: what the OS said is worth having
+      // in a log, it is just not what the caller should have to branch on.
+      this.closed = true;
+      this.rejectAll(
+        new RunnerIpcError('CONNECTION_CLOSED', 'the IPC connection failed', {
+          cause: error instanceof Error ? error.message : String(error),
+        }),
+      );
     });
     this.socket.resume();
   }
