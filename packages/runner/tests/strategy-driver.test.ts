@@ -797,6 +797,40 @@ describe('a crash at every side-effect boundary', () => {
     expect((await store.listOpenSideEffects('job_1')).length).toBe(0);
   });
 
+  it.each([
+    ['RECONCILIATION_REQUIRED', 503],
+    ['EXECUTION_TIMEOUT', 504],
+  ])('leaves a create answered %s unresolved, never FAILED', async (code, status) => {
+    // These are structured server answers, and being structured used to be
+    // enough to call them definitive. They say the opposite of a refusal: the
+    // order may be on chain and the server could not learn which. Recorded as
+    // FAILED, the strategy is told nothing happened — and a strategy that
+    // believes nothing happened places the order again.
+    await arm();
+    const gateway = gatewayOf({
+      quotes: [quote()],
+      creates: [apiError(code, status)],
+    });
+
+    const result = await drive(gateway, pricesAt('0.900000'));
+
+    expect(result.action).toBe('UNKNOWN_PENDING');
+    expect(result.reason).toBe('CREATE_UNRESOLVED');
+    expect(await stateOf()).toBe('UNKNOWN_PENDING');
+    const legs = await store.listLegs('job_1');
+    expect(legs.map((leg) => leg.status)).not.toContain('FAILED');
+  });
+
+  it('still calls a real refusal definitive', async () => {
+    await arm();
+    const gateway = gatewayOf({ quotes: [quote()], creates: [apiError()] });
+
+    const result = await drive(gateway, pricesAt('0.900000'));
+
+    expect(result.action).not.toBe('UNKNOWN_PENDING');
+    expect((await store.listLegs('job_1')).map((leg) => leg.status)).toEqual(['FAILED']);
+  });
+
   it('records the ambiguity without a crash when the transport simply fails', async () => {
     await arm();
     const gateway = gatewayOf({

@@ -55,6 +55,7 @@
  * happened before anything was reserved.
  */
 import {
+  isAmbiguousOutcome,
   isPredictAgentApiError,
   targetReached,
   type CreateExecutionResponseBody,
@@ -1163,7 +1164,19 @@ const reconcilePass = async (
  * else — a socket that died, an abort, a DNS failure — means nobody knows
  * whether the request landed, and the job must say so rather than assume.
  */
-const isDefinitive = (error: unknown): boolean => isPredictAgentApiError(error);
+/**
+ * Whether the server's answer settles what happened to the write.
+ *
+ * Being a structured API error is NOT enough. RECONCILIATION_REQUIRED and
+ * EXECUTION_TIMEOUT are structured, and both say the opposite of a refusal: the
+ * order may be on chain and the server could not learn which. Recording those as
+ * FAILED tells the strategy nothing happened — and a strategy that believes
+ * nothing happened places the order again, which is the duplicate this whole
+ * design exists to prevent. They take the unresolved path instead, exactly as a
+ * dropped connection does, and the reconciler reads the verdict off the server.
+ */
+const isDefinitive = (error: unknown): boolean =>
+  isPredictAgentApiError(error) && !isAmbiguousOutcome(error);
 
 /** The parts of a server refusal that are safe and useful to persist. */
 const refusalDetail = (error: unknown): { code: string; httpStatus?: number; retryable?: boolean } =>

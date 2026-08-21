@@ -57,6 +57,7 @@ export {
   PredictAgentApiError,
   PredictAgentTransportError,
   isPredictAgentApiError,
+  isAmbiguousOutcome,
   isRetryable,
   isUnauthenticated,
 } from './errors.ts';

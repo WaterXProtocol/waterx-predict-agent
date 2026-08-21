@@ -93,6 +93,32 @@ export function isRetryable(error: unknown): boolean {
   return error instanceof PredictAgentTransportError;
 }
 
+/**
+ * Codes that say the write's OUTCOME is unknown, not that it failed.
+ *
+ * The server reaches for these when it could not learn what became of something
+ * it had already handed to the chain — a submission that never answered, a
+ * deadline that expired mid-flight. The order may well exist. Treating either as
+ * a refusal tells a strategy that nothing happened, which is the one wrong
+ * answer: a caller that believes nothing happened places the order again.
+ */
+const AMBIGUOUS_OUTCOME_CODES: ReadonlySet<PredictAgentErrorCode> = new Set([
+  'RECONCILIATION_REQUIRED',
+  'EXECUTION_TIMEOUT',
+]);
+
+/**
+ * Whether this error leaves the outcome of a write UNKNOWN.
+ *
+ * A caller must not record the write as failed, roll back its own state, or
+ * retry under a fresh key. The execution id, when the server sent one, is the
+ * handle to reconcile with.
+ */
+export function isAmbiguousOutcome(error: unknown): boolean {
+  if (error instanceof PredictAgentTransportError) return true;
+  return error instanceof PredictAgentApiError && AMBIGUOUS_OUTCOME_CODES.has(error.code);
+}
+
 /** The one NOT_RESENDABLE_AS_IS code a caller can fix by rebuilding the request. */
 export function isStaleQuote(error: unknown): boolean {
   return error instanceof PredictAgentApiError && error.code === 'QUOTE_EXPIRED';
