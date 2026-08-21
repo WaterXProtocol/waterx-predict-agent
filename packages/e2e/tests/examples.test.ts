@@ -11,7 +11,8 @@
  * path, and nothing here should be read as though it did.
  */
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -145,6 +146,29 @@ describe('the shipped examples', () => {
 describe('an example with nothing provisioned', () => {
   const located = locateCliBinary();
 
+  /**
+   * A directory holding a `waterx-predict` that runs the CLI this repository
+   * just built.
+   *
+   * The obvious PATH entry is `node_modules/.bin`, and it is the wrong one here:
+   * pnpm writes that shim during `install`, from a `bin` field pointing into
+   * `dist/` — which on a clean checkout does not exist yet, so the shim is
+   * simply not written. The tests then depended on whether the machine had ever
+   * built BEFORE installing. Every developer's had; CI's never has, so the
+   * examples reported themselves unbuilt on the one checkout that had just
+   * built them.
+   *
+   * Publishing does not have this problem — an npm tarball carries `dist/`, so
+   * the link is made against a file that exists. This is a workspace-ordering
+   * artifact, and a test should not be able to fail on it.
+   */
+  const binDir = mkdtempSync(join(tmpdir(), 'waterx-predict-bin-'));
+  if (located.found) {
+    const shim = join(binDir, 'waterx-predict');
+    writeFileSync(shim, `#!/bin/sh\nexec node ${JSON.stringify(located.path)} "$@"\n`);
+    chmodSync(shim, 0o755);
+  }
+
   // Not `it.skip`: an example suite that quietly stopped running would look
   // exactly like one that passed. If the CLI is not built, that is a real
   // failure of this repository's own build, and it should say so.
@@ -161,8 +185,10 @@ describe('an example with nothing provisioned', () => {
       // make this pass. HOME points nowhere, so no config file is found either.
       env: {
         // The examples invoke `waterx-predict` by name, exactly as their own
-        // header tells a reader to. `.bin` is where an install puts it.
-        PATH: `${join(PACKAGE_DIR, 'node_modules', '.bin')}:${process.env.PATH ?? '/usr/bin:/bin'}`,
+        // header tells a reader to — so the name has to resolve, and it resolves
+        // to the binary this repository built rather than to whatever an install
+        // did or did not link.
+        PATH: `${binDir}:${process.env.PATH ?? '/usr/bin:/bin'}`,
         HOME: join(PACKAGE_DIR, 'node_modules', '.no-such-home'),
       },
       timeout: 30_000,

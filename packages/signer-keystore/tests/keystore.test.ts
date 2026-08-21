@@ -182,7 +182,10 @@ describe('over a real socket', () => {
   it('binds a socket only this account can reach', async () => {
     await listen({ key: held(), token: 'tok' });
     // The agent binary chmods it; here we assert the path is in a private dir.
-    expect((statSync(dir).mode & 0o077) === 0 || process.platform === 'darwin').toBe(true);
+    // No platform escape hatch: POSIX mkdtemp creates 0700 everywhere, so an
+    // `|| process.platform === 'darwin'` made this read `true === true` on every
+    // machine it was ever run on by hand, and left the only real check to CI.
+    expect(statSync(dir).mode & 0o077).toBe(0);
     writeFileSync(join(dir, 'probe'), 'x', { mode: 0o600 });
     expect(statSync(join(dir, 'probe')).mode & 0o077).toBe(0);
   });
