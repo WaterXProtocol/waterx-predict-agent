@@ -94,6 +94,8 @@ export interface Ledger {
   marketId: string | null;
   quoteId: string | null;
   approvalToken: string | null;
+  /** The one token that approves the whole multi-leg batch, from its preview. */
+  batchApprovalToken: string | null;
   executionId: string | null;
   /** One fresh quote per multi-leg leg. A quote lives seconds and is not shared. */
   quoteLeg1: string | null;
@@ -108,6 +110,7 @@ export const emptyLedger = (): Ledger => ({
   marketId: null,
   quoteId: null,
   approvalToken: null,
+  batchApprovalToken: null,
   executionId: null,
   quoteLeg1: null,
   quoteLeg2: null,
@@ -271,7 +274,7 @@ export const STEPS: readonly Step[] = [
     requires: CONNECTED,
     after: ['describe'],
     argv: (context) => ['market', 'search', '--search', context.options.search],
-    verify: (run) => {
+    verify: (run, ledger) => {
       const already = succeeded(run);
       if (!already.ok) return already;
       const resolution = asRecord(dataOf(run).resolution);
@@ -283,6 +286,16 @@ export const STEPS: readonly Step[] = [
       if (status !== 'RESOLVED' && dataOf(run).marketId !== null) {
         return fail(`Resolution was ${status} but a marketId was still reported.`);
       }
+      // A UNIQUE resolution outranks the catalog's first row for everything that
+      // follows. Two reasons, and neither is convenience: `--search` exists so an
+      // operator can name the market a run should trade, and `market list
+      // --tradeable true` can hand back a market with no live quote at all — the
+      // catalog's tradeable flag and the quote feed's coverage are separate
+      // facts, and picking row zero walks into that gap. The id is still the
+      // SERVER's answer, which is what step three is about; it is simply the
+      // answer to a better question.
+      const resolved = str(resolution.marketId);
+      if (status === 'RESOLVED' && resolved !== null) ledger.marketId = resolved;
       return PASS;
     },
   },
@@ -582,6 +595,47 @@ export const STEPS: readonly Step[] = [
     },
   },
   {
+    id: 'order-preview-many',
+    title: 'order preview (batch)',
+    proves:
+      'A BATCH is previewable, and the one token it returns is the one `execute-many` demands. Before this existed the only way to learn a batch approval was to be refused once and read it out of the error.',
+    writes: null,
+    requires: ACCOUNT_SCOPED,
+    after: ['multi-leg-quote-1', 'multi-leg-quote-2'],
+    argv: (context) => [
+      'order',
+      'preview',
+      '--input',
+      JSON.stringify({
+        orders: [context.options.outcomeId, otherOutcome(context.options.outcomeId)].map(
+          (outcomeId) => ({
+            accountId: context.facts.defaultAccountId,
+            marketId: context.ledger.marketId,
+            outcomeId,
+            side: 'BUY',
+            size: { buyAmount: context.options.buyAmount },
+            maxSlippageBps: context.options.maxSlippageBps,
+          }),
+        ),
+      }),
+    ],
+    verify: (run, ledger) => {
+      const already = succeeded(run);
+      if (!already.ok) return already;
+      const data = dataOf(run);
+      if (data.placed !== false) return fail('A preview reported `placed` other than false.');
+      if (data.atomic !== false) return fail('A batch preview did not say `atomic: false`.');
+      const legs = data.legs;
+      if (!Array.isArray(legs) || legs.length !== 2) {
+        return fail('The batch preview did not carry one entry per leg.');
+      }
+      const token = str(asRecord(data.policy).approvalToken);
+      if (token === null) return fail('The batch preview carried no approval token.');
+      ledger.batchApprovalToken = token;
+      return PASS;
+    },
+  },
+  {
     id: 'order-execute-many',
     title: 'order execute-many',
     proves:
@@ -596,22 +650,37 @@ export const STEPS: readonly Step[] = [
         outcomeId,
         side: 'BUY',
         size: { buyAmount: context.options.buyAmount },
-        referenceQuoteId: quoteId,
+        // `referenceQuoteId` is DELIBERATELY absent. A quote lives seconds, so a
+        // batch that pre-mints them is already wrong by the time leg two runs:
+        // leg one's create/sign/submit outlives leg two's quote and that leg
+        // fails QUOTE_EXPIRED having sent nothing. Omitted, each leg is quoted in
+        // its own turn. Steps 14 and 15 above still prove a leg gets its OWN
+        // quote; this step proves the legs are independent, not that a caller can
+        // hold two quotes at once — which it cannot.
         maxSlippageBps: context.options.maxSlippageBps,
-        // Derived from the leg's own quote, so it is unique per leg and per run,
-        // and a retry of exactly this intent would carry exactly this key.
+        // Stable per leg and per run, so a retry of exactly this intent carries
+        // exactly this key rather than becoming a second order.
         idempotencyKey: `e2e-multi-${outcomeId}-${quoteId ?? 'none'}`.slice(0, 128),
       });
       return [
         'order',
         'execute-many',
+        ...(context.ledger.batchApprovalToken === null
+          ? []
+          : ['--approve', context.ledger.batchApprovalToken]),
         '--input',
         JSON.stringify({
           orders: [
             leg(context.options.outcomeId, context.ledger.quoteLeg1),
             leg(otherOutcome(context.options.outcomeId), context.ledger.quoteLeg2),
           ],
-          concurrency: 2,
+          // ONE at a time. Parallelism across legs is the ACCOUNT's decision, not
+          // this harness's: a mandate with `maxInFlightExecutions: 1` refuses a
+          // second concurrent create, and a harness that insisted on two would be
+          // failing a run for obeying its own risk profile. Sequential is also
+          // what the leg-by-leg quoting above requires — a leg is quoted in its
+          // own turn, which cannot happen if turns overlap (plan §5.5).
+          concurrency: 1,
           // CONTINUE, because the point of this step is to observe INDEPENDENT
           // outcomes. STOP would hide a second leg's behaviour behind the first.
           failurePolicy: 'CONTINUE',

@@ -66,8 +66,15 @@ const RESPONSES: Record<string, unknown> = {
   'market list': { markets: [{ marketId: 'mkt-1' }] },
   'market search': { resolution: { status: 'RESOLVED' }, marketId: 'mkt-1' },
   'market get': { market: { marketId: 'mkt-1' } },
+  // Satisfies BOTH preview shapes: one order, and a batch. The single-order step
+  // reads `placed` and the token; the batch step also reads `atomic` and one
+  // entry per leg. Keeping them in one fixture is deliberate — the command is one
+  // command, and a fixture that split them could let the two drift apart here
+  // while agreeing in production.
   'order preview': {
     placed: false,
+    atomic: false,
+    legs: [{ placed: false }, { placed: false }],
     quote: { quoteId: 'q-2' },
     policy: { decision: 'APPROVAL_REQUIRED', approvalToken: 'appr-1' },
   },
