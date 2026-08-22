@@ -26,6 +26,7 @@ import {
 } from './errors.ts';
 import { IDEMPOTENCY_KEY_HEADER, type PredictAgentErrorBody } from './contract.ts';
 import type { AuthSession } from './session.ts';
+import { sleep } from './sleep.ts';
 
 export interface RetryOptions {
   /** Attempts INCLUDING the first. 1 disables retrying. */
@@ -63,19 +64,6 @@ export interface RequestOptions {
 
 const DEFAULT_MAX_ATTEMPTS = 3;
 const DEFAULT_BASE_DELAY_MS = 200;
-
-const sleep = (ms: number, signal?: AbortSignal): Promise<void> =>
-  new Promise((resolve, reject) => {
-    const timer = setTimeout(resolve, ms);
-    signal?.addEventListener(
-      'abort',
-      () => {
-        clearTimeout(timer);
-        reject(new Error('Aborted'));
-      },
-      { once: true },
-    );
-  });
 
 export class Transport {
   private readonly baseUrl: string;
@@ -126,6 +114,15 @@ export class Transport {
         // last attempt. Backoff is exponential from `baseDelayMs`.
         if (attempt >= attempts || !isRetryable(error)) throw error;
         await sleep(this.baseDelayMs * 2 ** (attempt - 1), options.signal);
+        // Aborting DURING a backoff is not a clean cancellation: an attempt has
+        // already been made, and the reason we are here is that its outcome was
+        // ambiguous. Reported as a transport error so the caller's handler
+        // recognises it as such and keeps the idempotency key — a bare Error
+        // escaped every guard and took the key with it, which is the one way to
+        // turn a lost answer into a second order.
+        if (options.signal?.aborted === true) {
+          throw new PredictAgentTransportError('aborted while waiting to retry', error);
+        }
         attempt += 1;
       }
     }

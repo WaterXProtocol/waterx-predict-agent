@@ -188,6 +188,30 @@ describe('executeMarketOrder', () => {
     expect(error).not.toBeInstanceOf(PredictAgentApiError);
   });
 
+  it('keeps the key when the caller aborts during the retry backoff', async () => {
+    // The first attempt was a socket reset — the server may already hold the
+    // order — and the caller then gave up while the SDK was waiting to retry.
+    // The transport had its own `sleep` that rejected with a bare Error, so this
+    // escaped every guard and took the key with it. A second call under a fresh
+    // key is then a second order.
+    const controller = new AbortController();
+    const { client, calls } = makeClient([
+      () => {
+        controller.abort();
+        throw new TypeError('fetch failed: ECONNRESET');
+      },
+    ]);
+
+    const error = await client
+      .executeMarketOrder(intent, { signal: controller.signal })
+      .catch((thrown: unknown) => thrown);
+
+    expect(isUnresolvedWrite(error)).toBe(true);
+    expect((error as PredictAgentUnresolvedTransport).idempotencyKey).toBe(
+      calls[0]?.headers['Idempotency-Key'],
+    );
+  });
+
   it('carries the execution id the server named', async () => {
     const { client } = makeClient([
       () =>
