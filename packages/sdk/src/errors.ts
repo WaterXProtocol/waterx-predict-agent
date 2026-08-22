@@ -94,20 +94,25 @@ export function isRetryable(error: unknown): boolean {
 }
 
 /**
- * A write whose outcome is unknown, carrying everything needed to find out.
+ * What an unresolved write hands back so the caller can find out what happened.
  *
- * Thrown instead of the bare server error when `executeMarketOrder` cannot
- * establish what happened. The distinction matters because of what a caller does
- * next: an error that merely says RECONCILIATION_REQUIRED tells a strategy the
- * order may exist and gives it no way to ask, and a strategy that cannot ask is
- * a strategy that eventually places the order again.
- *
- * `idempotencyKey` is the part that was genuinely lost: when the caller did not
- * supply one, the SDK generates it inside the call, so on a throw it vanished
- * with the stack frame — and it is exactly the handle a safe retry needs.
+ * The key is the part that was genuinely lost: when the caller supplies none,
+ * the SDK generates it inside the call, so on a throw it left with the stack
+ * frame — and it is exactly the handle a safe retry needs. Retrying under a
+ * FRESH key is how one lost answer becomes two orders.
  */
-export class PredictAgentUnresolvedWrite extends PredictAgentApiError {
-  /** The key this attempt was made under. Retry with THIS, never a fresh one. */
+export interface UnresolvedWrite {
+  /** The key this attempt was made under. Retry with THIS, never a new one. */
+  readonly idempotencyKey: string;
+  /** Present when the server got far enough to name the execution. */
+  readonly executionId: string | undefined;
+}
+
+/** An unresolved write the SERVER answered — a code, and no outcome. */
+export class PredictAgentUnresolvedWrite
+  extends PredictAgentApiError
+  implements UnresolvedWrite
+{
   readonly idempotencyKey: string;
 
   constructor(cause: PredictAgentApiError, idempotencyKey: string) {
@@ -121,6 +126,38 @@ export class PredictAgentUnresolvedWrite extends PredictAgentApiError {
     this.name = 'PredictAgentUnresolvedWrite';
     this.idempotencyKey = idempotencyKey;
   }
+}
+
+/**
+ * An unresolved write the server never answered — a reset socket, a timeout.
+ *
+ * A separate class rather than the one above, because there is no code and no
+ * status to report and inventing them is the fabrication this SDK refuses
+ * everywhere else: a caller must be able to tell "the server said it could not
+ * tell" from "we never heard". Both carry the same handle, and `isUnresolvedWrite`
+ * recognises either.
+ */
+export class PredictAgentUnresolvedTransport
+  extends PredictAgentTransportError
+  implements UnresolvedWrite
+{
+  readonly idempotencyKey: string;
+  readonly executionId: string | undefined;
+
+  constructor(cause: PredictAgentTransportError, idempotencyKey: string, executionId?: string) {
+    super(cause.message, cause.cause);
+    this.name = 'PredictAgentUnresolvedTransport';
+    this.idempotencyKey = idempotencyKey;
+    this.executionId = executionId;
+  }
+}
+
+/** Whether this error carries the handle needed to resolve the write. */
+export function isUnresolvedWrite(error: unknown): error is Error & UnresolvedWrite {
+  return (
+    error instanceof PredictAgentUnresolvedWrite ||
+    error instanceof PredictAgentUnresolvedTransport
+  );
 }
 
 /**

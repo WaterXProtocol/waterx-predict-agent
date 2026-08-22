@@ -42,6 +42,8 @@ import {
   isAmbiguousOutcome,
   isStaleQuote,
   PredictAgentApiError,
+  PredictAgentTransportError,
+  PredictAgentUnresolvedTransport,
   PredictAgentUnresolvedWrite,
 } from './errors.ts';
 import {
@@ -500,8 +502,16 @@ export class PredictAgentClient {
         // The caller may never have chosen one — the SDK generates it here — and
         // without it there is no safe way to ask what happened, only a second
         // order.
-        if (isAmbiguousOutcome(error) && error instanceof PredictAgentApiError) {
+        // Both shapes of ambiguity, not just the one the server answered. A
+        // reset socket says even less than RECONCILIATION_REQUIRED does — the
+        // request may or may not have arrived — and losing the key there is the
+        // same defect with a worse cause. `isAmbiguousOutcome` already counted
+        // transport errors; the `instanceof` beside it quietly took them back.
+        if (error instanceof PredictAgentApiError && isAmbiguousOutcome(error)) {
           throw new PredictAgentUnresolvedWrite(error, idempotencyKey);
+        }
+        if (error instanceof PredictAgentTransportError) {
+          throw new PredictAgentUnresolvedTransport(error, idempotencyKey);
         }
         // Bounded: a market whose quotes expire faster than we can use them is a
         // condition to report, not one to spin on.

@@ -55,7 +55,9 @@ export {
 } from './execution-facts.ts';
 export {
   PredictAgentApiError,
+  PredictAgentUnresolvedTransport,
   PredictAgentUnresolvedWrite,
+  isUnresolvedWrite,
   PredictAgentTransportError,
   isPredictAgentApiError,
   isAmbiguousOutcome,

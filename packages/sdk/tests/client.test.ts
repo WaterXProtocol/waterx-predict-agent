@@ -8,8 +8,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PredictAgentClient } from '../src/client.ts';
 import {
+  isUnresolvedWrite,
   PredictAgentApiError,
   PredictAgentTransportError,
+  PredictAgentUnresolvedTransport,
   PredictAgentUnresolvedWrite,
 } from '../src/errors.ts';
 import type { AgentSigner } from '../src/signer.ts';
@@ -161,6 +163,29 @@ describe('executeMarketOrder', () => {
     );
     // Still a PredictAgentApiError, so existing catch blocks keep working.
     expect(error).toBeInstanceOf(PredictAgentApiError);
+  });
+
+  it('keeps the generated key when the socket dies instead of answering', async () => {
+    // A reset socket says even LESS than RECONCILIATION_REQUIRED: the request may
+    // or may not have arrived. The predicate already counted transport errors as
+    // ambiguous; the `instanceof PredictAgentApiError` beside it quietly took
+    // them back, so this path threw bare and the key went with it.
+    const { client, calls } = makeClient([
+      () => {
+        throw new TypeError('fetch failed: ECONNRESET');
+      },
+    ]);
+
+    const error = await client.executeMarketOrder(intent).catch((thrown: unknown) => thrown);
+
+    expect(isUnresolvedWrite(error)).toBe(true);
+    expect((error as PredictAgentUnresolvedTransport).idempotencyKey).toBe(
+      calls[0]?.headers['Idempotency-Key'],
+    );
+    // Still a transport error: "we never heard" must stay distinguishable from
+    // "the server said it could not tell".
+    expect(error).toBeInstanceOf(PredictAgentTransportError);
+    expect(error).not.toBeInstanceOf(PredictAgentApiError);
   });
 
   it('carries the execution id the server named', async () => {
