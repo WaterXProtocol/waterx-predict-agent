@@ -22,11 +22,11 @@ import {
   processInvoker,
   type CliInvoker,
   type CliRun,
-} from './cli-process.ts';
-import { shellRunner, type ExternalRunner } from './external.ts';
-import type { GapId, GapState } from './gaps.ts';
-import { GAP_IDS } from './gaps.ts';
-import { preflight, unsatisfied, type RuntimeFacts } from './preflight.ts';
+} from "./cli-process.ts";
+import { shellRunner, type ExternalRunner } from "./external.ts";
+import type { GapId, GapState } from "./gaps.ts";
+import { GAP_IDS } from "./gaps.ts";
+import { preflight, unsatisfied, type RuntimeFacts } from "./preflight.ts";
 import {
   summarize,
   type CapabilityPermission,
@@ -35,7 +35,7 @@ import {
   type NotRunReason,
   type StepResult,
   type WriteCapability,
-} from './report.ts';
+} from "./report.ts";
 import {
   DEFAULT_OPTIONS,
   emptyLedger,
@@ -43,9 +43,29 @@ import {
   type HarnessOptions,
   type Ledger,
   type Step,
-} from './steps.ts';
+} from "./steps.ts";
 
-export const HARNESS_NAME = 'waterx-predict e2e';
+export const HARNESS_NAME = "waterx-predict e2e";
+
+/** Head-room over the CLI's own deadline: process start, and the final write. */
+const PROCESS_TIMEOUT_MARGIN_MS = 30_000;
+
+/**
+ * How long this harness will let a CLI process run before killing it.
+ *
+ * DERIVED from the deadline the CLI is given, never fixed beside it. A fixed
+ * backstop below `settleTimeoutMs` kills a command that is still inside the time
+ * it was told it had — and the report then blames its output ("stdout was not
+ * one JSON document") rather than the clock, which names neither cause.
+ *
+ * Exported so the relationship can be asserted directly; it is the whole point.
+ */
+export function processBackstopMs(
+  settleTimeoutMs: number,
+  override?: number,
+): number {
+  return override ?? settleTimeoutMs + PROCESS_TIMEOUT_MARGIN_MS;
+}
 
 /**
  * Environment labels this build will place an order against.
@@ -55,39 +75,48 @@ export const HARNESS_NAME = 'waterx-predict e2e';
  * fall here by construction rather than by enumeration.
  */
 export const NON_PRODUCTION_ENVIRONMENTS: ReadonlySet<string> = new Set([
-  'test',
-  'testnet',
-  'devnet',
-  'localnet',
-  'local',
-  'staging',
-  'sandbox',
+  "test",
+  "testnet",
+  "devnet",
+  "localnet",
+  "local",
+  "staging",
+  "sandbox",
 ]);
 
 /** What each capability's opt-in is called, and what agreeing to it means. */
 const CAPABILITY_OPT_IN: Record<
   WriteCapability,
-  { readonly flag: string; readonly grants: string; readonly of: (options: HarnessOptions) => boolean }
+  {
+    readonly flag: string;
+    readonly grants: string;
+    readonly of: (options: HarnessOptions) => boolean;
+  }
 > = {
   order: {
-    flag: '--allow-write',
-    grants: 'place ONE real, price-protected order',
+    flag: "--allow-write",
+    grants: "place ONE real, price-protected order",
     of: (options) => options.allowWrite,
   },
-  'multi-leg': {
-    flag: '--allow-multi-leg',
-    grants: 'place TWO real orders in one call, which succeed or fail independently',
+  "multi-leg": {
+    flag: "--allow-multi-leg",
+    grants:
+      "place TWO real orders in one call, which succeed or fail independently",
     of: (options) => options.allowMultiLeg,
   },
   strategy: {
-    flag: '--allow-strategy',
+    flag: "--allow-strategy",
     grants:
-      'arm a durable strategy on the local Runner, which can trade LATER, after this process has exited',
+      "arm a durable strategy on the local Runner, which can trade LATER, after this process has exited",
     of: (options) => options.allowStrategy,
   },
 };
 
-export const WRITE_CAPABILITIES: readonly WriteCapability[] = ['order', 'multi-leg', 'strategy'];
+export const WRITE_CAPABILITIES: readonly WriteCapability[] = [
+  "order",
+  "multi-leg",
+  "strategy",
+];
 
 export function writePermission(
   facts: RuntimeFacts,
@@ -101,14 +130,14 @@ export function writePermission(
       capability,
       permitted: false,
       withheldBecause:
-        'No environment label is configured. An unlabelled deployment is treated as production, and this harness places no order against production under any condition.',
+        "No environment label is configured. An unlabelled deployment is treated as production, and this harness places no order against production under any condition.",
     };
   }
   if (!NON_PRODUCTION_ENVIRONMENTS.has(label.toLowerCase())) {
     return {
       capability,
       permitted: false,
-      withheldBecause: `The environment is labelled \`${label}\`, which this build does not recognise as non-production. Recognised: ${[...NON_PRODUCTION_ENVIRONMENTS].sort().join(', ')}.`,
+      withheldBecause: `The environment is labelled \`${label}\`, which this build does not recognise as non-production. Recognised: ${[...NON_PRODUCTION_ENVIRONMENTS].sort().join(", ")}.`,
     };
   }
   if (!opt.of(options)) {
@@ -126,19 +155,21 @@ export const writePermissions = (
   facts: RuntimeFacts,
   options: HarnessOptions,
 ): readonly CapabilityPermission[] =>
-  WRITE_CAPABILITIES.map((capability) => writePermission(facts, options, capability));
+  WRITE_CAPABILITIES.map((capability) =>
+    writePermission(facts, options, capability),
+  );
 
 const evidenceFrom = (run: CliRun): Evidence => ({
   transport: run.transport,
   argv: run.argv,
   exitCode: run.exitCode,
   ok: run.envelope?.ok === true,
-  command: run.envelope?.command ?? '(none)',
-  requestId: run.envelope?.requestId ?? '(none)',
+  command: run.envelope?.command ?? "(none)",
+  requestId: run.envelope?.requestId ?? "(none)",
   durationMs: run.durationMs,
 });
 
-const describeStep = (step: Step): StepResult['step'] => ({
+const describeStep = (step: Step): StepResult["step"] => ({
   id: step.id,
   title: step.title,
   proves: step.proves,
@@ -149,7 +180,7 @@ const describeStep = (step: Step): StepResult['step'] => ({
 function allNotRun(reason: NotRunReason, detail: string): StepResult[] {
   return STEPS.map((step) => ({
     step: describeStep(step),
-    status: 'NOT_RUN' as const,
+    status: "NOT_RUN" as const,
     reason,
     missing: [],
     detail,
@@ -166,7 +197,9 @@ export interface RunOptions extends Partial<HarnessOptions> {
 /** The environment of this process, with the undefined entries dropped. */
 const inheritedEnv = (): Record<string, string> =>
   Object.fromEntries(
-    Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
+    Object.entries(process.env).filter(
+      (entry): entry is [string, string] => entry[1] !== undefined,
+    ),
   );
 
 export async function runE2e(options: RunOptions = {}): Promise<E2eReport> {
@@ -176,7 +209,7 @@ export async function runE2e(options: RunOptions = {}): Promise<E2eReport> {
   if (!located.found) {
     const detail = `${located.reason} ${located.fix}`;
     return summarize(
-      allNotRun('CLI_NOT_BUILT', detail),
+      allNotRun("CLI_NOT_BUILT", detail),
       {
         baseUrl: null,
         label: null,
@@ -190,17 +223,30 @@ export async function runE2e(options: RunOptions = {}): Promise<E2eReport> {
       // Nothing was observed, so no gap may be called missing.
       GAP_IDS.map((id) => ({
         id,
-        status: 'UNCHECKED' as const,
-        observed: 'Not checked: there is no built CLI to ask.',
+        status: "UNCHECKED" as const,
+        observed: "Not checked: there is no built CLI to ask.",
       })),
       HARNESS_NAME,
     );
   }
 
+  // The backstop has to OUTLAST the deadline we hand the CLI, or the two bounds
+  // disagree and this harness kills a command that was still inside the time it
+  // was given. That is exactly what happened: `--settleTimeoutMs 240000` reached
+  // `order reconcile`, a fixed 120 s backstop reached the child process, and the
+  // terminal wait died at 120 s with SIGKILL — reported as "stdout was not one
+  // JSON document", which says nothing about the real cause.
+  //
+  // Derived rather than configured, because a second number an operator must
+  // remember to raise is the same bug waiting to happen. The margin covers
+  // process start and the final write.
   const invoke: CliInvoker = processInvoker({
     binary: located.path,
     env: options.env ?? inheritedEnv(),
-    timeoutMs: options.processTimeoutMs ?? 120_000,
+    timeoutMs: processBackstopMs(
+      resolved.settleTimeoutMs,
+      options.processTimeoutMs,
+    ),
   });
 
   return runWith(invoke, resolved);
@@ -229,7 +275,7 @@ export async function runWith(
   // run's evidence for another run's result.
   const cachedRuns: Record<string, CliRun> = {
     describe: pre.describe,
-    'strategy-list': pre.runnerProbe,
+    "strategy-list": pre.runnerProbe,
   };
 
   for (const step of STEPS) {
@@ -244,7 +290,7 @@ export async function runWith(
       permissions,
       cached: cachedRuns[step.id] ?? null,
     });
-    if (outcome.status === 'PASSED') passed.add(step.id);
+    if (outcome.status === "PASSED") passed.add(step.id);
     results.push(outcome);
   }
 
@@ -273,7 +319,10 @@ interface StepEnvironment {
   readonly cached: CliRun | null;
 }
 
-async function runStep(step: Step, environment: StepEnvironment): Promise<StepResult> {
+async function runStep(
+  step: Step,
+  environment: StepEnvironment,
+): Promise<StepResult> {
   const described = describeStep(step);
   const context = {
     facts: environment.facts,
@@ -290,10 +339,12 @@ async function runStep(step: Step, environment: StepEnvironment): Promise<StepRe
     if (permission === undefined || !permission.permitted) {
       return {
         step: described,
-        status: 'NOT_RUN',
-        reason: 'WRITE_WITHHELD',
+        status: "NOT_RUN",
+        reason: "WRITE_WITHHELD",
         missing: [],
-        detail: permission?.withheldBecause ?? `No permission was computed for \`${step.writes}\`.`,
+        detail:
+          permission?.withheldBecause ??
+          `No permission was computed for \`${step.writes}\`.`,
       };
     }
   }
@@ -302,26 +353,32 @@ async function runStep(step: Step, environment: StepEnvironment): Promise<StepRe
   if (missing.length > 0) {
     return {
       step: described,
-      status: 'NOT_RUN',
-      reason: 'NOT_PROVISIONED',
+      status: "NOT_RUN",
+      reason: "NOT_PROVISIONED",
       missing,
-      detail: `Not provisioned: ${missing.join(', ')}. See the provisioning list for who supplies each.`,
+      detail: `Not provisioned: ${missing.join(", ")}. See the provisioning list for who supplies each.`,
     };
   }
 
   const idle = step.onlyIf?.(context) ?? null;
   if (idle !== null) {
-    return { step: described, status: 'NOT_RUN', reason: 'NOTHING_TO_DO', missing: [], detail: idle };
+    return {
+      step: described,
+      status: "NOT_RUN",
+      reason: "NOTHING_TO_DO",
+      missing: [],
+      detail: idle,
+    };
   }
 
   const blocked = step.after.filter((id) => !environment.passed.has(id));
   if (blocked.length > 0) {
     return {
       step: described,
-      status: 'NOT_RUN',
-      reason: 'PREREQUISITE_NOT_MET',
+      status: "NOT_RUN",
+      reason: "PREREQUISITE_NOT_MET",
       missing: [],
-      detail: `Reads from ${blocked.join(', ')}, which did not pass.`,
+      detail: `Reads from ${blocked.join(", ")}, which did not pass.`,
     };
   }
 
@@ -332,8 +389,8 @@ async function runStep(step: Step, environment: StepEnvironment): Promise<StepRe
       // established. What failed is the world this step needed.
       return {
         step: described,
-        status: 'NOT_RUN',
-        reason: 'PREREQUISITE_NOT_MET',
+        status: "NOT_RUN",
+        reason: "PREREQUISITE_NOT_MET",
         missing: [],
         detail: `The step could not be set up: ${prepared.why}`,
       };
@@ -351,16 +408,19 @@ async function runStep(step: Step, environment: StepEnvironment): Promise<StepRe
     // inability to reach it.
     return {
       step: described,
-      status: 'NOT_RUN',
-      reason: 'CLI_NOT_BUILT',
+      status: "NOT_RUN",
+      reason: "CLI_NOT_BUILT",
       missing: [],
-      detail: error instanceof Error ? error.message : 'The CLI could not be invoked.',
+      detail:
+        error instanceof Error
+          ? error.message
+          : "The CLI could not be invoked.",
     };
   }
 
   const verdict = step.verify(run, environment.ledger);
   const evidence = evidenceFrom(run);
   return verdict.ok
-    ? { step: described, status: 'PASSED', evidence }
-    : { step: described, status: 'FAILED', evidence, why: verdict.why };
+    ? { step: described, status: "PASSED", evidence }
+    : { step: described, status: "FAILED", evidence, why: verdict.why };
 }
