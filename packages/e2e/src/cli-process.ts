@@ -99,7 +99,47 @@ export interface InvokerOptions {
   readonly binary: string;
   /** REPLACES the environment of the child. Nothing leaks in implicitly. */
   readonly env: Readonly<Record<string, string>>;
+  /**
+   * Backstop for an invocation that carries no deadline of its own. Commands
+   * that DO carry one derive theirs per call; see `processBackstopMs`.
+   */
   readonly timeoutMs: number;
+}
+
+/** Backstop for a command that was given no deadline of its own. */
+export const DEFAULT_PROCESS_TIMEOUT_MS = 120_000;
+
+/** Head-room over the CLI's own deadline: process start, and the final write. */
+const PROCESS_TIMEOUT_MARGIN_MS = 30_000;
+
+/** The deadline THIS invocation hands the CLI, or null when it hands none. */
+function declaredDeadlineMs(argv: readonly string[]): number | null {
+  const at = argv.lastIndexOf('--timeoutMs');
+  if (at === -1 || at === argv.length - 1) return null;
+  const parsed = Number.parseInt(argv[at + 1] ?? '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+/**
+ * How long this harness will let one CLI process run before killing it.
+ *
+ * DERIVED from the deadline that invocation was handed, never fixed beside it. A
+ * backstop below the CLI's own deadline kills a command that is still inside the
+ * time it was told it had — and the report then blames its output ("stdout was
+ * not one JSON document") rather than the clock, which names neither cause.
+ *
+ * Read off the argv rather than off the run-wide settle timeout, because the
+ * relationship is per invocation. Deriving it once for a shared invoker made one
+ * command's deadline everyone's: `--settleTimeoutMs` moved the backstop for
+ * `market list` and `doctor` too, shortening them below the fixed default at the
+ * default setting and stretching them well past it at a large one. Only the
+ * terminal wait passes `--timeoutMs`, so only the terminal wait moves.
+ *
+ * Exported so the relationship can be asserted directly; it is the whole point.
+ */
+export function processBackstopMs(argv: readonly string[], fallbackMs: number): number {
+  const declared = declaredDeadlineMs(argv);
+  return declared === null ? fallbackMs : declared + PROCESS_TIMEOUT_MARGIN_MS;
 }
 
 /**
@@ -147,7 +187,7 @@ function spawnCli(argv: readonly string[], options: InvokerOptions): Promise<Cli
     // process itself stops responding.
     const timer = setTimeout(() => {
       child.kill('SIGKILL');
-    }, options.timeoutMs);
+    }, processBackstopMs(argv, options.timeoutMs));
     timer.unref?.();
 
     child.on('error', (error: Error) => {

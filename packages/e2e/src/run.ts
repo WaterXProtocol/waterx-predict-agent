@@ -18,6 +18,7 @@
  * server is safe to trade on.
  */
 import {
+  DEFAULT_PROCESS_TIMEOUT_MS,
   locateCliBinary,
   processInvoker,
   type CliInvoker,
@@ -46,26 +47,6 @@ import {
 } from "./steps.ts";
 
 export const HARNESS_NAME = "waterx-predict e2e";
-
-/** Head-room over the CLI's own deadline: process start, and the final write. */
-const PROCESS_TIMEOUT_MARGIN_MS = 30_000;
-
-/**
- * How long this harness will let a CLI process run before killing it.
- *
- * DERIVED from the deadline the CLI is given, never fixed beside it. A fixed
- * backstop below `settleTimeoutMs` kills a command that is still inside the time
- * it was told it had — and the report then blames its output ("stdout was not
- * one JSON document") rather than the clock, which names neither cause.
- *
- * Exported so the relationship can be asserted directly; it is the whole point.
- */
-export function processBackstopMs(
-  settleTimeoutMs: number,
-  override?: number,
-): number {
-  return override ?? settleTimeoutMs + PROCESS_TIMEOUT_MARGIN_MS;
-}
 
 /**
  * Environment labels this build will place an order against.
@@ -230,23 +211,14 @@ export async function runE2e(options: RunOptions = {}): Promise<E2eReport> {
     );
   }
 
-  // The backstop has to OUTLAST the deadline we hand the CLI, or the two bounds
-  // disagree and this harness kills a command that was still inside the time it
-  // was given. That is exactly what happened: `--settleTimeoutMs 240000` reached
-  // `order reconcile`, a fixed 120 s backstop reached the child process, and the
-  // terminal wait died at 120 s with SIGKILL — reported as "stdout was not one
-  // JSON document", which says nothing about the real cause.
-  //
-  // Derived rather than configured, because a second number an operator must
-  // remember to raise is the same bug waiting to happen. The margin covers
-  // process start and the final write.
+  // This is the backstop for a command that was handed no deadline of its own.
+  // The terminal wait IS handed one, and stretches its own backstop past it —
+  // per invocation, inside the invoker, so raising `--settleTimeoutMs` no longer
+  // moves the clock on every other command sharing this invoker.
   const invoke: CliInvoker = processInvoker({
     binary: located.path,
     env: options.env ?? inheritedEnv(),
-    timeoutMs: processBackstopMs(
-      resolved.settleTimeoutMs,
-      options.processTimeoutMs,
-    ),
+    timeoutMs: options.processTimeoutMs ?? DEFAULT_PROCESS_TIMEOUT_MS,
   });
 
   return runWith(invoke, resolved);

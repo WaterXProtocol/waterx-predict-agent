@@ -37,8 +37,11 @@ import {
   runE2e,
   runWith,
   writePermission,
-  processBackstopMs,
 } from "../src/run.ts";
+import {
+  DEFAULT_PROCESS_TIMEOUT_MS,
+  processBackstopMs,
+} from "../src/cli-process.ts";
 import {
   DEFAULT_OPTIONS,
   STEPS,
@@ -729,19 +732,74 @@ describe("the installed CLI with nothing provisioned", () => {
 });
 
 describe("the process backstop", () => {
-  it("outlasts the deadline the CLI is given", () => {
+  /** Exactly what the terminal-wait step builds, at a given settle timeout. */
+  const terminalWait = (settleMs: number): readonly string[] => [
+    "order",
+    "reconcile",
+    "--executionId",
+    "exec-1",
+    "--timeoutMs",
+    String(settleMs),
+  ];
+
+  it("outlasts the deadline that invocation was given", () => {
     // Two bounds that must agree, with nothing making them agree: a
     // `--settleTimeoutMs` above the old fixed 120 s backstop meant the harness
     // SIGKILLed a command still inside the time it had been given, and reported
     // it as "stdout was not one JSON document" — which names neither cause.
     for (const settle of [60_000, 120_000, 240_000, 600_000]) {
-      expect(processBackstopMs(settle)).toBeGreaterThan(settle);
+      expect(
+        processBackstopMs(terminalWait(settle), DEFAULT_PROCESS_TIMEOUT_MS),
+      ).toBeGreaterThan(settle);
     }
+  });
+
+  it("leaves a command that was given no deadline on the fixed backstop", () => {
+    // The regression this replaces: one derived number reached a SHARED invoker,
+    // so the settle timeout became every command's clock. At the 60 s default it
+    // cut `market list` from 120 s to 90 s; at `--settleTimeoutMs 600000` it let
+    // a hung `doctor` sit for ten and a half minutes. Neither command waits on a
+    // settlement, and neither should move when that bound does.
+    for (const argv of [["market", "list"], ["doctor"], ["account", "status"]]) {
+      expect(processBackstopMs(argv, DEFAULT_PROCESS_TIMEOUT_MS)).toBe(
+        DEFAULT_PROCESS_TIMEOUT_MS,
+      );
+    }
+  });
+
+  it("moves only the invocation that carries the deadline", () => {
+    // The two are read from the same run, and must not track each other.
+    const stretched = processBackstopMs(
+      terminalWait(600_000),
+      DEFAULT_PROCESS_TIMEOUT_MS,
+    );
+    const unrelated = processBackstopMs(
+      ["market", "list"],
+      DEFAULT_PROCESS_TIMEOUT_MS,
+    );
+    expect(stretched).toBeGreaterThan(600_000);
+    expect(unrelated).toBe(DEFAULT_PROCESS_TIMEOUT_MS);
   });
 
   it("still honours an explicit override, even a shorter one", () => {
     // An operator who names a bound owns it; deriving over the top would take
-    // away the only way to cap a run.
-    expect(processBackstopMs(240_000, 5_000)).toBe(5_000);
+    // away the only way to cap a run. It bounds the commands with no deadline of
+    // their own — the terminal wait keeps the one it was handed, because a
+    // backstop under that deadline is the original bug.
+    expect(processBackstopMs(["market", "list"], 5_000)).toBe(5_000);
+  });
+
+  it("ignores a --timeoutMs that is not a usable number", () => {
+    // A malformed deadline is not a deadline. Reading NaN here would arm the
+    // kill timer with NaN, which fires immediately.
+    for (const argv of [
+      ["order", "reconcile", "--timeoutMs"],
+      ["order", "reconcile", "--timeoutMs", "later"],
+      ["order", "reconcile", "--timeoutMs", "0"],
+    ]) {
+      expect(processBackstopMs(argv, DEFAULT_PROCESS_TIMEOUT_MS)).toBe(
+        DEFAULT_PROCESS_TIMEOUT_MS,
+      );
+    }
   });
 });
