@@ -24,12 +24,13 @@ pnpm add @waterx/predict-agent-sdk
 
 ```ts
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
-import { PredictAgentClient } from '@waterx/predict-agent-sdk';
+import { PredictAgentClient, PREDICT_AGENT_ENDPOINTS } from '@waterx/predict-agent-sdk';
 
 // A Sui Keypair satisfies AgentSigner structurally — no adapter needed.
 const signer = Ed25519Keypair.fromSecretKey(process.env.AGENT_SECRET_KEY!);
 
-const client = new PredictAgentClient({ baseUrl: 'https://api.waterx.app', signer });
+// There is no default base URL. Name the deployment you mean — see below.
+const client = new PredictAgentClient({ baseUrl: PREDICT_AGENT_ENDPOINTS.testnet, signer });
 await client.authenticate();
 
 // Quotes live ~3 seconds and are never extended — fetch immediately before ordering.
@@ -64,7 +65,77 @@ if (result.terminal && result.status === 'FILLED') {
 `executeMarketOrder` hides the API's three steps — create, sign the returned
 sponsored bytes, submit — behind one await.
 
+## Onboarding: what a person still has to do
+
+Three things must exist before a write is accepted, and exactly one of them is
+irreducibly human:
+
+| | Who | Automatable |
+| --- | --- | --- |
+| Account id | the owner's | **Yes** — `listAuthorizedAccounts()` answers for it |
+| On-chain delegation | the owner signs with their own wallet | **No**, and never (ADR-0003) |
+| Risk profile (the mandate) | the owner | Yes, in the same signing session |
+
+So the flow is: build a link that names this agent, hand it to the owner, poll
+until the grants land.
+
+```ts
+import {
+  PREDICT_AGENT_CONSOLE_ENDPOINTS,
+  buildAuthorizationUrl,
+  waitForAuthorization,
+} from '@waterx/predict-agent-sdk';
+
+await client.authenticate();
+
+console.log(buildAuthorizationUrl({
+  consoleBaseUrl: PREDICT_AGENT_CONSOLE_ENDPOINTS.testnet,
+  agentWallet: signer.toSuiAddress(),
+  label: 'momentum-bot',
+}));
+
+const ready = await waitForAuthorization(client, {
+  onChange: (state) => console.log(state.status, state.nextStep.action),
+});
+if (ready.status === 'READY') {
+  // ready.account.accountId — nobody copied it out of a browser.
+}
+```
+
+The link carries the agent's address and nothing else: no token, no secret, no
+pre-authorization. Everything it can do, the owner does with their own wallet in
+their own session, so it is safe to paste into a chat.
+
+`describeOnboarding` is the same decision without the polling, and its statuses
+are chosen so nobody is sent to do the wrong thing:
+
+- `DELEGATION_MISSING` — the owner never signed. **They** must act.
+- `DELEGATION_UNKNOWN` — the chain read failed. Retry; do **not** ask the owner
+  to sign a grant they may already have made.
+- `SUSPENDED` — the owner switched this agent off. Re-signing will not help.
+- `AMBIGUOUS` — more than one account is ready, and choosing whose money a
+  strategy trades is not this SDK's call.
+
+A timeout is not a failure here either: the owner may sign a minute later, so the
+result carries `timedOut` and the last state, and you resume by calling again.
+
 ## The things that will bite you
+
+**There is no default `baseUrl`, and there will not be one.** The deployment
+decides whether an order spends real money, so it is never inferred: an
+unconfigured client throws instead of resolving to production. What the SDK
+publishes is a lookup, so the choice stays explicit and a typo cannot silently
+retarget a strategy:
+
+```ts
+import { PREDICT_AGENT_ENDPOINTS } from '@waterx/predict-agent-sdk';
+
+PREDICT_AGENT_ENDPOINTS.production; // https://api.waterx.app
+PREDICT_AGENT_ENDPOINTS.testnet;    // https://api-testnet.waterx.app
+```
+
+A private or preview deployment is still passed as a plain string; the map is
+not an allowlist.
 
 **Money is a decimal string, never a number.** A JS `number` cannot hold 6-dp
 money exactly. `'50'`, not `50`.

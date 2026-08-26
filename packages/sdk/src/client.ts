@@ -22,6 +22,7 @@ import {
   type CreateExecutionResponseBody,
   type CreateQuoteRequestBody,
   type GetMarketResponseBody,
+  type ListAgentAccountsResponseBody,
   type ListExecutionsResponseBody,
   type ListFillsResponseBody,
   type ListMarketsQuery,
@@ -739,6 +740,28 @@ export class PredictAgentClient {
     return await this.transport.request<SubmitExecutionResponseBody>({
       method: 'GET',
       path: PREDICT_AGENT_API_ROUTES.getExecution.replace(':executionId', executionId),
+      authenticated: true,
+      idempotent: true,
+      ...(signal !== undefined ? { signal } : {}),
+    });
+  }
+
+  /**
+   * The accounts this agent has been onboarded onto — the one account read that
+   * needs no id.
+   *
+   * Every other account method below takes an `accountId` the agent has no way to
+   * learn: it belongs to the owner. This is where a strategy starts, and what an
+   * onboarding flow polls while an owner is signing.
+   *
+   * An empty list is a complete answer: nobody has onboarded this agent yet. A
+   * listed account is NOT a promise that it can trade — check `delegation` and
+   * `isSuspended`, or hand the list to `describeOnboarding`.
+   */
+  async listAuthorizedAccounts(signal?: AbortSignal): Promise<ListAgentAccountsResponseBody> {
+    return await this.transport.request<ListAgentAccountsResponseBody>({
+      method: 'GET',
+      path: PREDICT_AGENT_API_ROUTES.agentAccounts,
       authenticated: true,
       idempotent: true,
       ...(signal !== undefined ? { signal } : {}),

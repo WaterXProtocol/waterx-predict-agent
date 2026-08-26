@@ -235,10 +235,12 @@ Generated from the command contract. `write` commands are gated by the execution
 | `runtime.describe` | `describe` | `waterx_predict_runtime_describe` | read | NOT_REQUIRED | Report what this runtime can actually do, and what it cannot. |
 | `runtime.command-schema` | `command-schema` | `waterx_predict_runtime_command_schema` | read | NOT_REQUIRED | Emit this command document, or one command from it. |
 | `runtime.doctor` | `doctor` | `waterx_predict_runtime_doctor` | read | NOT_REQUIRED | Check configuration, signer, reachability and authentication. |
+| `runtime.onboard` | `onboard` | `waterx_predict_runtime_onboard` | read | NOT_REQUIRED | Get this agent authorized: the link an owner signs, and where the grants stand. |
 | `market.list` | `market list` | `waterx_predict_market_list` | read | NOT_REQUIRED | List the tradeable market catalog. |
 | `market.search` | `market search` | `waterx_predict_market_search` | read | NOT_REQUIRED | Resolve free text to one market id, or say it did not. |
 | `market.get` | `market get` | `waterx_predict_market_get` | read | NOT_REQUIRED | Read one market by its server-resolved id. |
 | `market.quote` | `market quote` | `waterx_predict_market_quote` | read | NOT_REQUIRED | Mint a short-lived executable quote. |
+| `account.list` | `account list` | `waterx_predict_account_list` | read | NOT_REQUIRED | The accounts this agent has been onboarded onto. |
 | `account.status` | `account status` | `waterx_predict_account_status` | read | NOT_REQUIRED | One reading of capacity and exposure for an account. |
 | `account.allowance` | `account allowance` | `waterx_predict_account_allowance` | read | NOT_REQUIRED | Read the remaining API allowance and spendable balance. |
 | `account.risk-limits` | `account risk-limits` | `waterx_predict_account_risk_limits` | read | NOT_REQUIRED | Read the mandate this agent trades under, and what would refuse a write now. |

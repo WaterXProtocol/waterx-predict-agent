@@ -26,6 +26,7 @@ import {
   accountAllowance,
   accountExecutions,
   accountFills,
+  accountList,
   accountPerformance,
   accountPositions,
   accountRiskLimits,
@@ -35,6 +36,7 @@ import { commandSchema } from './commands/command-schema.ts';
 import { describeRuntime } from './commands/describe.ts';
 import { doctorFailure, runDoctor } from './commands/doctor.ts';
 import { marketGet, marketList, marketQuote, marketSearch } from './commands/market.ts';
+import { runtimeOnboard } from './commands/onboard.ts';
 import {
   orderExecute,
   orderExecuteMany,
@@ -128,6 +130,8 @@ const HANDLERS: Readonly<Record<string, CommandHandler>> = {
   'market.search': marketSearch,
   'market.get': marketGet,
   'market.quote': marketQuote,
+  'runtime.onboard': runtimeOnboard,
+  'account.list': accountList,
   'account.status': accountStatus,
   'account.allowance': accountAllowance,
   'account.risk-limits': accountRiskLimits,

@@ -64,6 +64,21 @@ export {
   isRetryable,
   isUnauthenticated,
 } from './errors.ts';
+export {
+  type AuthorizationPoller,
+  type AuthorizationUrlOptions,
+  type AuthorizationWaitResult,
+  buildAuthorizationUrl,
+  type DescribeOnboardingOptions,
+  describeOnboarding,
+  type OnboardingActor,
+  type OnboardingState,
+  type OnboardingStatus,
+  PREDICT_AGENT_AUTHORIZE_PATH,
+  PREDICT_AGENT_CONSOLE_ENDPOINTS,
+  waitForAuthorization,
+  type WaitForAuthorizationOptions,
+} from './onboarding.ts';
 export { hasMorePages, isExhausted, pageQuery } from './pagination.ts';
 export {
   buildAuthMessage,
@@ -87,6 +102,7 @@ export type * from './contract.ts';
 export {
   IDEMPOTENCY_KEY_HEADER,
   PREDICT_AGENT_API_ROUTES,
+  PREDICT_AGENT_ENDPOINTS,
   PREDICT_AGENT_STREAM_NAMESPACE,
   PREDICT_EXECUTION_STREAM,
   PREDICT_QUOTE_HEARTBEAT,

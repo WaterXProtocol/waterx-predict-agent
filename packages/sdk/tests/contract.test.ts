@@ -8,9 +8,12 @@
  */
 import { describe, expect, it } from 'vitest';
 
+import { PredictAgentClient, type PredictAgentClientOptions } from '../src/client.ts';
+
 import {
   IDEMPOTENCY_KEY_HEADER,
   PREDICT_AGENT_API_ROUTES,
+  PREDICT_AGENT_ENDPOINTS,
   PREDICT_QUOTE_HEARTBEAT,
   PREDICT_QUOTE_STREAM,
   PREDICT_QUOTE_STREAM_HEARTBEAT_MS,
@@ -22,6 +25,13 @@ import {
   RETRYABLE_PREDICT_AGENT_ERROR_CODES,
 } from '../src/contract.ts';
 
+/** Any signer will do here: the constructor never reaches it. */
+const signer = {
+  signTransaction: async () => ({ signature: '', bytes: '' }),
+  signPersonalMessage: async () => ({ signature: '', bytes: '' }),
+  toSuiAddress: () => '0xagent',
+};
+
 describe('vendored wire contract', () => {
   it('pins every route path', () => {
     expect(PREDICT_AGENT_API_ROUTES).toEqual({
@@ -32,6 +42,7 @@ describe('vendored wire contract', () => {
       executions: 'agent-api/v1/predict/executions',
       submitExecution: 'agent-api/v1/predict/executions/:executionId/submit',
       getExecution: 'agent-api/v1/predict/executions/:executionId',
+      agentAccounts: 'agent-api/v1/predict/accounts',
       allowance: 'agent-api/v1/predict/accounts/:accountId/allowance',
       effectiveLimits: 'agent-api/v1/predict/accounts/:accountId/effective-limits',
       positions: 'agent-api/v1/predict/accounts/:accountId/positions',
@@ -89,5 +100,16 @@ describe('vendored wire contract', () => {
     // A client that misses two in a row should reconnect, so this value is part
     // of the liveness contract, not a tuning detail.
     expect(PREDICT_QUOTE_STREAM_HEARTBEAT_MS).toBe(15_000);
+  });
+  it('names the deployments without defaulting to one', () => {
+    // A lookup, not a default. The hosts are pinned because a hyphen's worth of
+    // typo points a live strategy at the wrong chain.
+    expect(PREDICT_AGENT_ENDPOINTS).toEqual({
+      production: 'https://api.waterx.app',
+      testnet: 'https://api-testnet.waterx.app',
+    });
+    // And the client still refuses to pick one: an unconfigured base URL fails
+    // loudly here rather than quietly resolving to production.
+    expect(() => new PredictAgentClient({ signer } as unknown as PredictAgentClientOptions)).toThrow();
   });
 });

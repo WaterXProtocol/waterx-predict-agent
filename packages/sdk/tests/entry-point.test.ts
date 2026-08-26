@@ -31,6 +31,9 @@ describe('the published entry point', () => {
     const constants = [
       'IDEMPOTENCY_KEY_HEADER',
       'PREDICT_AGENT_API_ROUTES',
+      'PREDICT_AGENT_ENDPOINTS',
+      'PREDICT_AGENT_CONSOLE_ENDPOINTS',
+      'PREDICT_AGENT_AUTHORIZE_PATH',
       'PREDICT_AGENT_STREAM_NAMESPACE',
       'PREDICT_EXECUTION_STREAM',
       'PREDICT_QUOTE_HEARTBEAT',
@@ -53,6 +56,15 @@ describe('the published entry point', () => {
     expect(IDEMPOTENCY_KEY_HEADER).toBe('Idempotency-Key');
     expect(PREDICT_AGENT_API_ROUTES.auth).toBe('agent-api/v1/auth');
     expect(PREDICT_QUOTE_STREAM_MAX_TOPICS).toBe(32);
+  });
+
+  it('exposes the onboarding helpers, which are useless without the client', () => {
+    // A caller reaching for `describeOnboarding` has an account listing in hand
+    // and needs the decision; shipping the types without the functions would make
+    // them re-derive the state machine, which is the drift this package avoids.
+    for (const name of ['describeOnboarding', 'buildAuthorizationUrl', 'waitForAuthorization']) {
+      expect(Object.hasOwn(sdk, name), `${name} is not reachable from the entry point`).toBe(true);
+    }
   });
 
   it('still exposes the client and the decimal helpers it is used with', () => {

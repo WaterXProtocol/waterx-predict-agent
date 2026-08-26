@@ -101,6 +101,28 @@ export async function accountAllowance(context: CommandContext): Promise<unknown
   };
 }
 
+/**
+ * The accounts an owner has onboarded this agent onto.
+ *
+ * The only account read that takes no id, and therefore the only one an agent can
+ * issue before a person has told it anything. Nothing here is inferred: the rows
+ * are the owner's own mandate writes, and the delegation beside each one is the
+ * chain's answer, with null kept as null.
+ */
+export async function accountList(context: CommandContext): Promise<unknown> {
+  const client = await context.client();
+  const response = await client.listAuthorizedAccounts(context.signal());
+  return {
+    accounts: response.accounts,
+    count: response.accounts.length,
+    caveats: [
+      'An empty list is a complete answer: no owner has onboarded this agent yet. Run `onboard` for the link that fixes that.',
+      'A listed account is not a promise it can trade. `delegation.mayPlaceOrder` false means the owner never signed; null means the chain read FAILED, which is not a refusal.',
+      'A suspended mandate still lists. Silence would read as revoked, and the two are different facts.',
+    ],
+  };
+}
+
 export async function accountPositions(context: CommandContext): Promise<unknown> {
   const client = await context.client();
   const response = await client.getPositions(accountId(context), pageOf(context), context.signal());

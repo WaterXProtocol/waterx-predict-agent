@@ -25,6 +25,15 @@ export interface ResolvedConfig {
   /** Free-form label, e.g. `testnet`. Reported by `describe`, never inferred. */
   readonly environment: string | undefined;
   readonly agentWallet: string | undefined;
+  /**
+   * The web console an OWNER opens to authorize this agent.
+   *
+   * Configured rather than derived-and-forgotten: `onboard` falls back to the
+   * console paired with a known API deployment, but a private or preview
+   * deployment has no such pair and a guessed host would send an owner somewhere
+   * that cannot grant anything.
+   */
+  readonly consoleUrl: string | undefined;
   readonly defaultAccountId: string | undefined;
   /** argv for the external signer process. Never a key. */
   readonly signerCommand: readonly string[] | undefined;
@@ -55,6 +64,7 @@ const KNOWN_FILE_KEYS = new Set([
   'baseUrl',
   'environment',
   'agentWallet',
+  'consoleUrl',
   'defaultAccountId',
   'signerCommand',
   'policy',
@@ -66,6 +76,7 @@ export const ENV_KEYS = {
   baseUrl: 'WATERX_PREDICT_BASE_URL',
   environment: 'WATERX_PREDICT_ENVIRONMENT',
   agentWallet: 'WATERX_PREDICT_AGENT_WALLET',
+  consoleUrl: 'WATERX_PREDICT_CONSOLE_URL',
   accountId: 'WATERX_PREDICT_ACCOUNT_ID',
   signerCommand: 'WATERX_PREDICT_SIGNER_COMMAND',
   policy: 'WATERX_PREDICT_POLICY',
@@ -93,6 +104,7 @@ interface FileConfig {
   baseUrl?: unknown;
   environment?: unknown;
   agentWallet?: unknown;
+  consoleUrl?: unknown;
   defaultAccountId?: unknown;
   signerCommand?: unknown;
   policy?: unknown;
@@ -302,6 +314,10 @@ export function loadConfig(sources: ConfigSources): ResolvedConfig {
     agentWallet:
       asString(env[ENV_KEYS.agentWallet], ENV_KEYS.agentWallet, 'the environment') ??
       asString(config.agentWallet, 'agentWallet', where),
+    consoleUrl: (
+      asString(env[ENV_KEYS.consoleUrl], ENV_KEYS.consoleUrl, 'the environment') ??
+      asString(config.consoleUrl, 'consoleUrl', where)
+    )?.replace(/\/+$/u, ''),
     defaultAccountId:
       asString(env[ENV_KEYS.accountId], ENV_KEYS.accountId, 'the environment') ??
       asString(config.defaultAccountId, 'defaultAccountId', where),

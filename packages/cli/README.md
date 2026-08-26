@@ -31,28 +31,54 @@ export WATERX_PREDICT_BASE_URL='https://<your-agent-api-host>'
 export WATERX_PREDICT_AGENT_WALLET='0x<64 hex>'
 export WATERX_PREDICT_SIGNER_COMMAND='/path/to/your-signer'
 
-# 3. Check the setup before trusting any read from it.
+# 3. Get authorized. Prints the link an OWNER opens; --wait polls until they sign.
+waterx-predict onboard --label momentum-bot --wait
+#    → the accountId comes back from the server. Nobody copies it out of a browser.
+
+# 4. Check the setup before trusting any read from it.
 waterx-predict doctor --accountId 0x<64 hex>
 
-# 4. Read.
+# 5. Read.
 waterx-predict market list --limit 10 --tradeable
 waterx-predict market get --marketId 0x<64 hex>
 waterx-predict account status --accountId 0x<64 hex>
 
-# 5. Preview a trade. This signs nothing and places nothing.
+# 6. Preview a trade. This signs nothing and places nothing.
 waterx-predict order preview --input '{
   "accountId": "0x…", "marketId": "0x…", "outcomeId": "YES",
   "side": "BUY", "size": { "buyAmount": "25.00" }, "maxSlippageBps": 100
 }'
 
-# 6. Execute it, carrying the approval the preview published and a fresh quote.
+# 7. Execute it, carrying the approval the preview published and a fresh quote.
 waterx-predict order execute --approve apv1_… --input '{ …, "referenceQuoteId": "…" }'
 ```
 
 Steps 1 and 2 are in that order on purpose: discovery precedes setup, because a
 runtime you must configure before you may ask what it needs is a runtime you are
-guessing at. Steps 5 and 6 are in that order because a write here is never the
+guessing at. Steps 6 and 7 are in that order because a write here is never the
 incidental result of a single call.
+
+Step 3 is the only one that addresses a person. Of the three things that must
+exist before a write is accepted, two are automatable and one is not:
+
+| | Who | Automated |
+| --- | --- | --- |
+| Account id | the owner's | **Yes** — `account list` answers for it |
+| On-chain delegation | the owner signs, with their own wallet | **No**, and never (ADR-0003) |
+| Risk profile (the mandate) | the owner | Yes, in the same signing session |
+
+`onboard` prints a link that names this agent wallet and carries no token, no
+secret and no pre-authorization — it is safe to paste into a chat, because
+everything it can do the owner does with their own wallet. This CLI cannot sign a
+delegation, write a risk profile or raise a limit; a runtime that could grant its
+own authority would make the authority meaningless.
+
+Its statuses are chosen so nobody is sent to do the wrong thing:
+`DELEGATION_MISSING` is the owner's to fix, `DELEGATION_UNKNOWN` means the chain
+read **failed** and is not a refusal, `SUSPENDED` will not be fixed by signing
+again, and `AMBIGUOUS` means more than one account is ready — choosing whose
+money is traded is not this CLI's call. A `--wait` that runs out is not a failure
+either: run it again.
 
 ## The envelope
 
@@ -127,6 +153,8 @@ it without reconciling is how an agent places the same order twice.
 | Command | Status |
 | --- | --- |
 | `describe`, `command-schema`, `doctor` | available; the first two need no network |
+| `onboard` | available; prints the owner's authorization link and reports what is still missing |
+| `account list` | available; the only account read that needs no `accountId` |
 | `market list`, `market get`, `market quote` | available |
 | `market search` | available; the **server** resolves the text, exits 11 unless exactly one matched |
 | `account status`, `account allowance`, `account positions`, `account executions`, `account fills` | available |
