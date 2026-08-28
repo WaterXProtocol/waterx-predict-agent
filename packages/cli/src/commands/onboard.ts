@@ -116,6 +116,23 @@ export async function runtimeOnboard(context: CommandContext): Promise<unknown> 
     `Authorize this agent by opening:\n  ${authorizationUrl}\nThe page asks the account owner to pick an account, set the limits and sign once.\n`,
   );
 
+  // `--open`, and only ever on stderr. The outcome is a fact about this
+  // terminal, not about the onboarding state, so it does not belong in the
+  // envelope: a program driving this cannot pass the flag in the first place.
+  //
+  // A failure here is reported and stepped over. The link is printed above and
+  // is just as valid; failing the command because a window did not appear would
+  // throw away the answer the caller actually asked for.
+  if (context.openInBrowser !== undefined) {
+    try {
+      context.openInBrowser(authorizationUrl);
+      context.diagnostic('Opening it in your browser.\n');
+    } catch (error: unknown) {
+      const reason = error instanceof Error ? error.message : 'the opener failed';
+      context.diagnostic(`Could not open a browser (${reason}). Open the link above yourself.\n`);
+    }
+  }
+
   if (context.input.wait !== true) {
     const state = describeOnboarding(await client.listAuthorizedAccounts(context.signal()), scope);
     return render(state, authorizationUrl, agentWallet, false);

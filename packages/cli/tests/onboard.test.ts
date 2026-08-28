@@ -183,3 +183,65 @@ describe('account list', () => {
     expect((result.envelope.data as { count: number }).count).toBe(0);
   });
 });
+
+/**
+ * `--open`, and who is allowed to cause it.
+ *
+ * The convenience is small — one copy-paste saved when the operator and the
+ * account owner are the same person. What the tests are actually for is the
+ * boundary around it: a browser opening on an operator's machine must be
+ * something that operator asked for, at that machine, and nothing else.
+ */
+describe('onboard --open', () => {
+  it('hands the link to this machine when a person asks for it', async () => {
+    const result = await invoke(['onboard', '--open', '--label', 'momentum-bot'], {
+      env: CONSOLE_ENV,
+      routes: { 'POST /agent-api/v1/auth': AUTH_OK, [ACCOUNTS_PATH]: listing() },
+    });
+
+    const data = result.envelope.data as { authorizationUrl: string };
+    expect(result.opened).toEqual([data.authorizationUrl]);
+    // Same document either way: the outcome is a fact about this terminal, not
+    // about the onboarding state, and a program cannot pass the flag at all.
+    expect(result.envelope.ok).toBe(true);
+  });
+
+  it('opens nothing unless asked', async () => {
+    const result = await invoke(['onboard', '--label', 'momentum-bot'], {
+      env: CONSOLE_ENV,
+      routes: { 'POST /agent-api/v1/auth': AUTH_OK, [ACCOUNTS_PATH]: listing() },
+    });
+
+    expect(result.opened).toEqual([]);
+  });
+
+  it('still answers when the browser will not open', async () => {
+    // A headless host, a machine with no opener, a spawn that failed. The link
+    // is printed either way and is just as valid — failing the command because
+    // a window did not appear would throw away the answer that was asked for.
+    const result = await invoke(['onboard', '--open'], {
+      env: CONSOLE_ENV,
+      browserFails: true,
+      routes: { 'POST /agent-api/v1/auth': AUTH_OK, [ACCOUNTS_PATH]: listing() },
+    });
+
+    expect(result.envelope.ok).toBe(true);
+    expect(result.exit).toBe(EXIT_CODES.OK);
+    expect(result.opened).toEqual([]);
+    // Said out loud, on stderr. An operator who believes a window opened waits
+    // for one that never appears.
+    expect(result.stderr).toContain('Could not open a browser');
+    expect(result.stderr).toContain('no DISPLAY');
+  });
+
+  it('refuses the flag on a command that has no link', async () => {
+    // Accepted by the parser everywhere, meaningful in one place. Ignoring it
+    // elsewhere would teach an operator that it worked.
+    const result = await invoke(['market', 'list', '--open'], { env: CONSOLE_ENV });
+
+    expect(result.envelope.ok).toBe(false);
+    expect(result.envelope.error?.code).toBe('USAGE');
+    expect(result.envelope.error?.message).toContain('--open');
+    expect(result.fetches).toHaveLength(0);
+  });
+});

@@ -194,6 +194,27 @@ the client learning to approximate one:
   an unlimited default. A `null` delegation permission means the chain read
   **failed**, which is not the same as `false`.
 
+## `onboard --open`
+
+`onboard` prints the authorization link and stops. `--open` also hands it to
+this machine's browser.
+
+It is a **terminal affordance, and only that**. `--open` is a dispatcher flag,
+so it is neither a field in any command's input schema nor an entry in the
+adapters' operator-flag allowlist — a model host cannot request it and an
+adapter cannot pin it. That is the same posture `--approve` has, for a related
+reason: the link opens on the operator's desktop, and the person who has to see
+that page is the ACCOUNT OWNER, who is frequently somewhere else entirely.
+
+It refuses rather than guesses. No `DISPLAY` or `WAYLAND_DISPLAY` on Linux, `CI`
+set, a platform this runtime has not been verified on — each is reported on
+stderr and the command still succeeds, because the link above it is just as
+valid and failing the command would throw away the answer that was asked for.
+
+The outcome is on stderr and nowhere else. It is a fact about this terminal
+rather than about the onboarding state, and a program driving this cannot pass
+the flag in the first place.
+
 ## What `doctor` reports
 
 Two things, and they answer different questions.
