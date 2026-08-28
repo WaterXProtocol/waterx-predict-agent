@@ -15,7 +15,10 @@
     "sbom:generate": "pnpm --filter @waterx/predict-agent-release run generate",
     "sbom:check": "pnpm --filter @waterx/predict-agent-release run generate:check",
     "release:preflight": "pnpm --filter @waterx/predict-agent-release run preflight",
-    "release:preflight:strict": "pnpm --filter @waterx/predict-agent-release run preflight -- --strict"
+    "release:preflight:strict": "pnpm --filter @waterx/predict-agent-release run preflight -- --strict",
+    "consumer:kit": "pnpm --filter @waterx/predict-agent-release run kit --",
+    "consumer:registry": "pnpm --filter @waterx/predict-agent-release run registry --",
+    "consumer:check": "pnpm --filter @waterx/predict-agent-release run check --"
   },
   "devDependencies": {
     "@types/node": "^24.12.0",

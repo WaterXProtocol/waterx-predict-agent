@@ -377,6 +377,18 @@ describe('the release tooling package', () => {
     expect(Object.keys(pkg.dependencies ?? {})).toEqual([]);
   });
 
+  it('exposes its binaries from built output rather than source', () => {
+    // The preflight's own `dist-built` check covers PUBLISHED packages only, and
+    // this one is private permanently — so nothing else would notice a bin path
+    // that points at a file the build never writes.
+    expect(manifest('release').bin).toEqual({
+      'waterx-predict-release-preflight': 'dist/src/bin/preflight.js',
+      'waterx-predict-consumer-kit': 'dist/src/bin/kit.js',
+      'waterx-predict-local-registry': 'dist/src/bin/registry.js',
+      'waterx-predict-consumer-check': 'dist/src/bin/check.js',
+    });
+  });
+
   it('is reachable from the workspace root as a release gate', () => {
     const scripts = (readJson('package.json') as PackageManifest).scripts ?? {};
     for (const script of [
@@ -384,6 +396,12 @@ describe('the release tooling package', () => {
       'sbom:check',
       'release:preflight',
       'release:preflight:strict',
+      // Not gates: these install what is about to ship, so a `files` list that
+      // omits the document the package exists to deliver is found out here
+      // rather than by the first consumer.
+      'consumer:kit',
+      'consumer:registry',
+      'consumer:check',
     ]) {
       expect(scripts[script], script).toContain('@waterx/predict-agent-release');
     }

@@ -83,6 +83,12 @@ pnpm instructions:generate   # rewrite agent-instructions/AGENT_INSTRUCTIONS.md
 pnpm sbom:generate           # rewrite sbom/v1/*.cdx.json from the installed tree
 pnpm release:preflight       # is this workspace fit to publish, and what is unresolved
 
+# What a consumer gets, before anything is published. Both pack the working
+# tree, so rebuild first and re-run after any rebuild.
+pnpm consumer:kit ~/tmp/consumer   # a portable project against the packed tarballs
+pnpm consumer:registry             # serve the same tarballs, resolvable by name
+pnpm consumer:check                # pack, install, assert what arrived — CI runs this
+
 # What the CLI is, with no configuration and no network.
 node packages/cli/dist/src/main.js describe
 
@@ -110,7 +116,8 @@ Node.js 20+ and ESM. macOS and Linux; Windows is not verified (ADR-0002).
   each supply before one can happen.
 - [`packages/release/README.md`](packages/release/README.md) — how the SBOM is
   built, why a licence is never guessed, what the preflight's three outcomes
-  mean.
+  mean, and the two ways to install what is about to ship before it ships: a
+  portable consumer kit, and a scoped local registry that resolves by name.
 - [`docs/RELEASE.md`](docs/RELEASE.md) — what ships, the pre-publish gates,
   provenance, the support window, upgrade and rollback, and telemetry (none).
 - [`docs/IMPLEMENTATION_BACKLOG.md`](docs/IMPLEMENTATION_BACKLOG.md) — the only
