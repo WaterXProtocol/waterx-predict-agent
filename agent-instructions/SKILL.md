@@ -19,7 +19,9 @@ You are not expected to finish alone. Under the default `interactive` policy the
 
 `READ_THE_RULES`
 
-After `npm install`, the operating rules are on disk at `node_modules/@waterx/predict-agent-sdk/AGENT_INSTRUCTIONS.md`, and the machine-readable command contract at `node_modules/@waterx/predict-agent-schema/agent-commands.json`. Read the first one before anything else. It is not background: each rule is a refusal you would otherwise meet with money in flight.
+After `npm install`, the operating rules are on disk at `node_modules/@waterx/predict-agent-sdk/AGENT_INSTRUCTIONS.md`. Read them before anything else. They are not background: each rule is a refusal you would otherwise meet with money in flight.
+
+For the exact shape of a call, use the SDK's own types — its `.d.ts` IS the contract as your compiler sees it. `@waterx/predict-agent-schema` publishes the same contract as plain JSON for a surface that cannot import a Node module, but the SDK does not depend on it, so `node_modules/@waterx/predict-agent-schema/agent-commands.json` exists only if you installed it too. Check before you read it.
 
 If `waterx-predict` is on PATH, `waterx-predict describe` and `waterx-predict command-schema` are the authoritative answer for THIS build and outrank any document, including this one.
 
@@ -87,4 +89,4 @@ Each of these is a rule in `AGENT_INSTRUCTIONS.md`, quoted here so it is in fron
 
 ## Where the rest is
 
-This document is a route, not the rules. The rules are the 30 in `AGENT_INSTRUCTIONS.md`, shipped beside this file, and the command inputs are in `agent-commands.json` in `@waterx/predict-agent-schema`. Where a build disagrees with either, `waterx-predict describe` wins: it reports what THIS installation can do.
+This document is a route, not the rules. The rules are the 30 in `AGENT_INSTRUCTIONS.md`, shipped beside this file. Where a build disagrees with it, `waterx-predict describe` wins: it reports what THIS installation can do.

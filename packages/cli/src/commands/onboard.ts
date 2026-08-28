@@ -108,10 +108,13 @@ export async function runtimeOnboard(context: CommandContext): Promise<unknown> 
   const scope =
     typeof context.input.accountId === 'string' ? { accountId: context.input.accountId } : {};
 
-  const client = await context.client();
-
-  // Announced BEFORE the first read, and on stderr: a human waiting on this needs
-  // the link now, and stdout carries one JSON document that must stay parseable.
+  // Announced before ANY request, and on stderr. The link is built from the
+  // agent address and the console URL, both of which are local — so an
+  // authentication failure must not take it down with it. An operator whose
+  // session is broken still needs the link they came here for, and the owner
+  // they send it to can sign long before that gets fixed.
+  //
+  // stdout stays one JSON document, which is why this goes to stderr.
   context.diagnostic(
     `Authorize this agent by opening:\n  ${authorizationUrl}\nThe page asks the account owner to pick an account, set the limits and sign once.\n`,
   );
@@ -132,6 +135,8 @@ export async function runtimeOnboard(context: CommandContext): Promise<unknown> 
       context.diagnostic(`Could not open a browser (${reason}). Open the link above yourself.\n`);
     }
   }
+
+  const client = await context.client();
 
   if (context.input.wait !== true) {
     const state = describeOnboarding(await client.listAuthorizedAccounts(context.signal()), scope);

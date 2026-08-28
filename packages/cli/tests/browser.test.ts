@@ -13,24 +13,31 @@ import { resolveOpener } from '../src/browser.ts';
 const URL = 'https://testnet.waterx.app/agent/authorize?agent=0x00';
 
 describe('resolveOpener', () => {
+  // Injected everywhere below: the default consults the REAL PATH, so a test
+  // that omitted it would assert about the machine it happens to run on — and
+  // `xdg-open` is absent on every macOS developer's laptop.
+  const present = () => true;
+
   it('uses the platform opener on a desktop', () => {
-    expect(resolveOpener('darwin', {}, URL)).toEqual({
+    expect(resolveOpener('darwin', {}, URL, present)).toEqual({
       kind: 'spawn',
       command: 'open',
       args: [URL],
     });
-    expect(resolveOpener('linux', { DISPLAY: ':0' }, URL)).toEqual({
+    expect(resolveOpener('linux', { DISPLAY: ':0' }, URL, present)).toEqual({
       kind: 'spawn',
       command: 'xdg-open',
       args: [URL],
     });
-    expect(resolveOpener('linux', { WAYLAND_DISPLAY: 'wayland-0' }, URL).kind).toBe('spawn');
+    expect(resolveOpener('linux', { WAYLAND_DISPLAY: 'wayland-0' }, URL, present).kind).toBe(
+      'spawn'
+    );
   });
 
   it('refuses a Linux session with no display to open onto', () => {
     // `xdg-open` there either fails obscurely or picks a terminal browser
     // nobody is watching, and both look to an operator like it worked.
-    const decision = resolveOpener('linux', {}, URL);
+    const decision = resolveOpener('linux', {}, URL, present);
     expect(decision.kind).toBe('refused');
     expect(decision.kind === 'refused' && decision.reason).toMatch(/DISPLAY/u);
   });
@@ -40,7 +47,7 @@ describe('resolveOpener', () => {
     // build that hangs until somebody kills it.
     for (const env of [{ CI: 'true' }, { CONTINUOUS_INTEGRATION: '1' }]) {
       for (const platform of ['darwin', 'linux'] as const) {
-        const decision = resolveOpener(platform, env, URL);
+        const decision = resolveOpener(platform, env, URL, present);
         expect(decision.kind, `${platform} ${JSON.stringify(env)}`).toBe('refused');
       }
     }
@@ -49,7 +56,7 @@ describe('resolveOpener', () => {
   it('refuses a platform nothing here has run on, rather than guessing', () => {
     // Windows is unverified for this runtime (ADR-0002). Naming an opener for
     // it would be a guess that fails in front of somebody instead of here.
-    const decision = resolveOpener('win32', {}, URL);
+    const decision = resolveOpener('win32', {}, URL, present);
     expect(decision.kind).toBe('refused');
     expect(decision.kind === 'refused' && decision.reason).toContain('win32');
   });
@@ -57,7 +64,43 @@ describe('resolveOpener', () => {
   it('passes the url through untouched', () => {
     // Query string intact: the agent address and the label live in it, and a
     // mangled one authorizes the wrong agent or none.
-    const decision = resolveOpener('darwin', {}, URL);
+    const decision = resolveOpener('darwin', {}, URL, present);
     expect(decision.kind === 'spawn' && decision.args).toEqual([URL]);
+  });
+});
+
+describe('resolveOpener: the opener has to exist', () => {
+  const URL_ = 'https://testnet.waterx.app/agent/authorize?agent=0x00';
+  const installed = () => true;
+  const absent = () => false;
+
+  it('refuses when the platform opener is not installed', () => {
+    // The common Linux failure, not an exotic one: `xdg-open` ships in a package
+    // a minimal image routinely lacks. Checked BEFORE anything is claimed,
+    // because a spawn failure arrives on the child's `error` event — after the
+    // caller has already told somebody their browser is opening.
+    const decision = resolveOpener('linux', { DISPLAY: ':0' }, URL_, absent);
+    expect(decision.kind).toBe('refused');
+    expect(decision.kind === 'refused' && decision.reason).toContain('xdg-open');
+    expect(decision.kind === 'refused' && decision.reason).toContain('not installed');
+  });
+
+  it('refuses on macOS too when `open` is somehow missing', () => {
+    expect(resolveOpener('darwin', {}, URL_, absent).kind).toBe('refused');
+  });
+
+  it('spawns when it is there', () => {
+    expect(resolveOpener('darwin', {}, URL_, installed)).toEqual({
+      kind: 'spawn',
+      command: 'open',
+      args: [URL_],
+    });
+  });
+
+  it('checks the display before it checks the binary', () => {
+    // A headless host is refused for having no session, not for a missing
+    // package — the operator's next move is different in each case.
+    const decision = resolveOpener('linux', {}, URL_, absent);
+    expect(decision.kind === 'refused' && decision.reason).toMatch(/DISPLAY/u);
   });
 });

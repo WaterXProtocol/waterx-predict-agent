@@ -26,9 +26,13 @@ node_modules/@waterx/predict-agent-sdk/AGENT_INSTRUCTIONS.md
 Thirty rules with symbolic ids, and a command table whose `SDK` column
 names the method on this client for each one — or says which surface you would
 need instead, because several commands are composed by the `waterx-predict` CLI
-and the durable `strategy.*` family is driven by a local Runner process. The
-machine-readable contract those commands are validated against ships the same
-way, in `@waterx/predict-agent-schema/agent-commands.json`.
+and the durable `strategy.*` family is driven by a local Runner process.
+
+For the exact shape of a call, this package's own types are the contract. The
+same contract is published as plain JSON in
+`@waterx/predict-agent-schema/agent-commands.json`, for a surface that cannot
+import a Node module — **this package does not depend on it**, so that file is
+present only if you installed it as well.
 
 Read it before the first order. Each rule corresponds to a refusal you would
 otherwise meet with real money in flight — a JSON number where a decimal string
@@ -48,7 +52,7 @@ import { describeInstallation } from '@waterx/predict-agent-sdk';
 
 // `supplied` for anything you pass to the constructor rather than the
 // environment — otherwise a correctly configured caller reads MISSING.
-const report = describeInstallation({ supplied: { baseUrl: true, signer: true } });
+const report = describeInstallation({ supplied: { deployment: true, signer: true } });
 report.missing;    // nothing supplies these, and nothing will until someone does
 report.unchecked;  // needs an authenticated read; NOT the same as missing
 report.nextStep;   // who acts next, and what they do

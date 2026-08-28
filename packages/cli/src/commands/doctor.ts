@@ -140,8 +140,9 @@ export async function runDoctor(context: CommandContext): Promise<DoctorReport> 
           id: 'config',
           status: 'FAIL',
           code: 'NOT_CONFIGURED',
-          summary: 'No API base URL is configured.',
-          detail: 'Set WATERX_PREDICT_BASE_URL, or `baseUrl` in the config file.',
+          summary: 'No deployment is configured.',
+          detail:
+            'Name the network and the host follows: WATERX_PREDICT_ENVIRONMENT=testnet (or production), or `environment` in the config file. Nobody should be typing a hostname — a private or preview deployment is the one case that has no name, and WATERX_PREDICT_BASE_URL is for that.',
         },
   );
 

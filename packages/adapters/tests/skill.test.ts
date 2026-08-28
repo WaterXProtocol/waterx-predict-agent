@@ -95,3 +95,27 @@ describe('the skill document', () => {
     expect(readFileSync(SHIPPED, 'utf8')).toBe(rendered);
   });
 });
+
+describe('what the skill claims is installed', () => {
+  it('never promises a package the SDK does not depend on', () => {
+    // The SDK's only runtime dependency is `socket.io-client`, so
+    // `node_modules/@waterx/predict-agent-schema/` is absent for anyone who
+    // installed the SDK alone. The skill sent them there twice as though it
+    // were there — the exact failure `A_SURFACE_YOU_LACK_IS_NOT_A_CAPABILITY_TO_REBUILD`
+    // is about, committed by the document that teaches it.
+    const text = renderAgentSkill();
+    const mentions = text.split('@waterx/predict-agent-schema').length - 1;
+    if (mentions > 0) {
+      expect(text).toMatch(/does not depend on it|only if you installed it/u);
+    }
+    // The path form is the dangerous one: it reads as a file that is there.
+    for (const line of text.split('\n')) {
+      if (!line.includes('node_modules/@waterx/predict-agent-schema')) continue;
+      expect(line).toMatch(/only if you installed it|Check before you read it/u);
+    }
+  });
+
+  it('points a caller at the types it definitely has', () => {
+    expect(renderAgentSkill()).toMatch(/`\.d\.ts` IS the contract/u);
+  });
+});

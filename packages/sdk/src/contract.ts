@@ -598,7 +598,22 @@ export type PredictAgentErrorCode =
   | 'EXECUTION_TIMEOUT'
   | 'RECONCILIATION_REQUIRED'
   | 'UNAUTHENTICATED'
-  | 'INVALID_REQUEST';
+  | 'INVALID_REQUEST'
+  /**
+   * The server failed for a reason it did not anticipate, on a request that
+   * changed nothing — a safe method, so repeating it is safe by definition and
+   * the usual cause is transient.
+   *
+   * Vendored from the backend's own taxonomy. It exists because the alternative
+   * was `RECONCILIATION_REQUIRED` on a READ, which tells this SDK that a WRITE
+   * may have landed: the documented recovery for that is to reconcile BY
+   * READING, so a read answering "reconcile" is a loop with no exit.
+   *
+   * Not in `RETRYABLE_PREDICT_AGENT_ERROR_CODES` below by accident — it IS
+   * retryable, and the list says so. Retrying is decided from the `retryable`
+   * field on the wire, so an older client meets this correctly either way.
+   */
+  | 'INTERNAL_ERROR';
 
 /**
  * Error envelope. FLAT and NOT wrapped in the app-wide `{ success, data }` shape
@@ -625,6 +640,7 @@ export const RETRYABLE_PREDICT_AGENT_ERROR_CODES = [
   'RATE_LIMITED',
   'SPONSOR_UNAVAILABLE',
   'EXECUTION_TIMEOUT',
+  'INTERNAL_ERROR',
 ] as const satisfies readonly PredictAgentErrorCode[];
 
 /* ── Private execution stream ────────────────────────────────────────────── */

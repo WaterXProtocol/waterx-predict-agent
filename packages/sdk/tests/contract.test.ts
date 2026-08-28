@@ -70,6 +70,12 @@ describe('vendored wire contract', () => {
       'RATE_LIMITED',
       'SPONSOR_UNAVAILABLE',
       'EXECUTION_TIMEOUT',
+      // A read that failed for an unanticipated reason. Repeating it is safe by
+      // definition — the method changed nothing — and the usual cause is
+      // transient. Its absence was the bug: the backend answered
+      // RECONCILIATION_REQUIRED on reads, which tells this SDK a WRITE may have
+      // landed and is recovered by reading, i.e. by the request that just failed.
+      'INTERNAL_ERROR',
     ]);
   });
 

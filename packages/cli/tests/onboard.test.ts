@@ -245,3 +245,20 @@ describe('onboard --open', () => {
     expect(result.fetches).toHaveLength(0);
   });
 });
+
+describe('onboard: the link survives a broken session', () => {
+  it('prints the link even when authentication fails', async () => {
+    // The link is built from the agent address and the console URL, both local.
+    // Printing it after `context.client()` lost it to every auth failure — and
+    // an operator whose session is broken still needs the link they came for.
+    // The owner they send it to can sign long before that is fixed.
+    const result = await invoke(['onboard', '--label', 'momentum-bot'], {
+      env: CONSOLE_ENV,
+      routes: { 'POST /agent-api/v1/auth': { status: 401, body: { error: { code: 'UNAUTHENTICATED', message: 'bad signature', retryable: false } } } },
+    });
+
+    expect(result.envelope.ok).toBe(false);
+    expect(result.stderr).toContain('Authorize this agent by opening:');
+    expect(result.stderr).toContain('/agent/authorize?agent=');
+  });
+});

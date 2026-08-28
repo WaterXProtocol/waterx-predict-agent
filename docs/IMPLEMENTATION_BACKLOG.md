@@ -13,8 +13,8 @@ gets built; neither is evidence that anything works.
   touched and no endpoint is added. The backend worktree is clean at that commit
   and the vendored contract was re-diffed against it below. See the Contract sync
   section.
-- SDK verification: `pnpm typecheck` clean, `pnpm test` **1237 in 64 files**
-  (206 SDK, 74 schema, 203 CLI, 423 Runner, 13 browser signer, 14 keystore signer, 47 adapters, 30 MCP, 95 E2E harness,
+- SDK verification: `pnpm typecheck` clean, `pnpm test` **1258 in 65 files**
+  (206 SDK, 74 schema, 219 CLI, 423 Runner, 13 browser signer, 14 keystore signer, 50 adapters, 30 MCP, 95 E2E harness,
   76 release, 56 workspace), `pnpm build` clean, and all **three** generators
   reproduce their committed artifacts byte-for-byte — now **six** files, because
   each document is emitted both at the repository root and inside the package
