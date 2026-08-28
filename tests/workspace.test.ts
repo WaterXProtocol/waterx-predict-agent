@@ -252,6 +252,24 @@ describe('published package hygiene', () => {
     }
   });
 
+  it('puts the agent-facing artifact inside the tarball, not just in this repository', () => {
+    // `npm install` delivers `files` and nothing else. Instructions and a
+    // command contract that live only at the repository root are read by people
+    // who already cloned it, and by no agent that installed the package — which
+    // is the entire population they were written for. Both are generated, and
+    // the byte comparison is what stops the shipped copy from becoming a
+    // snapshot of what the rules used to say.
+    const shipped = [
+      ['sdk', 'AGENT_INSTRUCTIONS.md', 'agent-instructions/AGENT_INSTRUCTIONS.md'],
+      ['sdk', 'SKILL.md', 'agent-instructions/SKILL.md'],
+      ['schema', 'agent-commands.json', 'schemas/v1/agent-commands.json'],
+    ] as const;
+    for (const [dir, entry, committed] of shipped) {
+      expect(manifest(dir).files, dir).toContain(entry);
+      expect(read(`packages/${dir}/${entry}`), entry).toBe(read(committed));
+    }
+  });
+
   it('asks the registry for public access and a provenance attestation', () => {
     // A scoped package defaults to *restricted*: publishing one without this
     // fails at the registry with the version already burned. `provenance` is
@@ -273,6 +291,62 @@ describe('published package hygiene', () => {
     expect(readdirSync(`${ROOT}sbom/v1`).filter((name) => name.endsWith('.cdx.json')).sort()).toEqual(
       expected,
     );
+  });
+});
+
+describe('the SDK discovery entry point', () => {
+  /** The modules `npx @waterx/predict-agent-sdk` loads, and nothing else. */
+  const DISCOVERY = [
+    'packages/sdk/src/bin/describe.ts',
+    'packages/sdk/src/installation.ts',
+    'packages/sdk/src/provisioning.ts',
+  ];
+
+  it('is one binary, from built output rather than source', () => {
+    // The CLI is the canonical `describe`, and it is not published (ADR-0009
+    // D-28). Until it is, the package a caller can actually install has to be
+    // able to say what it is and what it still needs — from a state where
+    // nothing is configured, which is when the question gets asked.
+    expect(manifest('sdk').bin).toEqual({
+      'waterx-predict-agent-sdk': 'dist/src/bin/describe.js',
+    });
+  });
+
+  it('cannot become a second way to trade', () => {
+    // A discovery command that could place an order would be an order with none
+    // of the command core's policy, approval or idempotency attached
+    // (`NO_SECOND_SURFACE`). The guarantee is structural: these modules import
+    // nothing that can make a request, so there is no symbol in scope to send
+    // one with. Imports rather than mentions — `provisioning.ts` has to be able
+    // to tell a caller to construct a client, in prose, without being able to.
+    for (const file of DISCOVERY) {
+      const source = read(file);
+      for (const specifier of [
+        './client.ts',
+        './transport.ts',
+        './session.ts',
+        './execution-stream.ts',
+        './quote-stream.ts',
+        'node:http',
+        'node:https',
+        'node:net',
+        'node:child_process',
+      ]) {
+        expect(source, `${file} imports ${specifier}`).not.toMatch(
+          new RegExp(String.raw`(?:from|import|require)\s*\(?\s*'${specifier}'`, 'u'),
+        );
+      }
+      expect(source, `${file} calls fetch`).not.toMatch(/\bfetch\s*\(/u);
+      expect(source, `${file} spawns a process`).not.toMatch(/\b(?:spawn|exec|execSync|spawnSync)\s*\(/u);
+    }
+  });
+
+  it('is reachable from a package that ships it', () => {
+    // `bin` resolves from the tarball, so the file it names has to be inside
+    // `files`. A binary declared against a path npm never packs is a `command
+    // not found` for every consumer and for nobody in this repository.
+    expect(manifest('sdk').files, 'sdk').toContain('dist');
+    expect(() => read('packages/sdk/src/bin/describe.ts'), 'sdk').not.toThrow();
   });
 });
 
@@ -305,7 +379,12 @@ describe('the release tooling package', () => {
 
   it('is reachable from the workspace root as a release gate', () => {
     const scripts = (readJson('package.json') as PackageManifest).scripts ?? {};
-    for (const script of ['sbom:generate', 'sbom:check', 'release:preflight', 'release:preflight:strict']) {
+    for (const script of [
+      'sbom:generate',
+      'sbom:check',
+      'release:preflight',
+      'release:preflight:strict',
+    ]) {
       expect(scripts[script], script).toContain('@waterx/predict-agent-release');
     }
     expect(scripts['release:preflight:strict']).toContain('--strict');
@@ -758,10 +837,18 @@ describe('the adapter packages', () => {
   it('never imports the SDK or the Runner, in source', () => {
     // The structural half of "must not reimplement". There is no symbol in
     // scope to reimplement pricing, retry, signing, policy or job state with.
+    //
+    // This matches an import rather than the bare name, the same way the CLI
+    // check below does. The looser form was equivalent only while no adapter
+    // source had a reason to say the word: the instructions rendered here now
+    // have to tell a reader which package they are holding, and a rule that
+    // forbids naming a package in prose buys nothing — an import is what puts
+    // a symbol in scope, and a symbol in scope is the whole risk.
     for (const dir of ADAPTERS) {
       for (const file of sourceFiles(`packages/${dir}/src`)) {
         for (const name of ['@waterx/predict-agent-sdk', '@waterx/predict-agent-runner']) {
-          expect(read(file), `${file} imports ${name}`).not.toContain(name);
+          const imported = new RegExp(String.raw`(?:from|import|require)\s*\(?\s*'${name}'`, 'u');
+          expect(read(file), `${file} imports ${name}`).not.toMatch(imported);
         }
       }
     }

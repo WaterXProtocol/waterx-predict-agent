@@ -194,6 +194,36 @@ the client learning to approximate one:
   an unlimited default. A `null` delegation permission means the chain read
   **failed**, which is not the same as `false`.
 
+## What `doctor` reports
+
+Two things, and they answer different questions.
+
+**`checks`** say what happened, as PASS, FAIL or SKIP. SKIP is load-bearing: a
+check that could not run because a prerequisite failed is not a pass, and
+reporting it as one is how an operator concludes a broken setup is healthy.
+
+**`requirements`** say what to do, as fields rather than as a sentence a caller
+has to parse. The six things that must exist before this runtime may trade,
+each with `suppliedBy`, `why`, `supplyWith` and `settledBy`, plus `missing`,
+`unchecked` and one `nextStep`. It is the same list
+`@waterx/predict-agent-sdk`'s `describeInstallation()` reports before anything is
+configured — one list, so an agent holding only the library and an operator
+running `doctor` are never told two different stories. `doctor` settles three
+more of them, because it can authenticate and read what an owner has granted.
+
+`UNCHECKED` is not a soft `MISSING`. It means this invocation had no way to
+look — no session, or a listing that failed — and reporting an owner's
+delegation as absent on that basis sends a person to re-sign a grant they may
+already have made. A `mayPlaceOrder` of `null` is the same fact one level down:
+the chain read failed, so the requirement stays `UNCHECKED`.
+
+**An outstanding grant is not a failing `doctor`.** A machine whose
+configuration and signer are sound, waiting on a delegation nobody has signed
+yet, is not a broken machine — the exit code keeps meaning "your setup is
+wrong", and `nextStep` says "your owner has not signed yet". They are different
+actions by different people, and `waterx-predict onboard` is where the second
+one starts.
+
 ## Execution policy
 
 What this runtime may sign, and on whose say-so. Three modes:

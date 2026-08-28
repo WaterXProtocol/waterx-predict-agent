@@ -22,6 +22,8 @@ import { toolNameFor } from '../src/tools.ts';
 const COMMITTED = fileURLToPath(
   new URL('../../../agent-instructions/AGENT_INSTRUCTIONS.md', import.meta.url),
 );
+/** The copy `@waterx/predict-agent-sdk` ships in its tarball. */
+const SHIPPED = fileURLToPath(new URL('../../sdk/AGENT_INSTRUCTIONS.md', import.meta.url));
 
 const document = buildAgentInstructions();
 const ruleIds = document.sections.flatMap((section) => section.rules.map((rule) => rule.id));
@@ -47,6 +49,18 @@ describe('the instructions document', () => {
       expect(entry?.cli, command.name).toBe(command.cli);
       expect(entry?.tool, command.name).toBe(toolNameFor(command.name));
       expect(entry?.classification, command.name).toBe(command.classification);
+      // The SDK cell is derived from the contract's own `implementation`, so a
+      // command that stops compiling down to an SDK method stops advertising
+      // one. Typed out by hand it would keep naming a method that no longer
+      // exists, which is the failure that costs a caller a runtime TypeError
+      // in the middle of an order.
+      expect(entry?.sdk, command.name).toBe(
+        command.implementation.kind === 'sdk'
+          ? `\`client.${command.implementation.method}()\``
+          : command.implementation.kind === 'runner'
+            ? 'no — local Runner'
+            : 'no — composed by the core',
+      );
     }
   });
 
@@ -104,10 +118,30 @@ describe('the instructions document', () => {
     expect(renderAgentInstructions()).toContain(`Instructions version ${AGENT_INSTRUCTIONS_VERSION}`);
   });
 
-  it('matches the committed document byte for byte', () => {
+  it('matches both committed documents byte for byte', () => {
     // The committed Markdown is what a host that cannot run this toolchain
-    // reads, and what the MCP adapter returns at `initialize`. Regenerate with
+    // reads, and what the MCP adapter returns at `initialize`. The copy under
+    // `packages/sdk` is the one that reaches an agent which only ever ran
+    // `npm install` — the population these rules exist for, and the one that
+    // cannot notice the root copy drifting. Regenerate both with
     // `pnpm instructions:generate`.
-    expect(readFileSync(COMMITTED, 'utf8')).toBe(renderAgentInstructions());
+    const rendered = renderAgentInstructions();
+    expect(readFileSync(COMMITTED, 'utf8')).toBe(rendered);
+    expect(readFileSync(SHIPPED, 'utf8')).toBe(rendered);
+  });
+
+  it('tells a reader holding only the library how to find that out', () => {
+    // The document opened by telling every reader to call `runtime.describe`,
+    // which is the one thing an SDK-only caller cannot do. A rule addressed to
+    // a surface the reader does not have is not neutral: it reads as
+    // permission, and the reader goes looking for a binary nobody installed.
+    const text = renderAgentInstructions();
+    expect(text).toContain('Know which surface you are holding');
+    expect(text).toContain('IDENTIFY_YOUR_SURFACE_BEFORE_THE_FIRST_COMMAND');
+    expect(text).toContain('| Command | CLI | Tool | SDK |');
+    // Absence is stated, never left blank: `strategy.*` needs a Runner and the
+    // composed commands need the core, and a blank cell reads as an oversight.
+    expect(text).toContain('no — local Runner');
+    expect(text).toContain('no — composed by the core');
   });
 });

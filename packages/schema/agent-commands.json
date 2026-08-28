@@ -1,0 +1,2043 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:waterx:predict:agent-commands:v1",
+  "title": "WaterX Predict agent command contract",
+  "description": "The commands a WaterX Predict agent host may issue, and the exact input each one accepts. Every surface — CLI, MCP or any other function adapter — validates against this document and compiles to the same SDK call, so the same intent cannot mean two different things depending on the host. Money, prices and sizes are decimal STRINGS. A JSON number cannot hold them exactly.",
+  "schemaVersion": "1",
+  "$defs": {
+    "positiveDecimalAmount": {
+      "title": "Positive decimal amount",
+      "description": "A decimal string greater than zero with at most 6 decimal places, e.g. \"50\". Never a JSON number.",
+      "type": "string",
+      "pattern": "^(?!0+(\\.0+)?$)[0-9]+(\\.[0-9]{1,6})?$"
+    },
+    "probabilityPrice": {
+      "title": "Probability price",
+      "description": "A decimal string in the inclusive range 0–1, e.g. \"0.82\". Never a JSON number.",
+      "type": "string",
+      "pattern": "^(0+(\\.[0-9]{1,6})?|0*1(\\.0{1,6})?)$"
+    },
+    "accountId": {
+      "title": "Account id",
+      "description": "The WaterX Predict account the order settles against, as a full 0x-prefixed Sui address.",
+      "type": "string",
+      "pattern": "^0x[0-9a-fA-F]{64}$"
+    },
+    "marketId": {
+      "title": "Market id",
+      "description": "A server-resolved market identifier. Obtain it from market.list or market.get; an agent must never construct or guess one (ADR-0001 §10).",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "outcomeId": {
+      "title": "Outcome id",
+      "description": "The binary leg. A closed set on this API version.",
+      "type": "string",
+      "enum": [
+        "YES",
+        "NO"
+      ]
+    },
+    "side": {
+      "title": "Side",
+      "description": "BUY commits a wxUSD budget. SELL closes shares of an existing position.",
+      "type": "string",
+      "enum": [
+        "BUY",
+        "SELL"
+      ]
+    },
+    "buySize": {
+      "title": "BUY size (buyAmount)",
+      "description": "A BUY commits a wxUSD budget.",
+      "type": "object",
+      "required": [
+        "buyAmount"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "buyAmount": {
+          "$ref": "#/$defs/positiveDecimalAmount"
+        }
+      }
+    },
+    "sellSize": {
+      "title": "SELL size (sellShares)",
+      "description": "A SELL states a share quantity to close.",
+      "type": "object",
+      "required": [
+        "sellShares"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "sellShares": {
+          "$ref": "#/$defs/positiveDecimalAmount"
+        }
+      }
+    },
+    "orderSize": {
+      "title": "Order size",
+      "type": "object",
+      "description": "Exactly one field, decided by side: buyAmount for a BUY, sellShares for a SELL. Supplying both or neither is an error, not a preference.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/buySize"
+        },
+        {
+          "$ref": "#/$defs/sellSize"
+        }
+      ]
+    },
+    "sideSizeAgreement": {
+      "title": "Side and size unit agree",
+      "description": "A BUY states buyAmount; a SELL states sellShares (ADR-0001 §11).",
+      "oneOf": [
+        {
+          "title": "BUY with buyAmount",
+          "type": "object",
+          "required": [
+            "side",
+            "size"
+          ],
+          "properties": {
+            "side": {
+              "const": "BUY"
+            },
+            "size": {
+              "$ref": "#/$defs/buySize"
+            }
+          }
+        },
+        {
+          "title": "SELL with sellShares",
+          "type": "object",
+          "required": [
+            "side",
+            "size"
+          ],
+          "properties": {
+            "side": {
+              "const": "SELL"
+            },
+            "size": {
+              "$ref": "#/$defs/sellSize"
+            }
+          }
+        }
+      ]
+    },
+    "positionAgreement": {
+      "title": "Position id matches the side",
+      "description": "A SELL identifies the on-chain position being closed. A BUY must not name one.",
+      "oneOf": [
+        {
+          "title": "BUY closes no position",
+          "type": "object",
+          "required": [
+            "side"
+          ],
+          "properties": {
+            "side": {
+              "const": "BUY"
+            },
+            "positionId": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "title": "SELL names the position it closes",
+          "type": "object",
+          "required": [
+            "side",
+            "positionId"
+          ],
+          "properties": {
+            "side": {
+              "const": "SELL"
+            },
+            "positionId": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      ]
+    },
+    "maxSlippageBps": {
+      "title": "Maximum slippage (bps)",
+      "description": "Mandatory price protection. 10000 is rejected rather than clamped — it would remove all protection while still looking protected.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9999
+    },
+    "limit": {
+      "title": "Page size",
+      "description": "Rows to return. The server caps this at 200. On the account history reads it composes with `cursor`; the market catalog has no cursor, so there `limit` is the whole of paging.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 200
+    },
+    "cursor": {
+      "title": "Page cursor",
+      "description": "The `nextCursor` from the previous page, passed back VERBATIM. Omit it for the newest page. It names the exact row the last page ended on, so rows arriving at the head between two requests cannot shift anything past you. A cursor that is edited, truncated, or taken from a different list is REJECTED with INVALID_REQUEST, never silently ignored.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "searchText": {
+      "title": "Search text",
+      "description": "Free text matched SERVER-SIDE against each market’s published aliases. Matching is deterministic and purely lexical: every token must be a prefix of an alias token. There is no fuzzy distance and no synonym table, so the same text against the same catalog always resolves the same way.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "idempotencyKey": {
+      "title": "Idempotency key",
+      "description": "One key per logical order intent, reused for every retry of that intent. Supply it to make the intent replayable across a process restart; omitted, the runtime mints one that only covers in-process retries.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "orderIntent": {
+      "title": "Order intent",
+      "description": "One price-protected market order. Each intent is independent: it has its own quote, idempotency key, execution and result, and no batch is atomic.",
+      "type": "object",
+      "required": [
+        "accountId",
+        "marketId",
+        "outcomeId",
+        "side",
+        "size",
+        "maxSlippageBps"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "accountId": {
+          "$ref": "#/$defs/accountId"
+        },
+        "marketId": {
+          "$ref": "#/$defs/marketId"
+        },
+        "outcomeId": {
+          "$ref": "#/$defs/outcomeId"
+        },
+        "side": {
+          "$ref": "#/$defs/side"
+        },
+        "size": {
+          "$ref": "#/$defs/orderSize"
+        },
+        "positionId": {
+          "title": "Position id",
+          "description": "Required for a SELL: the on-chain position being closed. Absent for a BUY.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "referenceQuoteId": {
+          "title": "Reference quote id",
+          "description": "The executable quote this order is priced against, from market.quote. A quote lives seconds and is never extended, so obtain it immediately before the order — a catalog price is indicative and cannot be used here.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "maxSlippageBps": {
+          "$ref": "#/$defs/maxSlippageBps"
+        },
+        "worstAcceptablePrice": {
+          "$ref": "#/$defs/probabilityPrice",
+          "title": "Worst acceptable price",
+          "description": "A probability price in the inclusive range 0–1, as a decimal string. An absolute bound, applied only when it is stricter than the slippage budget. The price the chain enforces may be stricter still after granularity rounding, never looser."
+        },
+        "clientOrderId": {
+          "title": "Client order id",
+          "description": "A business label. NOT a substitute for the idempotency key.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "strategyId": {
+          "title": "Strategy id",
+          "description": "Attribution label carried onto executions and fills.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "idempotencyKey": {
+          "$ref": "#/$defs/idempotencyKey"
+        }
+      },
+      "allOf": [
+        {
+          "$ref": "#/$defs/sideSizeAgreement"
+        },
+        {
+          "$ref": "#/$defs/positionAgreement"
+        }
+      ]
+    },
+    "ownerAddress": {
+      "title": "Owner address",
+      "description": "The address that owns the account, as a full 0x-prefixed Sui address. The Runner records it on the job; it is not a second authorization.",
+      "type": "string",
+      "pattern": "^0x[0-9a-fA-F]{64}$"
+    },
+    "agentWallet": {
+      "title": "Agent wallet",
+      "description": "The delegated agent wallet the eventual order is signed by, as a full 0x-prefixed Sui address. The private key stays inside the Runner’s signer and never reaches this surface.",
+      "type": "string",
+      "pattern": "^0x[0-9a-fA-F]{64}$"
+    },
+    "positionFraction": {
+      "title": "Fraction of a position",
+      "description": "A decimal string greater than 0 and at most 1 — \"0.5\" is half. Never a percentage and never a JSON number.",
+      "type": "string",
+      "pattern": "^(0\\.(?!0+$)[0-9]{1,6}|1(\\.0{1,6})?)$"
+    },
+    "jobId": {
+      "title": "Job id",
+      "description": "The durable job identifier the Runner minted when the strategy was created. Local to the Runner; the exchange has never heard of it.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "strategyLeg": {
+      "title": "Strategy leg",
+      "description": "One order the strategy will place when it triggers. Legs execute INDEPENDENTLY: each has its own quote, its own idempotency key and its own outcome, and no leg is rolled back because another failed.",
+      "type": "object",
+      "required": [
+        "marketId",
+        "outcomeId",
+        "side",
+        "maxSlippageBps"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "marketId": {
+          "$ref": "#/$defs/marketId"
+        },
+        "outcomeId": {
+          "$ref": "#/$defs/outcomeId"
+        },
+        "side": {
+          "$ref": "#/$defs/side"
+        },
+        "buyAmount": {
+          "$ref": "#/$defs/positiveDecimalAmount",
+          "title": "BUY size (buyAmount)",
+          "description": "BUY only: the wxUSD budget to commit. Exactly one sizing field per leg."
+        },
+        "sellShares": {
+          "$ref": "#/$defs/positiveDecimalAmount",
+          "title": "SELL size (sellShares)",
+          "description": "SELL only: an exact share count to close. Exactly one sizing field per leg."
+        },
+        "sellFractionOfPosition": {
+          "$ref": "#/$defs/positionFraction",
+          "title": "SELL a frozen fraction of the position",
+          "description": "SELL only, and the DEFAULT meaning of a percentage: the fraction is resolved to a share count AT CREATION, against an authoritative position read, and that count is what trades. Buying more of the same outcome afterwards does not enlarge this sale."
+        },
+        "dynamicSellFractionOfPosition": {
+          "$ref": "#/$defs/positionFraction",
+          "title": "SELL a fraction re-read at the trigger",
+          "description": "SELL only: the fraction is applied to whatever is held WHEN THE STRATEGY TRIGGERS, so a position that grew in the meantime sells more shares than existed when this was armed. A distinct field, never a default, because the difference is a different trade."
+        },
+        "positionId": {
+          "title": "Position id",
+          "description": "Required for a SELL: the on-chain position being closed. Absent for a BUY.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "maxSlippageBps": {
+          "$ref": "#/$defs/maxSlippageBps"
+        },
+        "worstAcceptablePrice": {
+          "$ref": "#/$defs/probabilityPrice",
+          "title": "Worst acceptable price",
+          "description": "An absolute bound applied at execution, on top of the slippage budget. Checked against a FRESH quote at the trigger, never against the price that was current when the strategy was armed."
+        }
+      }
+    },
+    "strategyTrigger": {
+      "title": "Strategy trigger",
+      "description": "IMMEDIATE runs at the next scheduler pass. PRICE waits for a market to reach targetPrice, which is watched by the Runner process — nothing server-side stores a target, so a Runner that is not running is a strategy that is not watching.",
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "title": "Trigger kind",
+          "description": "A closed set on this schema version.",
+          "type": "string",
+          "enum": [
+            "IMMEDIATE",
+            "PRICE"
+          ]
+        },
+        "targetPrice": {
+          "$ref": "#/$defs/probabilityPrice",
+          "title": "Target price",
+          "description": "PRICE only. Crossed, not matched: a BUY fires at or below it, a SELL at or above."
+        },
+        "marketId": {
+          "$ref": "#/$defs/marketId",
+          "title": "Watched market",
+          "description": "PRICE only. Defaults to the single leg’s market when every leg agrees."
+        },
+        "outcomeId": {
+          "$ref": "#/$defs/outcomeId",
+          "title": "Watched outcome",
+          "description": "PRICE only. Defaults the same way the market does."
+        },
+        "side": {
+          "$ref": "#/$defs/side",
+          "title": "Watched side",
+          "description": "PRICE only. Decides the direction of the comparison, and which half of the book is read."
+        }
+      }
+    }
+  },
+  "commands": [
+    {
+      "name": "runtime.describe",
+      "cli": "describe",
+      "summary": "Report what this runtime can actually do, and what it cannot.",
+      "description": "The discovery entry point, and the only command that answers before configuration or network exist — a host has to be able to ask what it is holding. The capability inventory names unavailable capabilities explicitly with a symbolic reason rather than omitting them, so a caller can tell \"not supported here\" from \"not mentioned\". Server capabilities are reported from this build's static knowledge because the API advertises no capability document.",
+      "classification": "read",
+      "sideEffects": [
+        "NONE"
+      ],
+      "longRunning": false,
+      "idempotency": {
+        "required": false,
+        "callerSupplied": "UNSUPPORTED",
+        "note": "A read is safe to repeat; no key applies."
+      },
+      "confirmation": "NOT_REQUIRED",
+      "implementation": {
+        "kind": "runtime",
+        "note": "Local only: build metadata, resolved configuration, and the capability inventory. Issues no request."
+      },
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "examples": [
+        {
+          "title": "Describe the runtime",
+          "input": {}
+        }
+      ]
+    },
+    {
+      "name": "runtime.command-schema",
+      "cli": "command-schema",
+      "summary": "Emit this command document, or one command from it.",
+      "description": "The machine-readable half of discovery: the same versioned document an adapter turns into tool definitions. Omit command for the whole document. A name that is not in this version is an error rather than an empty result, because silently returning nothing would let a host advertise a tool that does not exist.",
+      "classification": "read",
+      "sideEffects": [
+        "NONE"
+      ],
+      "longRunning": false,
+      "idempotency": {
+        "required": false,
+        "callerSupplied": "UNSUPPORTED",
+        "note": "A read is safe to repeat; no key applies."
+      },
+      "confirmation": "NOT_REQUIRED",
+      "implementation": {
+        "kind": "runtime",
+        "note": "Local only: serializes the compiled command document. Issues no request."
+      },
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "command": {
+            "title": "Command name",
+            "description": "A dotted name from this document, e.g. `order.execute`.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        }
+      },
+      "examples": [
+        {
+          "title": "Whole document",
+          "input": {}
+        },
+        {
+          "title": "One command",
+          "input": {
+            "command": "order.execute"
+          }
+        }
+      ]
+    },
+    {
+      "name": "runtime.doctor",
+      "cli": "doctor",
+      "summary": "Check configuration, signer, reachability and authentication.",
+      "description": "Diagnostics, not a trade. The authentication check signs the login challenge as a PERSONAL MESSAGE, which moves no funds and is not a transaction signature; no other check signs anything. Checks that cannot run without configuration are reported as skipped rather than passed. Pass accountId to include the allowance check when no default account is configured.",
+      "classification": "read",
+      "sideEffects": [
+        "AUTHENTICATES"
+      ],
+      "longRunning": false,
+      "idempotency": {
+        "required": false,
+        "callerSupplied": "UNSUPPORTED",
+        "note": "A read is safe to repeat; no key applies."
+      },
+      "confirmation": "NOT_REQUIRED",
+      "implementation": {
+        "kind": "runtime",
+        "note": "Composes local checks with authenticate() and, when an account is known, getAllowance()."
+      },
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "accountId": {
+            "$ref": "#/$defs/accountId"
+          }
+        }
+      },
+      "examples": [
+        {
+          "title": "Check the runtime",
+          "input": {}
+        },
+        {
+          "title": "Include the allowance check",
+          "input": {
+            "accountId": "0x1111111111111111111111111111111111111111111111111111111111111111"
+          }
+        }
+      ]
+    },
+    {
+      "name": "runtime.onboard",
+      "cli": "onboard",
+      "summary": "Get this agent authorized: the link an owner signs, and where the grants stand.",
+      "description": "The first command of an integration, and the only one that addresses a HUMAN. Reports what is missing before this agent may trade and returns the authorization URL an ACCOUNT OWNER opens to grant it. The URL names this agent wallet and carries no token, no secret and no pre-authorization: everything it can do, the owner does with their own wallet in their own session. This runtime never signs a delegation, never writes a risk profile and never raises a limit — an agent runtime that could grant its own authority would make the authority meaningless (ADR-0003). Pass wait to poll until the owner has signed; without it this answers immediately with the current state, because a model host must not be blocked for the minutes a person takes to find their wallet. DELEGATION_UNKNOWN means the on-chain read FAILED and is never reported as a refusal: telling an owner to re-sign a grant they already made is worse than saying nothing was learned.",
+      "classification": "read",
+      "sideEffects": [
+        "AUTHENTICATES"
+      ],
+      "longRunning": false,
+      "idempotency": {
+        "required": false,
+        "callerSupplied": "UNSUPPORTED",
+        "note": "A read is safe to repeat; no key applies."
+      },
+      "confirmation": "NOT_REQUIRED",
+      "implementation": {
+        "kind": "runtime",
+        "note": "Composes authenticate() and listAuthorizedAccounts() through describeOnboarding/waitForAuthorization. Writes nothing, anywhere."
+      },
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "accountId": {
+            "$ref": "#/$defs/accountId"
+          },
+          "label": {
+            "title": "Agent label",
+            "description": "A human name carried in the link so an owner can tell two agents apart. Cosmetic; it authorizes nothing.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "wait": {
+            "title": "Wait for the owner",
+            "description": "Poll until the grants land. Absent means answer now. A wait that runs out is NOT a failure — the owner may sign a minute later — so the answer carries timedOut and the last state, and resuming means calling again.",
+            "type": "boolean"
+          },
+          "timeoutMs": {
+            "title": "Wait timeout (ms)",
+            "description": "Only meaningful with wait. Default 600000 — a person has to find a wallet and read a screen.",
+            "type": "integer",
+            "minimum": 1000,
+            "maximum": 3600000
+          },
+          "consoleUrl": {
+            "title": "Console base URL",
+            "description": "Where the owner signs. Defaults to the console paired with the configured API deployment; there is no global default, because the deployment decides whether an order spends real money.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          }
+        }
+      },
+      "examples": [
+        {
+          "title": "Where does authorization stand",
+          "input": {}
+        },
+        {
+          "title": "Print the link and wait for the owner",
+          "input": {
+            "wait": true,
+            "label": "momentum-bot"
+          }
+        }
+      ]
+    },
+    {
+      "name": "market.list",
+      "cli": "market list",
+      "summary": "List the tradeable market catalog.",
+      "description": "Server-resolved market identity: this is how an agent obtains a marketId, and it must never construct one. Outcome prices in the result are INDICATIVE top-of-book and are not executable — call market.quote before acting on one. The status and tradeable filters are applied after the page is assembled, so a filtered page can be shorter than limit without the catalog being exhausted. Passing search adds a resolution block that says whether the text named exactly one market; market.search is the same call with that answer put first.",
+      "classification": "read",
+      "sideEffects": [
+        "NONE"
+      ],
+      "longRunning": false,
+      "idempotency": {
+        "required": false,
+        "callerSupplied": "UNSUPPORTED",
+        "note": "A read is safe to repeat; no key applies."
+      },
+      "confirmation": "NOT_REQUIRED",
+      "implementation": {
+        "kind": "sdk",
+        "method": "getMarkets"
+      },
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "$ref": "#/$defs/limit"
+          },
+          "category": {
+            "title": "Category",
+            "description": "Server-defined catalog category, matched exactly.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "x-waterx-open-set": [
+              "FOOTBALL",
+              "BASKETBALL"
+            ]
+          },
+          "status": {
+            "title": "Market status",
+            "description": "A closed set on this API version.",
+            "type": "string",
+            "enum": [
+              "PREGAME",
+              "IN_PLAY",
+              "CLOSED",
+              "RESOLVED"
+            ]
+          },
+          "tradeable": {
+            "title": "Tradeable only",
+            "description": "Restrict to markets currently accepting orders.",
+            "type": "boolean"
+          },
+          "updatedAfter": {
+            "title": "Updated after",
+            "description": "ISO-8601 UTC instant. Only markets whose definition changed after it.",
+            "type": "string",
+            "minLength": 1
+          },
+          "search": {
+            "$ref": "#/$defs/searchText"
+          }
+        }
+      },
+      "examples": [
+        {
+          "title": "Tradeable football markets",
+          "input": {
+            "category": "FOOTBALL",
+            "tradeable": true,
+            "limit": 20
+          }
+        }
+      ]
+    },
+    {
+      "name": "market.search",
+      "cli": "market search",
+      "summary": "Resolve free text to one market id, or say it did not.",
+      "description": "Name-to-id resolution, decided BY THE SERVER against each market’s published aliases — the runtime never matches text against a page it fetched, because a locally-chosen id is an id nothing resolved. status is RESOLVED only when exactly one market matched, and marketId is null on anything else: AMBIGUOUS returns the candidates so the caller can narrow, and picking one for them is the hallucinated identity this contract exists to prevent. matchCount is counted over the whole filtered catalog before limit truncates the page, so a page of one is never mistaken for a unique answer. The candidate order is match specificity, then the round clock, then the id — a reproducible tie-break, not a judgement about which market is worth trading.",
+      "classification": "read",
+      "sideEffects": [
+        "NONE"
+      ],
+      "longRunning": false,
+      "idempotency": {
+        "required": false,
+        "callerSupplied": "UNSUPPORTED",
+        "note": "A read is safe to repeat; no key applies."
+      },
+      "confirmation": "NOT_REQUIRED",
+      "implementation": {
+        "kind": "sdk",
+        "method": "searchMarkets"
+      },
+      "input": {
+        "type": "object",
+        "required": [
+          "search"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "search": {
+            "$ref": "#/$defs/searchText"
+          },
+          "limit": {
+            "$ref": "#/$defs/limit"
+          },
+          "category": {
+            "title": "Category",
+            "description": "Server-defined catalog category, matched exactly. Narrows before the search.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "x-waterx-open-set": [
+              "FOOTBALL",
+              "BASKETBALL"
+            ]
+          },
+          "status": {
+            "title": "Market status",
+            "description": "A closed set on this API version.",
+            "type": "string",
+            "enum": [
+              "PREGAME",
+              "IN_PLAY",
+              "CLOSED",
+              "RESOLVED"
+            ]
+          },
+          "tradeable": {
+            "title": "Tradeable only",
+            "description": "Restrict to markets currently accepting orders.",
+            "type": "boolean"
+          }
+        }
+      },
+      "examples": [
+        {
+          "title": "Resolve a fixture by name",
+          "input": {
+            "search": "arsenal chelsea"
+          }
+        },
+        {
+          "title": "Resolve within tradeable football only",
+          "input": {
+            "search": "arsenal",
+            "category": "FOOTBALL",
+            "tradeable": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "market.get",
+      "cli": "market get",
+      "summary": "Read one market by its server-resolved id.",
+      "description": "Confirms a market resolved from market.list before an order. A closed market still resolves; an unknown id is an error rather than an empty result.",
+      "classification": "read",
+      "sideEffects": [
+        "NONE"
+      ],
+      "longRunning": false,
+      "idempotency": {
+        "required": false,
+        "callerSupplied": "UNSUPPORTED",
+        "note": "A read is safe to repeat; no key applies."
+      },
+      "confirmation": "NOT_REQUIRED",
+      "implementation": {
+        "kind": "sdk",
+        "method": "getMarket"
+      },
+      "input": {
+        "type": "object",
+        "required": [
+          "marketId"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "marketId": {
+            "$ref": "#/$defs/marketId"
+          }
+        }
+      },
+      "examples": [
+        {
+          "title": "Read one market",
+          "input": {
+            "marketId": "0x2222222222222222222222222222222222222222222222222222222222222222"
+          }
+        }
+      ]
+    },
+    {
+      "name": "market.quote",
+      "cli": "market quote",
+      "summary": "Mint a short-lived executable quote.",
+      "description": "The only price an order may be built on. A quote lives seconds and is never extended, so fetch it immediately before order.execute rather than caching it. Quotes are size-blind today: availableSize, expectedFillSize and feeAmount come back null and qualityFlags carries TOP_OF_BOOK_ONLY, so a large order can be correctly priced and still fail to fill.",
+      "classification": "read",
+      "sideEffects": [
+        "MINTS_QUOTE"
+      ],
+      "longRunning": false,
+      "idempotency": {
+        "required": false,
+        "callerSupplied": "UNSUPPORTED",
+        "note": "A read is safe to repeat; no key applies."
+      },
+      "confirmation": "NOT_REQUIRED",
+      "implementation": {
+        "kind": "sdk",
+        "method": "getQuote"
+      },
+      "input": {
+        "type": "object",
+        "required": [
+          "marketId",
+          "outcomeId",
+          "side",
+          "size"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "marketId": {
+            "$ref": "#/$defs/marketId"
+          },
+          "outcomeId": {
+            "$ref": "#/$defs/outcomeId"
+          },
+          "side": {
+            "$ref": "#/$defs/side"
+          },
+          "size": {
+            "$ref": "#/$defs/orderSize"
+          }
+        },
+        "allOf": [
+          {
+            "$ref": "#/$defs/sideSizeAgreement"
+          }
+        ]
+      },
+      "examples": [
+        {
+          "title": "Price a 50 wxUSD buy",
+          "input": {
+            "marketId": "0x2222222222222222222222222222222222222222222222222222222222222222",
+            "outcomeId": "YES",
+            "side": "BUY",
+            "size": {
+              "buyAmount": "50"
+            }
+          }
+        },
+        {
+          "title": "Price closing 100 shares",
+          "input": {
+            "marketId": "0x2222222222222222222222222222222222222222222222222222222222222222",
+            "outcomeId": "YES",
+            "side": "SELL",
+            "size": {
+              "sellShares": "100"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "account.list",
+      "cli": "account list",
+      "summary": "The accounts this agent has been onboarded onto.",
+      "description": "The one account read that takes no account id — every other one demands an identifier that belongs to the owner and that an agent has no way to discover. The rows come from the owner's own mandate writes, so an account appears here only because an owner deliberately configured this agent on it; this is not a search of accounts the agent might reach. A listed account is NOT a promise it can trade: delegation carries the on-chain grant, where null means the chain read FAILED rather than that permission was refused, and a suspended mandate still lists because silence would read as revoked.",
+      "classification": "read",
+      "sideEffects": [
+        "NONE"
+      ],
+      "longRunning": false,
+      "idempotency": {
+        "required": false,
+        "callerSupplied": "UNSUPPORTED",
+        "note": "A read is safe to repeat; no key applies."
+      },
+      "confirmation": "NOT_REQUIRED",
+      "implementation": {
+        "kind": "sdk",
+        "method": "listAuthorizedAccounts"
+      },
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "examples": [
+        {
+          "title": "Which accounts may this agent trade on",
+          "input": {}
+        }
+      ]
+    },
+    {
+      "name": "account.status",
+      "cli": "account status",
+      "summary": "One reading of capacity and exposure for an account.",
+      "description": "Composes account.risk-limits and account.positions into the pre-trade picture: what may be spent, what the mandate allows, what would refuse a write, and what is already held. Every number here comes from the server; none is inferred locally. capacity is null exactly when no mandate exists, because an allowance ledger only exists under one — that is denial, not an unlimited default. asOf is when this runtime assembled the two reads, not a server-side consistent snapshot.",
+      "classification": "read",
+      "sideEffects": [
+        "NONE"
+      ],
+      "longRunning": false,
+      "idempotency": {
+        "required": false,
+        "callerSupplied": "UNSUPPORTED",
+        "note": "A read is safe to repeat; no key applies."
+      },
+      "confirmation": "NOT_REQUIRED",
+      "implementation": {
+        "kind": "runtime",
+        "note": "Composes getEffectiveLimits() and getPositions(). Never fabricates a limit; reports absence as absence."
+      },
+      "input": {
+        "type": "object",
+        "required": [
+          "accountId"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "accountId": {
+            "$ref": "#/$defs/accountId"
+          },
+          "limit": {
+            "$ref": "#/$defs/limit"
+          }
+        }
+      },
+      "examples": [
+        {
+          "title": "Read account status",
+          "input": {
+            "accountId": "0x1111111111111111111111111111111111111111111111111111111111111111"
+          }
+        }
+      ]
+    },
+    {
+      "name": "account.allowance",
+      "cli": "account allowance",
+      "summary": "Read the remaining API allowance and spendable balance.",
+      "description": "apiAllowance and accountSpendableBalance are separate facts — a direct-chain spend moves one without the other — so size against effectiveBuyCapacity, the smaller of the two. The API allowance is a WaterX policy, not an on-chain security boundary.",
+      "classification": "read",
+      "sideEffects": [
+        "NONE"
+      ],
+      "longRunning": false,
+      "idempotency": {
+        "required": false,
+        "callerSupplied": "UNSUPPORTED",
+        "note": "A read is safe to repeat; no key applies."
+      },
+      "confirmation": "NOT_REQUIRED",
+      "implementation": {
+        "kind": "sdk",
+        "method": "getAllowance"
+      },
+      "input": {
+        "type": "object",
+        "required": [
+          "accountId"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "accountId": {
+            "$ref": "#/$defs/accountId"
+          }
+        }
+      },
+      "examples": [
+        {
+          "title": "Read allowance",
+          "input": {
+            "accountId": "0x1111111111111111111111111111111111111111111111111111111111111111"
+          }
+        }
+      ]
+    },
+    {
+      "name": "account.risk-limits",
+      "cli": "account risk-limits",
+      "summary": "Read the mandate this agent trades under, and what would refuse a write now.",
+      "description": "The owner-configured limits, the allowance, the hour already consumed, the on-chain delegation and the reasons a write would be refused — one server read, one asOf. limits is null when no owner granted this agent a mandate, and absence is denial rather than an unlimited default. A null delegation permission means the chain read FAILED and not that it was denied; the two lead a strategy to opposite actions. An empty blockers list is not a promise of a fill: the market must still be tradeable, the quote still executable, and the chain still decides last. Nothing here is settable from an agent credential (spec §7.3).",
+      "classification": "read",
+      "sideEffects": [
+        "NONE"
+      ],
+      "longRunning": false,
+      "idempotency": {
+        "required": false,
+        "callerSupplied": "UNSUPPORTED",
+        "note": "A read is safe to repeat; no key applies."
+      },
+      "confirmation": "NOT_REQUIRED",
+      "implementation": {
+        "kind": "sdk",
+        "method": "getEffectiveLimits"
+      },
+      "input": {
+        "type": "object",
+        "required": [
+          "accountId"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "accountId": {
+            "$ref": "#/$defs/accountId"
+          }
+        }
+      },
+      "examples": [
+        {
+          "title": "Read the effective mandate",
+          "input": {
+            "accountId": "0x1111111111111111111111111111111111111111111111111111111111111111"
+          }
+        }
+      ]
+    },
+    {
+      "name": "account.positions",
+      "cli": "account positions",
+      "summary": "List positions this agent opened, with cost basis and unrealized PnL.",
+      "description": "A SELL needs the positionId from here. Scope is API-attributed activity: a direct-chain trade by the same delegated key is not included.",
+      "classification": "read",
+      "sideEffects": [
+        "NONE"
+      ],
+      "longRunning": false,
+      "idempotency": {
+        "required": false,
+        "callerSupplied": "UNSUPPORTED",
+        "note": "A read is safe to repeat; no key applies."
+      },
+      "confirmation": "NOT_REQUIRED",
+      "implementation": {
+        "kind": "sdk",
+        "method": "getPositions"
+      },
+      "input": {
+        "type": "object",
+        "required": [
+          "accountId"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "accountId": {
+            "$ref": "#/$defs/accountId"
+          },
+          "limit": {
+            "$ref": "#/$defs/limit"
+          },
+          "cursor": {
+            "$ref": "#/$defs/cursor"
+          }
+        },
+        "description": "Positions on one account, newest first."
+      },
+      "examples": [
+        {
+          "title": "List positions",
+          "input": {
+            "accountId": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "limit": 50
+          }
+        }
+      ]
+    },
+    {
+      "name": "account.executions",
+      "cli": "account executions",
+      "summary": "List this agent’s executions on one account.",
+      "description": "Order history including non-terminal rows. SUBMITTED and PENDING_FILL are not fills — read the terminal status before reporting a trade as done. Paging is keyset: pass the response’s nextCursor back as cursor to walk older rows. nextCursor null means the server proved the history is exhausted; an absent nextCursor means it did not answer, which is not the same as no.",
+      "classification": "read",
+      "sideEffects": [
+        "NONE"
+      ],
+      "longRunning": false,
+      "idempotency": {
+        "required": false,
+        "callerSupplied": "UNSUPPORTED",
+        "note": "A read is safe to repeat; no key applies."
+      },
+      "confirmation": "NOT_REQUIRED",
+      "implementation": {
+        "kind": "sdk",
+        "method": "listExecutions"
+      },
+      "input": {
+        "type": "object",
+        "required": [
+          "accountId"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "accountId": {
+            "$ref": "#/$defs/accountId"
+          },
+          "limit": {
+            "$ref": "#/$defs/limit"
+          },
+          "cursor": {
+            "$ref": "#/$defs/cursor"
+          }
+        },
+        "description": "Executions on one account, newest first."
+      },
+      "examples": [
+        {
+          "title": "List executions",
+          "input": {
+            "accountId": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "limit": 50
+          }
+        },
+        {
+          "title": "Walk to the next page",
+          "input": {
+            "accountId": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "limit": 50,
+            "cursor": "ZXhhbXBsZS1jdXJzb3ItZG8tbm90LWNvbnN0cnVjdA"
+          }
+        }
+      ]
+    },
+    {
+      "name": "account.fills",
+      "cli": "account fills",
+      "summary": "List confirmed fills, with the quote each was priced against.",
+      "description": "Authoritative fill facts: filled amount, shares, average price and the keeper transaction that settled it — which is a different transaction from the agent’s submission. actualFee is null rather than zero, because the published price is already fee-adjusted and no separate fee is observable.",
+      "classification": "read",
+      "sideEffects": [
+        "NONE"
+      ],
+      "longRunning": false,
+      "idempotency": {
+        "required": false,
+        "callerSupplied": "UNSUPPORTED",
+        "note": "A read is safe to repeat; no key applies."
+      },
+      "confirmation": "NOT_REQUIRED",
+      "implementation": {
+        "kind": "sdk",
+        "method": "getFills"
+      },
+      "input": {
+        "type": "object",
+        "required": [
+          "accountId"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "accountId": {
+            "$ref": "#/$defs/accountId"
+          },
+          "limit": {
+            "$ref": "#/$defs/limit"
+          },
+          "cursor": {
+            "$ref": "#/$defs/cursor"
+          }
+        },
+        "description": "Fills on one account, newest first."
+      },
+      "examples": [
+        {
+          "title": "List fills",
+          "input": {
+            "accountId": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "limit": 50
+          }
+        }
+      ]
+    },
+    {
+      "name": "account.performance",
+      "cli": "account performance",
+      "summary": "Read order outcomes, rejection reasons and realized PnL for this agent.",
+      "description": "Lifetime-to-date, with the scope stated before the numbers: attributionScope is API_ATTRIBUTED_ONLY and there is no other mode, so a direct-chain trade by the same delegated key is absent at ANY confidence. successRate divides by TERMINAL orders rather than created, so a burst of in-flight orders does not read as a fall in success. Every rate is null and not \"0\" when its denominator is zero — a rate over no trades is undefined. Realized PnL covers only exits whose cost basis this API recorded; excluded counts the populations left out, and claimedPositions — resolved markets collected from the FE — biases winRate DOWNWARD and by the most. There is no time window, because the exclusions have no recorded instant to window on.",
+      "classification": "read",
+      "sideEffects": [
+        "NONE"
+      ],
+      "longRunning": false,
+      "idempotency": {
+        "required": false,
+        "callerSupplied": "UNSUPPORTED",
+        "note": "A read is safe to repeat; no key applies."
+      },
+      "confirmation": "NOT_REQUIRED",
+      "implementation": {
+        "kind": "sdk",
+        "method": "getPerformance"
+      },
+      "input": {
+        "type": "object",
+        "required": [
+          "accountId"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "accountId": {
+            "$ref": "#/$defs/accountId"
+          },
+          "strategyId": {
+            "title": "Strategy id",
+            "description": "Narrow every figure to one strategy label. Matched exactly. Omit for the whole agent.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        }
+      },
+      "examples": [
+        {
+          "title": "Read performance",
+          "input": {
+            "accountId": "0x1111111111111111111111111111111111111111111111111111111111111111"
+          }
+        },
+        {
+          "title": "Narrow to one strategy",
+          "input": {
+            "accountId": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "strategyId": "take-profit-example"
+          }
+        }
+      ]
+    },
+    {
+      "name": "order.preview",
+      "cli": "order preview",
+      "summary": "Resolve, price and policy-check an order without placing it.",
+      "description": "The step before a write, and it signs nothing: the market and outcome are resolved by the server, a fresh quote is minted, the worst acceptable price the stated protection implies is estimated locally, and the execution policy is evaluated against the real intent. Under the interactive policy the result carries the approval token that authorizes exactly this order — change any field of it and the token stops matching. The estimated bound is against THIS quote: the server recomputes the authoritative bound against the submission-time quote and may tighten it, never loosen it. Effective risk limits are reported as unavailable rather than guessed, because the risk profile is owner-authenticated (ADR-0003).",
+      "classification": "read",
+      "sideEffects": [
+        "MINTS_QUOTE"
+      ],
+      "longRunning": false,
+      "idempotency": {
+        "required": false,
+        "callerSupplied": "UNSUPPORTED",
+        "note": "A preview places nothing, so there is no logical write to key. The idempotency key belongs to order.execute."
+      },
+      "confirmation": "NOT_REQUIRED",
+      "implementation": {
+        "kind": "runtime",
+        "note": "Composes getMarket() and getQuote() with the local execution policy. Places no order and signs no transaction."
+      },
+      "input": {
+        "oneOf": [
+          {
+            "title": "One order",
+            "type": "object",
+            "required": [
+              "accountId",
+              "marketId",
+              "outcomeId",
+              "side",
+              "size",
+              "maxSlippageBps"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "accountId": {
+                "$ref": "#/$defs/accountId"
+              },
+              "marketId": {
+                "$ref": "#/$defs/marketId"
+              },
+              "outcomeId": {
+                "$ref": "#/$defs/outcomeId"
+              },
+              "side": {
+                "$ref": "#/$defs/side"
+              },
+              "size": {
+                "$ref": "#/$defs/orderSize"
+              },
+              "positionId": {
+                "title": "Position id",
+                "description": "Required for a SELL: the on-chain position being closed. Absent for a BUY.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "maxSlippageBps": {
+                "$ref": "#/$defs/maxSlippageBps"
+              },
+              "worstAcceptablePrice": {
+                "$ref": "#/$defs/probabilityPrice",
+                "title": "Worst acceptable price",
+                "description": "A probability price in the inclusive range 0–1, as a decimal string. An absolute bound, applied only when it is stricter than the slippage budget. The price the chain enforces may be stricter still after granularity rounding, never looser."
+              },
+              "clientOrderId": {
+                "title": "Client order id",
+                "description": "A business label. NOT a substitute for the idempotency key.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "strategyId": {
+                "title": "Strategy id",
+                "description": "Attribution label carried onto executions and fills.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              }
+            },
+            "allOf": [
+              {
+                "$ref": "#/$defs/sideSizeAgreement"
+              },
+              {
+                "$ref": "#/$defs/positionAgreement"
+              }
+            ]
+          },
+          {
+            "title": "A batch, in the order it would run",
+            "type": "object",
+            "required": [
+              "orders"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "orders": {
+                "title": "Legs",
+                "description": "The same legs `order execute-many` would take, in the same order. The approval returned binds this sequence: reordering it is a different intent, because a batch that stops on the first failure is not the same batch reversed.",
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 20,
+                "items": {
+                  "$ref": "#/$defs/orderIntent"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "examples": [
+        {
+          "title": "Preview a 50 wxUSD buy",
+          "input": {
+            "accountId": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "marketId": "0x2222222222222222222222222222222222222222222222222222222222222222",
+            "outcomeId": "YES",
+            "side": "BUY",
+            "size": {
+              "buyAmount": "50"
+            },
+            "maxSlippageBps": 100
+          }
+        }
+      ]
+    },
+    {
+      "name": "order.get",
+      "cli": "order get",
+      "summary": "Read one execution by id.",
+      "description": "The reconciliation path. After a timeout the execution id is still valid and the order may still fill, so this is how a caller resolves an ambiguous outcome — never by resubmitting with a new idempotency key.",
+      "classification": "read",
+      "sideEffects": [
+        "NONE"
+      ],
+      "longRunning": false,
+      "idempotency": {
+        "required": false,
+        "callerSupplied": "UNSUPPORTED",
+        "note": "A read is safe to repeat; no key applies."
+      },
+      "confirmation": "NOT_REQUIRED",
+      "implementation": {
+        "kind": "sdk",
+        "method": "getExecution"
+      },
+      "input": {
+        "type": "object",
+        "required": [
+          "executionId"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "executionId": {
+            "title": "Execution id",
+            "description": "Returned by order.execute, and preserved even when a wait times out.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        }
+      },
+      "examples": [
+        {
+          "title": "Reconcile one execution",
+          "input": {
+            "executionId": "exec_example_000000000"
+          }
+        }
+      ]
+    },
+    {
+      "name": "order.reconcile",
+      "cli": "order reconcile",
+      "summary": "Wait for one execution to reach a terminal state.",
+      "description": "What to run after an ambiguous outcome — a timed-out wait, a lost connection, a restarted process. It polls one execution until the status is terminal and reports the authoritative fill facts. It places nothing, cancels nothing and signs nothing, so it is always safe to repeat. Exhausting the timeout is again NOT a failure: timedOut is reported and the execution id stays valid.",
+      "classification": "read",
+      "sideEffects": [
+        "NONE"
+      ],
+      "longRunning": true,
+      "idempotency": {
+        "required": false,
+        "callerSupplied": "UNSUPPORTED",
+        "note": "A read is safe to repeat; no key applies."
+      },
+      "confirmation": "NOT_REQUIRED",
+      "implementation": {
+        "kind": "sdk",
+        "method": "waitForExecution"
+      },
+      "input": {
+        "type": "object",
+        "required": [
+          "executionId"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "executionId": {
+            "title": "Execution id",
+            "description": "From order.execute, and preserved even when its wait timed out.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "timeoutMs": {
+            "title": "Reconciliation timeout (ms)",
+            "description": "Bounds the wait. Exceeding it reports timedOut rather than an error, because the order is unaffected either way.",
+            "type": "integer",
+            "minimum": 1000,
+            "maximum": 600000
+          },
+          "pollIntervalMs": {
+            "title": "Poll interval (ms)",
+            "description": "How often the execution is re-read while waiting.",
+            "type": "integer",
+            "minimum": 250,
+            "maximum": 60000
+          }
+        }
+      },
+      "examples": [
+        {
+          "title": "Resolve an ambiguous outcome",
+          "input": {
+            "executionId": "exec_example_000000000"
+          }
+        }
+      ]
+    },
+    {
+      "name": "order.execute",
+      "cli": "order execute",
+      "summary": "Place one price-protected market order.",
+      "description": "Create, sign and submit, as one command. maxSlippageBps is mandatory and the server re-quotes at execution time, so the price is protected but the fill is not guaranteed. A BUY states buyAmount and a SELL states sellShares plus the positionId being closed; the units are not interchangeable and an ambiguous intent stops here rather than trading. One idempotency key covers the whole logical intent including retries.",
+      "classification": "write",
+      "sideEffects": [
+        "SIGNS_TRANSACTION",
+        "MOVES_FUNDS"
+      ],
+      "longRunning": true,
+      "idempotency": {
+        "required": true,
+        "callerSupplied": "OPTIONAL",
+        "note": "Supply idempotencyKey to make the intent replayable across a process restart. Omitted, the runtime mints one that covers in-process retries only. A retry must reuse the same key and the same bytes."
+      },
+      "confirmation": "REQUIRED_UNLESS_DELEGATED",
+      "implementation": {
+        "kind": "sdk",
+        "method": "executeMarketOrder"
+      },
+      "input": {
+        "type": "object",
+        "required": [
+          "accountId",
+          "marketId",
+          "outcomeId",
+          "side",
+          "size",
+          "maxSlippageBps"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "accountId": {
+            "$ref": "#/$defs/accountId"
+          },
+          "marketId": {
+            "$ref": "#/$defs/marketId"
+          },
+          "outcomeId": {
+            "$ref": "#/$defs/outcomeId"
+          },
+          "side": {
+            "$ref": "#/$defs/side"
+          },
+          "size": {
+            "$ref": "#/$defs/orderSize"
+          },
+          "positionId": {
+            "title": "Position id",
+            "description": "Required for a SELL: the on-chain position being closed. Absent for a BUY.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "referenceQuoteId": {
+            "title": "Reference quote id",
+            "description": "The executable quote this order is priced against, from market.quote. A quote lives seconds and is never extended, so obtain it immediately before the order — a catalog price is indicative and cannot be used here.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "maxSlippageBps": {
+            "$ref": "#/$defs/maxSlippageBps"
+          },
+          "worstAcceptablePrice": {
+            "$ref": "#/$defs/probabilityPrice",
+            "title": "Worst acceptable price",
+            "description": "A probability price in the inclusive range 0–1, as a decimal string. An absolute bound, applied only when it is stricter than the slippage budget. The price the chain enforces may be stricter still after granularity rounding, never looser."
+          },
+          "clientOrderId": {
+            "title": "Client order id",
+            "description": "A business label. NOT a substitute for the idempotency key.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "strategyId": {
+            "title": "Strategy id",
+            "description": "Attribution label carried onto executions and fills.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "$ref": "#/$defs/idempotencyKey"
+          },
+          "waitFor": {
+            "title": "Settle at",
+            "description": "SUBMITTED returns once the order is on-chain; TERMINAL waits for the authoritative fill facts. The order is placed either way — this only decides when the call returns.",
+            "type": "string",
+            "enum": [
+              "SUBMITTED",
+              "TERMINAL"
+            ]
+          },
+          "timeoutMs": {
+            "title": "Terminal wait timeout (ms)",
+            "description": "Bounds a TERMINAL wait. Exceeding it does NOT cancel the order and is not a failure: the execution id remains valid and must be reconciled with order.get.",
+            "type": "integer",
+            "minimum": 1000,
+            "maximum": 600000
+          }
+        },
+        "allOf": [
+          {
+            "$ref": "#/$defs/sideSizeAgreement"
+          },
+          {
+            "$ref": "#/$defs/positionAgreement"
+          }
+        ]
+      },
+      "examples": [
+        {
+          "title": "Buy 50 wxUSD of YES with 1% slippage protection",
+          "input": {
+            "accountId": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "marketId": "0x2222222222222222222222222222222222222222222222222222222222222222",
+            "outcomeId": "YES",
+            "side": "BUY",
+            "size": {
+              "buyAmount": "50"
+            },
+            "referenceQuoteId": "quo_example_0000000000",
+            "maxSlippageBps": 100,
+            "waitFor": "TERMINAL"
+          }
+        },
+        {
+          "title": "Close 100 shares of a position",
+          "input": {
+            "accountId": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "marketId": "0x2222222222222222222222222222222222222222222222222222222222222222",
+            "outcomeId": "YES",
+            "side": "SELL",
+            "size": {
+              "sellShares": "100"
+            },
+            "positionId": "0x3333333333333333333333333333333333333333333333333333333333333333",
+            "referenceQuoteId": "quo_example_0000000000",
+            "maxSlippageBps": 50,
+            "worstAcceptablePrice": "0.82"
+          }
+        }
+      ]
+    },
+    {
+      "name": "order.execute-many",
+      "cli": "order execute-many",
+      "summary": "Place several independent orders.",
+      "description": "Client-side orchestration, not a backend batch and not atomic. Every leg has its own quote, idempotency key, execution and result, and partial success is the expected outcome. failurePolicy STOP prevents legs that have not launched from launching; it cannot cancel or roll back one already submitted or filled. Results report succeeded, failed and skipped legs distinctly.",
+      "classification": "write",
+      "sideEffects": [
+        "SIGNS_TRANSACTION",
+        "MOVES_FUNDS"
+      ],
+      "longRunning": true,
+      "idempotency": {
+        "required": true,
+        "callerSupplied": "OPTIONAL",
+        "note": "One key per leg, not one per call. A leg without an explicit key gets a runtime-minted one covering in-process retries only."
+      },
+      "confirmation": "REQUIRED_UNLESS_DELEGATED",
+      "implementation": {
+        "kind": "sdk",
+        "method": "executeMany"
+      },
+      "input": {
+        "type": "object",
+        "required": [
+          "orders"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "orders": {
+            "title": "Legs",
+            "description": "Independent order intents. No ordering or atomicity is implied.",
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 20,
+            "items": {
+              "$ref": "#/$defs/orderIntent"
+            }
+          },
+          "concurrency": {
+            "title": "Concurrency",
+            "description": "How many legs may be in flight at once. A quote lives seconds, so legs are quoted close to their own execution rather than all up front.",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10
+          },
+          "failurePolicy": {
+            "title": "Failure policy",
+            "description": "STOP stops launching further legs after a failure. CONTINUE attempts every leg. Neither can undo a leg already submitted.",
+            "type": "string",
+            "enum": [
+              "STOP",
+              "CONTINUE"
+            ]
+          },
+          "waitFor": {
+            "title": "Settle at",
+            "description": "SUBMITTED returns once the order is on-chain; TERMINAL waits for the authoritative fill facts. The order is placed either way — this only decides when the call returns.",
+            "type": "string",
+            "enum": [
+              "SUBMITTED",
+              "TERMINAL"
+            ]
+          },
+          "timeoutMs": {
+            "title": "Terminal wait timeout (ms)",
+            "description": "Bounds a TERMINAL wait. Exceeding it does NOT cancel the order and is not a failure: the execution id remains valid and must be reconciled with order.get.",
+            "type": "integer",
+            "minimum": 1000,
+            "maximum": 600000
+          }
+        }
+      },
+      "examples": [
+        {
+          "title": "Two independent buys, stop on the first failure",
+          "input": {
+            "orders": [
+              {
+                "accountId": "0x1111111111111111111111111111111111111111111111111111111111111111",
+                "marketId": "0x2222222222222222222222222222222222222222222222222222222222222222",
+                "outcomeId": "YES",
+                "side": "BUY",
+                "size": {
+                  "buyAmount": "25"
+                },
+                "referenceQuoteId": "quo_example_0000000000",
+                "maxSlippageBps": 100
+              },
+              {
+                "accountId": "0x1111111111111111111111111111111111111111111111111111111111111111",
+                "marketId": "0x2222222222222222222222222222222222222222222222222222222222222222",
+                "outcomeId": "NO",
+                "side": "BUY",
+                "size": {
+                  "buyAmount": "25"
+                },
+                "referenceQuoteId": "quo_example_0000000000",
+                "maxSlippageBps": 100
+              }
+            ],
+            "concurrency": 2,
+            "failurePolicy": "STOP"
+          }
+        }
+      ]
+    },
+    {
+      "name": "strategy.create",
+      "cli": "strategy create",
+      "summary": "Arm a durable conditional job on the local Runner. Can trade later, unattended.",
+      "description": "Creates a strategy the Runner owns and advances. It places nothing now and can place orders later WITHOUT a human present, which is why it is a write. expiresAt is MANDATORY and capped at seven days in this beta — the cap is refused, never clamped, because a silently shortened horizon is a strategy that stops watching at an hour nobody chose. Exactly one sizing field per leg: buyAmount for a BUY, and for a SELL one of sellShares, sellFractionOfPosition (a share count frozen NOW against a real position read) or dynamicSellFractionOfPosition (re-read at the trigger, so a position that grew sells more). Legs execute independently, each with its own quote and idempotency key, and none is rolled back because another failed. Every rule here belongs to the Runner and is named in its refusal — this surface re-decides none of them. The mandate is the Runner’s own configuration: there is no policy field, and the default configuration REFUSES to arm anything, so an unattended host cannot be talked into one. A Runner that is not driving still accepts this call and writes a real job that nothing will advance, so the reply carries driving and driverGaps; treat driving: false as \"armed and asleep\".",
+      "classification": "write",
+      "sideEffects": [
+        "MOVES_FUNDS"
+      ],
+      "longRunning": false,
+      "idempotency": {
+        "required": false,
+        "callerSupplied": "UNSUPPORTED",
+        "note": "No key makes this repeatable: the Runner does not deduplicate creates, so a second call arms a SECOND strategy and both will trade. strategyId is an attribution label, not a key. If a create fails without an answer, LIST before retrying."
+      },
+      "confirmation": "REQUIRED_UNLESS_DELEGATED",
+      "implementation": {
+        "kind": "runner",
+        "command": "strategy.create",
+        "note": "Handed to the local Runner unchanged. The Runner normalizes sizing, enforces the expiry cap, reads the position a frozen fraction needs, and applies its own mandate."
+      },
+      "input": {
+        "type": "object",
+        "required": [
+          "ownerAddress",
+          "accountId",
+          "agentWallet",
+          "legs",
+          "trigger"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "strategyId": {
+            "title": "Strategy id",
+            "description": "An attribution label, carried onto the executions this strategy produces and usable as a `strategy list` filter. NOT an idempotency key: two creates with the same label are two strategies.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "ownerAddress": {
+            "$ref": "#/$defs/ownerAddress"
+          },
+          "accountId": {
+            "$ref": "#/$defs/accountId"
+          },
+          "agentWallet": {
+            "$ref": "#/$defs/agentWallet"
+          },
+          "legs": {
+            "title": "Legs",
+            "description": "What to place when the trigger fires. Independent: a failed leg neither stops nor unwinds the others.",
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 20,
+            "items": {
+              "$ref": "#/$defs/strategyLeg"
+            }
+          },
+          "trigger": {
+            "$ref": "#/$defs/strategyTrigger"
+          },
+          "expiresAt": {
+            "title": "Expires at",
+            "description": "MANDATORY. An absolute ISO-8601 instant, at most seven days out in this beta. Not optional and not defaulted: nothing watches a market forever, and a strategy with no horizon is one an operator forgets is armed. A value past the cap is REFUSED with the cap named, never quietly clamped.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          }
+        }
+      },
+      "examples": [
+        {
+          "title": "Sell half a position if the price reaches 0.80",
+          "input": {
+            "ownerAddress": "0x4444444444444444444444444444444444444444444444444444444444444444",
+            "accountId": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "agentWallet": "0x5555555555555555555555555555555555555555555555555555555555555555",
+            "strategyId": "take-profit-example",
+            "expiresAt": "2026-01-08T00:00:00.000Z",
+            "trigger": {
+              "kind": "PRICE",
+              "targetPrice": "0.8"
+            },
+            "legs": [
+              {
+                "marketId": "0x2222222222222222222222222222222222222222222222222222222222222222",
+                "outcomeId": "YES",
+                "side": "SELL",
+                "positionId": "0x3333333333333333333333333333333333333333333333333333333333333333",
+                "sellFractionOfPosition": "0.5",
+                "maxSlippageBps": 100
+              }
+            ]
+          }
+        },
+        {
+          "title": "Buy immediately, in one leg",
+          "input": {
+            "ownerAddress": "0x4444444444444444444444444444444444444444444444444444444444444444",
+            "accountId": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "agentWallet": "0x5555555555555555555555555555555555555555555555555555555555555555",
+            "expiresAt": "2026-01-02T00:00:00.000Z",
+            "trigger": {
+              "kind": "IMMEDIATE"
+            },
+            "legs": [
+              {
+                "marketId": "0x2222222222222222222222222222222222222222222222222222222222222222",
+                "outcomeId": "NO",
+                "side": "BUY",
+                "buyAmount": "25",
+                "maxSlippageBps": 100
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "strategy.get",
+      "cli": "strategy get",
+      "summary": "Read one strategy: its state, its legs, and what is still unaccounted for.",
+      "description": "The full record, including openSideEffects — attempts with no recorded outcome, which is the evidence that a request may have left the Runner unanswered. leasedHere says whether the Runner that answered is the one holding the job; a job leased elsewhere is being advanced by another instance, and one leased nowhere is being advanced by nobody. pastExpiry is a fact about the clock, not the state: a job can be past its expiry and still read WATCHING until a Runner notices.",
+      "classification": "read",
+      "sideEffects": [
+        "NONE"
+      ],
+      "longRunning": false,
+      "idempotency": {
+        "required": false,
+        "callerSupplied": "UNSUPPORTED",
+        "note": "A read is safe to repeat; no key applies."
+      },
+      "confirmation": "NOT_REQUIRED",
+      "implementation": {
+        "kind": "runner",
+        "command": "strategy.get",
+        "note": "Read from the Runner’s durable job store. Issues no request to the exchange."
+      },
+      "input": {
+        "type": "object",
+        "required": [
+          "jobId"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "jobId": {
+            "$ref": "#/$defs/jobId"
+          }
+        }
+      },
+      "examples": [
+        {
+          "title": "Read one strategy",
+          "input": {
+            "jobId": "job_example_00000000000"
+          }
+        }
+      ]
+    },
+    {
+      "name": "strategy.list",
+      "cli": "strategy list",
+      "summary": "List the strategies this Runner is holding.",
+      "description": "Scoped to ONE Runner’s store: a job created against a different runtime directory is not absent, it is elsewhere, and this command cannot see it. Filters compose. This is the command to run after a create whose answer never arrived — a repeated create would arm a second strategy, so look before retrying.",
+      "classification": "read",
+      "sideEffects": [
+        "NONE"
+      ],
+      "longRunning": false,
+      "idempotency": {
+        "required": false,
+        "callerSupplied": "UNSUPPORTED",
+        "note": "A read is safe to repeat; no key applies."
+      },
+      "confirmation": "NOT_REQUIRED",
+      "implementation": {
+        "kind": "runner",
+        "command": "strategy.list",
+        "note": "Read from the Runner’s durable job store. Issues no request to the exchange."
+      },
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "accountId": {
+            "$ref": "#/$defs/accountId"
+          },
+          "strategyId": {
+            "title": "Strategy id",
+            "description": "The attribution label given at creation. Matched exactly.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "state": {
+            "title": "Job state",
+            "description": "One state from the Runner’s job state machine. PAUSED is a live strategy that has stopped acting; EXPIRED and CANCELLED are terminal.",
+            "type": "string",
+            "enum": [
+              "DRAFT",
+              "WATCHING",
+              "PAUSED",
+              "TRIGGERED",
+              "QUOTING",
+              "CREATING",
+              "AWAITING_SIGNATURE",
+              "SUBMITTING",
+              "SUBMITTED",
+              "RECONCILING",
+              "UNKNOWN_PENDING",
+              "FILLED",
+              "FAILED",
+              "CANCELLED",
+              "EXPIRED"
+            ]
+          }
+        }
+      },
+      "examples": [
+        {
+          "title": "Everything this Runner holds",
+          "input": {}
+        },
+        {
+          "title": "Only what is still watching",
+          "input": {
+            "state": "WATCHING"
+          }
+        }
+      ]
+    },
+    {
+      "name": "strategy.cancel",
+      "cli": "strategy cancel",
+      "summary": "Record a cancellation. Says whether it was APPLIED, which is not the same thing.",
+      "description": "The request is durable immediately; whether it stops the job is a separate fact and the reply reports both. applied is false when this Runner does not hold the lease — another instance does, and it will honour the record when it next looks — or when the job has already started a write, which cannot be recalled: an order on its way to the chain is not cancellable, and saying \"cancelled\" there would be a lie that costs money. Treat applied: false as \"not stopped yet\" and re-read with `strategy get`. Cancelling moves no funds and can only ever stop trading, which is why it needs no approval.",
+      "classification": "write",
+      "sideEffects": [
+        "NONE"
+      ],
+      "longRunning": false,
+      "idempotency": {
+        "required": false,
+        "callerSupplied": "UNSUPPORTED",
+        "note": "Naturally idempotent: cancelling an already-cancelled job records the same request and changes nothing."
+      },
+      "confirmation": "NOT_REQUIRED",
+      "implementation": {
+        "kind": "runner",
+        "command": "strategy.cancel",
+        "note": "Recorded in the Runner’s durable job store, and applied only if that instance holds the lease and no write has begun."
+      },
+      "input": {
+        "type": "object",
+        "required": [
+          "jobId",
+          "reason"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "jobId": {
+            "$ref": "#/$defs/jobId"
+          },
+          "reason": {
+            "title": "Reason",
+            "description": "Recorded on the job’s event feed. Required, because a cancellation nobody can explain later is indistinguishable from a bug.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        }
+      },
+      "examples": [
+        {
+          "title": "Stop a strategy",
+          "input": {
+            "jobId": "job_example_00000000000",
+            "reason": "thesis changed"
+          }
+        }
+      ]
+    },
+    {
+      "name": "strategy.events",
+      "cli": "strategy events",
+      "summary": "The transition and side-effect feed for one strategy, as of now.",
+      "description": "A SNAPSHOT, not a subscription: it returns what has been recorded up to this moment and then exits. This is the audit trail — every state change and every attempted side effect, including the ones with no recorded outcome. An unknown job id is an error rather than an empty feed, because an empty list would let a typo read as a strategy that simply has not done anything yet.",
+      "classification": "read",
+      "sideEffects": [
+        "NONE"
+      ],
+      "longRunning": false,
+      "idempotency": {
+        "required": false,
+        "callerSupplied": "UNSUPPORTED",
+        "note": "A read is safe to repeat; no key applies."
+      },
+      "confirmation": "NOT_REQUIRED",
+      "implementation": {
+        "kind": "runner",
+        "command": "strategy.events",
+        "note": "Read from the Runner’s durable job store. Issues no request to the exchange."
+      },
+      "input": {
+        "type": "object",
+        "required": [
+          "jobId"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "jobId": {
+            "$ref": "#/$defs/jobId"
+          }
+        }
+      },
+      "examples": [
+        {
+          "title": "Audit one strategy",
+          "input": {
+            "jobId": "job_example_00000000000"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -12,12 +12,21 @@ const ARTIFACT_PATH = fileURLToPath(
   new URL(`../../../schemas/v${AGENT_COMMAND_SCHEMA_VERSION}/agent-commands.json`, import.meta.url),
 );
 
+/** The copy inside this package, which is the one `files` puts in the tarball. */
+const SHIPPED_PATH = fileURLToPath(new URL('../agent-commands.json', import.meta.url));
+
 describe('the published command document', () => {
-  it('is byte-identical to the committed artifact', () => {
+  it('is byte-identical to both committed artifacts', () => {
     // The committed JSON is what a non-TypeScript adapter reads. If it can drift
     // from the source, the contract has two versions and one of them is wrong.
+    //
+    // The copy inside the package is the same document reaching the only
+    // readers who cannot see this repository: a contract described as
+    // "published as plain JSON so a surface that cannot import a Node module
+    // can read it" is not published while it exists solely in git.
     const expected = serializeCommandDocument(buildCommandDocument());
     expect(readFileSync(ARTIFACT_PATH, 'utf8')).toBe(expected);
+    expect(readFileSync(SHIPPED_PATH, 'utf8')).toBe(expected);
   });
 
   it('serializes deterministically', () => {

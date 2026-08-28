@@ -36,6 +36,8 @@ export {
 } from './quote-stream.ts';
 export {
   PredictAgentClient,
+  type PredictAgentEndpoint,
+  resolveBaseUrl,
   type WaitForExecutionOptions,
   type WaitForPriceIntent,
   type WaitForPriceOptions,
@@ -64,6 +66,24 @@ export {
   isRetryable,
   isUnauthenticated,
 } from './errors.ts';
+export {
+  type DescribeInstallationOptions,
+  describeInstallation,
+  type InstallationPackage,
+  type InstallationReport,
+  type SurfaceAvailability,
+} from './installation.ts';
+export {
+  AGENT_REQUIREMENTS,
+  type AgentRequirement,
+  REQUIREMENT_IDS,
+  type RequirementId,
+  type RequirementState,
+  type RequirementSupplier,
+  requirementFor,
+  type ResolvedRequirement,
+  nextStepFor,
+} from './provisioning.ts';
 export {
   type AuthorizationPoller,
   type AuthorizationUrlOptions,

@@ -28,7 +28,7 @@ import { toolNameFor } from './tools.ts';
  * caches the document can tell whether what it cached still says the same
  * thing.
  */
-export const AGENT_INSTRUCTIONS_VERSION = '1';
+export const AGENT_INSTRUCTIONS_VERSION = '2';
 
 export interface InstructionRule {
   /** Stable, symbolic, quotable in a refusal. */
@@ -49,6 +49,15 @@ export interface InstructionCommandEntry {
   readonly command: string;
   readonly cli: string;
   readonly tool: string;
+  /**
+   * What a caller holding only the published library calls, or why it cannot.
+   *
+   * Derived from the contract's own `implementation`, never typed out: the
+   * contract already had to name the SDK method each command compiles down to
+   * (ADR-0001 §1), so a second list here would be a copy that drifts silently
+   * in the direction of claiming more than the library can do.
+   */
+  readonly sdk: string;
   readonly classification: string;
   readonly confirmation: string;
   readonly summary: string;
@@ -71,6 +80,31 @@ const PREAMBLE: readonly string[] = [
 ];
 
 const SECTIONS: readonly InstructionSection[] = [
+  {
+    id: 'surfaces',
+    title: 'Know which surface you are holding',
+    intro:
+      'The rules below are identical on every surface, because they describe the one core underneath all of them. What differs is which of them you can call — and a rule you are unable to act on is worse than one you never read, because it reads as permission. Settle this before the first command.',
+    rules: [
+      {
+        id: 'IDENTIFY_YOUR_SURFACE_BEFORE_THE_FIRST_COMMAND',
+        title: 'Three surfaces, one core — establish which one you hold',
+        body: [
+          'If `waterx-predict` is on PATH, you hold the CLI, and every `CLI` cell in the command table is a real invocation. If your host advertises `waterx_predict_*` tools, you hold an adapter, and the `Tool` cell is what you call. If `@waterx/predict-agent-sdk` is the only thing installed, you hold the library, and the `SDK` cell names the method — its argument and result types are this contract as your own compiler sees it.',
+          'Establish it, do not assume it. A host advertising no such tool, in a shell with no such binary, is the library — whatever the surrounding documentation happens to show, and whichever surface you used the last time you did this.',
+          'The library answers this about itself: `describeInstallation()`, or `npx @waterx/predict-agent-sdk`, reports which surfaces this machine has and which of the six things a trade needs are still missing. It runs with no configuration and issues no request, so it is safe to call as the very first thing you do.',
+        ],
+      },
+      {
+        id: 'A_SURFACE_YOU_LACK_IS_NOT_A_CAPABILITY_TO_REBUILD',
+        title: 'Name the surface you are missing, and stop there',
+        body: [
+          'A command whose `SDK` cell names no method is one the library cannot honour on its own: the durable `strategy.*` family is driven by a local Runner process, and the rest are composed by the command core from more than one call. Report which package supplies the one you need. Do not assemble it yourself out of the calls you do have.',
+          'This bites hardest on a write. The approval the default policy requires is issued at the command core, so a surface that cannot pass one cannot trade however the request is assembled — and assembling it against the API directly is precisely what `NO_SECOND_SURFACE` forbids.',
+        ],
+      },
+    ],
+  },
   {
     id: 'discovery',
     title: 'Discover before you act',
@@ -336,6 +370,26 @@ const SECTIONS: readonly InstructionSection[] = [
   },
 ];
 
+/**
+ * The command table's `SDK` cell.
+ *
+ * `runtime` and `runner` commands are reported as absences with the reason
+ * attached, rather than omitted: a blank cell reads as an oversight, and an
+ * omitted row reads as a command that does not exist.
+ */
+type CommandImplementation = (typeof AGENT_COMMANDS)[number]['implementation'];
+
+const sdkCell = (implementation: CommandImplementation): string => {
+  switch (implementation.kind) {
+    case 'sdk':
+      return `\`client.${implementation.method}()\``;
+    case 'runner':
+      return 'no — local Runner';
+    case 'runtime':
+      return 'no — composed by the core';
+  }
+};
+
 export function buildAgentInstructions(): AgentInstructionsDocument {
   return {
     version: AGENT_INSTRUCTIONS_VERSION,
@@ -347,6 +401,7 @@ export function buildAgentInstructions(): AgentInstructionsDocument {
       command: command.name,
       cli: command.cli,
       tool: toolNameFor(command.name),
+      sdk: sdkCell(command.implementation),
       classification: command.classification,
       confirmation: command.confirmation,
       summary: command.summary,
@@ -381,14 +436,14 @@ export function renderAgentInstructions(
 
   lines.push('## Commands', '');
   lines.push(
-    'Generated from the command contract. `write` commands are gated by the execution policy; see `APPROVAL_IS_PER_INTENT_AND_OPERATOR_HELD`.',
+    'Generated from the command contract. `write` commands are gated by the execution policy; see `APPROVAL_IS_PER_INTENT_AND_OPERATOR_HELD`. The `SDK` cell is the method a caller holding only `@waterx/predict-agent-sdk` calls; where it says `no`, that surface cannot honour the command alone — see `A_SURFACE_YOU_LACK_IS_NOT_A_CAPABILITY_TO_REBUILD`.',
     '',
   );
-  lines.push('| Command | CLI | Tool | Kind | Confirmation | Summary |');
-  lines.push('| --- | --- | --- | --- | --- | --- |');
+  lines.push('| Command | CLI | Tool | SDK | Kind | Confirmation | Summary |');
+  lines.push('| --- | --- | --- | --- | --- | --- | --- |');
   for (const entry of document.commands) {
     lines.push(
-      `| \`${entry.command}\` | \`${cell(entry.cli)}\` | \`${entry.tool}\` | ${entry.classification} | ${entry.confirmation} | ${cell(entry.summary)} |`,
+      `| \`${entry.command}\` | \`${cell(entry.cli)}\` | \`${entry.tool}\` | ${cell(entry.sdk)} | ${entry.classification} | ${entry.confirmation} | ${cell(entry.summary)} |`,
     );
   }
   lines.push('');

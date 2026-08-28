@@ -17,6 +17,11 @@
  * value — an error message that quotes the secret it is objecting to has leaked
  * it to every log the message reaches.
  */
+import {
+  PREDICT_AGENT_ENDPOINTS,
+  type PredictAgentDeployment,
+} from '@waterx/predict-agent-sdk';
+
 import { CliError } from './errors.ts';
 import { parseExecutionPolicy, type ExecutionPolicy } from './policy.ts';
 
@@ -279,9 +284,32 @@ export function loadConfig(sources: ConfigSources): ResolvedConfig {
   const env = sources.env;
   const warnings: string[] = [];
 
-  const baseUrl =
+  const environment =
+    asString(env[ENV_KEYS.environment], ENV_KEYS.environment, 'the environment') ??
+    asString(config.environment, 'environment', where);
+
+  const explicitBaseUrl =
     asString(env[ENV_KEYS.baseUrl], ENV_KEYS.baseUrl, 'the environment') ??
     asString(config.baseUrl, 'baseUrl', where);
+
+  /**
+   * Naming the deployment is enough; the host comes from the SDK.
+   *
+   * Nobody should be typing `https://api-testnet.waterx.app`. The SDK ships
+   * every host it talks to (`PREDICT_AGENT_ENDPOINTS`), a hand-typed one that
+   * differs by a hyphen is a silent failure, and an operator who has already
+   * said which network this is has said everything the runtime needs.
+   *
+   * An explicit URL still wins, and it is the only way to reach a private or
+   * preview deployment — one that has no name is exactly the case a lookup
+   * cannot serve. A label that names no known deployment is left alone rather
+   * than rejected: `environment` is also a free-form marker other things read.
+   */
+  const derivedBaseUrl =
+    environment !== undefined && environment in PREDICT_AGENT_ENDPOINTS
+      ? PREDICT_AGENT_ENDPOINTS[environment as PredictAgentDeployment]
+      : undefined;
+  const baseUrl = explicitBaseUrl ?? derivedBaseUrl;
 
   const timeoutMs =
     sources.timeoutMs ??
@@ -308,9 +336,7 @@ export function loadConfig(sources: ConfigSources): ResolvedConfig {
 
   return {
     baseUrl: baseUrl?.replace(/\/+$/u, ''),
-    environment:
-      asString(env[ENV_KEYS.environment], ENV_KEYS.environment, 'the environment') ??
-      asString(config.environment, 'environment', where),
+    environment,
     agentWallet:
       asString(env[ENV_KEYS.agentWallet], ENV_KEYS.agentWallet, 'the environment') ??
       asString(config.agentWallet, 'agentWallet', where),

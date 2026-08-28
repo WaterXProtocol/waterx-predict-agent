@@ -3,7 +3,8 @@
  *
  * Three things, and deliberately nothing else:
  *
- *  - the host-neutral agent instructions (`instructions.ts`),
+ *  - the host-neutral agent instructions (`instructions.ts`), and the skill that
+ *    routes to them (`skill.ts`),
  *  - the command contract projected into tool definitions (`tools.ts`),
  *  - a dispatcher that validates against that same contract and hands the call
  *    to the installed command core (`dispatch.ts`, `core.ts`).
@@ -21,6 +22,15 @@ export {
   type InstructionRule,
   type InstructionSection,
 } from './instructions.ts';
+
+export {
+  AGENT_SKILL_VERSION,
+  buildAgentSkill,
+  renderAgentSkill,
+  type AgentSkillDocument,
+  type AgentSkillStep,
+  type AgentSkillStop,
+} from './skill.ts';
 
 export {
   AGENT_TOOLS,

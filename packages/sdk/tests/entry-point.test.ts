@@ -67,6 +67,16 @@ describe('the published entry point', () => {
     }
   });
 
+  it('exposes the discovery surface, which is what a caller reaches for first', () => {
+    // `describeInstallation` is the answer to "installed — now what?", and the
+    // binary over it is the same call. Unreachable from the entry point it
+    // would exist for this repository only, which is the exact failure the
+    // whole discovery path was added to fix.
+    for (const name of ['describeInstallation', 'AGENT_REQUIREMENTS', 'requirementFor', 'nextStepFor']) {
+      expect(Object.hasOwn(sdk, name), `${name} is not reachable from the entry point`).toBe(true);
+    }
+  });
+
   it('still exposes the client and the decimal helpers it is used with', () => {
     // The pairing is the point: money is compared with these, never with `<`.
     expect(PredictAgentClient).toBeTypeOf('function');
