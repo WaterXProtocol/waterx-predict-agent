@@ -22,12 +22,15 @@ import {
   type CreateExecutionResponseBody,
   type CreateQuoteRequestBody,
   type GetMarketResponseBody,
+  type ListAgentAccountsResponseBody,
   type ListExecutionsResponseBody,
   type ListFillsResponseBody,
   type ListMarketsQuery,
   type ListMarketsResponseBody,
   type ListPositionsResponseBody,
   PREDICT_AGENT_API_ROUTES,
+  PREDICT_AGENT_ENDPOINTS,
+  type PredictAgentDeployment,
   type PredictAgentListQuery,
   type PredictAgentPerformanceResponseBody,
   type PredictAllowanceResponseBody,
@@ -68,7 +71,27 @@ import { sleep } from './sleep.ts';
 import { type AgentSigner, buildAuthMessage, signBase64 } from './signer.ts';
 import { Transport, type TransportOptions } from './transport.ts';
 
-export interface PredictAgentClientOptions extends TransportOptions {
+/**
+ * Where this client talks to — a named deployment, or a host.
+ *
+ * Naming the deployment is the normal case and the reason this is a union: the
+ * SDK already knows every hostname it ships against, so nobody should be typing
+ * one, and a host that differs from the intended one by a hyphen is a silent
+ * failure. A private or preview deployment has no name and is still passed as a
+ * URL.
+ *
+ * Exactly one, never both, and never neither. There is no default, and the
+ * absence is deliberate: a default of `testnet` would make a production caller
+ * fail in ways that look like a broken install, and a default of `production`
+ * would point somebody's first experiment at real money. Which network this is
+ * cannot be inferred and must never be guessed.
+ */
+export type PredictAgentEndpoint =
+  | { baseUrl: string; deployment?: never }
+  | { deployment: PredictAgentDeployment; baseUrl?: never };
+
+export type PredictAgentClientOptions = Omit<TransportOptions, 'baseUrl'> &
+  PredictAgentEndpoint & {
   signer: AgentSigner;
   /**
    * Reuse an existing session token instead of authenticating. Its lifetime is
@@ -265,11 +288,46 @@ const DEFAULT_TIMEOUT_MS = 60_000;
 /** Default ceiling on a price wait. Long, because a target may be hours away. */
 const DEFAULT_WAIT_TIMEOUT_MS = 60 * 60 * 1_000;
 
+/**
+ * One endpoint, from exactly one of the two ways of naming it.
+ *
+ * Checked at runtime as well as in the types: an input that arrived as JSON, or
+ * from a caller who is not using TypeScript, can carry both — and silently
+ * preferring one is how a run intended for testnet reaches production.
+ */
+export function resolveBaseUrl(endpoint: PredictAgentEndpoint): string {
+  const named = endpoint.deployment;
+  const explicit = endpoint.baseUrl;
+
+  if (named !== undefined && explicit !== undefined) {
+    throw new TypeError(
+      'Pass either `deployment` or `baseUrl`, not both: they can name different networks, and choosing between them here would decide which one your orders reach.',
+    );
+  }
+  if (named !== undefined) {
+    const resolved = PREDICT_AGENT_ENDPOINTS[named];
+    if (resolved === undefined) {
+      throw new TypeError(
+        `Unknown deployment ${JSON.stringify(named)}. Known: ${Object.keys(PREDICT_AGENT_ENDPOINTS).join(', ')}. A private or preview host has no name — pass it as \`baseUrl\`.`,
+      );
+    }
+    return resolved;
+  }
+  if (explicit !== undefined && explicit !== '') return explicit;
+
+  throw new TypeError(
+    `Name where this client talks to: \`deployment: '${Object.keys(PREDICT_AGENT_ENDPOINTS)[1] ?? 'testnet'}'\` for a WaterX deployment, or \`baseUrl\` for a private one. There is no default, because a wrong guess here is the difference between real money and none.`,
+  );
+}
+
 export class PredictAgentClient {
   private readonly transport: Transport;
   private readonly signer: AgentSigner;
   private readonly watcher: PriceWatcher;
-  private readonly baseUrl: string;
+  /** Resolved once, from whichever half of {@link PredictAgentEndpoint} was given. */
+  readonly baseUrl: string;
+  /** The named deployment, when one was named. `undefined` for a private host. */
+  readonly deployment: PredictAgentDeployment | undefined;
   private readonly streamOption: ExecutionStream | 'native' | undefined;
   private readonly streamConnector: StreamConnector | undefined;
   /** Only set for `executionStream: 'native'` — the socket this client must close. */
@@ -282,7 +340,8 @@ export class PredictAgentClient {
 
   constructor(options: PredictAgentClientOptions) {
     this.signer = options.signer;
-    this.baseUrl = options.baseUrl;
+    this.baseUrl = resolveBaseUrl(options);
+    this.deployment = options.deployment;
     // The session is constructed first because the transport asks it for a token
     // on every authenticated attempt; `mint` closes over the transport lazily and
     // runs only once a request needs a session.
@@ -291,7 +350,7 @@ export class PredictAgentClient {
       automatic: options.autoReauthenticate ?? true,
       mint: async () => await this.mintSession(),
     });
-    this.transport = new Transport(options, this.session);
+    this.transport = new Transport({ ...options, baseUrl: this.baseUrl }, this.session);
     this.streamOption = options.executionStream;
     this.streamConnector = options.streamConnector;
     this.quoteStreamOption = options.quoteStream;
@@ -739,6 +798,28 @@ export class PredictAgentClient {
     return await this.transport.request<SubmitExecutionResponseBody>({
       method: 'GET',
       path: PREDICT_AGENT_API_ROUTES.getExecution.replace(':executionId', executionId),
+      authenticated: true,
+      idempotent: true,
+      ...(signal !== undefined ? { signal } : {}),
+    });
+  }
+
+  /**
+   * The accounts this agent has been onboarded onto — the one account read that
+   * needs no id.
+   *
+   * Every other account method below takes an `accountId` the agent has no way to
+   * learn: it belongs to the owner. This is where a strategy starts, and what an
+   * onboarding flow polls while an owner is signing.
+   *
+   * An empty list is a complete answer: nobody has onboarded this agent yet. A
+   * listed account is NOT a promise that it can trade — check `delegation` and
+   * `isSuspended`, or hand the list to `describeOnboarding`.
+   */
+  async listAuthorizedAccounts(signal?: AbortSignal): Promise<ListAgentAccountsResponseBody> {
+    return await this.transport.request<ListAgentAccountsResponseBody>({
+      method: 'GET',
+      path: PREDICT_AGENT_API_ROUTES.agentAccounts,
       authenticated: true,
       idempotent: true,
       ...(signal !== undefined ? { signal } : {}),

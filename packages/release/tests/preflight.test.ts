@@ -10,8 +10,15 @@
 import { describe, expect, it } from 'vitest';
 
 import { LICENSE_REVIEWS } from '../src/license-review.ts';
-import { exitCodeFor, formatReport, minimumNodeMajor, NODE_FLOOR, runPreflight } from '../src/preflight.ts';
-import { findRepoRoot, publishedPackages } from '../src/workspace.ts';
+import {
+  checkDistBuilt,
+  exitCodeFor,
+  formatReport,
+  minimumNodeMajor,
+  NODE_FLOOR,
+  runPreflight,
+} from '../src/preflight.ts';
+import { findRepoRoot, publishedPackages, type WorkspacePackage } from '../src/workspace.ts';
 
 const report = runPreflight(findRepoRoot());
 const checkFor = (id: string): { status: string; detail: string } => {
@@ -62,6 +69,40 @@ describe('formatReport', () => {
     const text = formatReport(report, false);
     for (const check of report.checks) expect(text).toContain(check.id);
     if (report.unresolved > 0) expect(text).toContain('--strict');
+  });
+});
+
+describe('checkDistBuilt', () => {
+  const pkg = (manifest: Record<string, unknown>): WorkspacePackage => ({
+    id: 'fixture',
+    directory: findRepoRoot(),
+    manifest: { name: '@fixture/pkg', version: '0.0.0', ...manifest },
+    name: '@fixture/pkg',
+    version: '0.0.0',
+    published: true,
+  });
+
+  /** Paths that exist relative to the repo root, so only `bin` is under test. */
+  const REAL_ENTRY = { main: 'package.json', types: 'package.json' };
+
+  it('refuses a bin that points at a file nobody built', () => {
+    // The failure this catches reaches every consumer and nobody here: `npx
+    // <package>` is not something this workspace ever runs by name.
+    const check = checkDistBuilt([
+      pkg({ ...REAL_ENTRY, bin: { 'a-binary': 'dist/src/bin/nope.js' } }),
+    ]);
+    expect(check.status).toBe('FAIL');
+    expect(check.detail).toContain('dist/src/bin/nope.js');
+  });
+
+  it('accepts a bin that resolves, in either declared form', () => {
+    for (const bin of ['package.json', { 'a-binary': 'package.json' }]) {
+      expect(checkDistBuilt([pkg({ ...REAL_ENTRY, bin })]).status, JSON.stringify(bin)).toBe('PASS');
+    }
+  });
+
+  it('says nothing about a package that declares no bin', () => {
+    expect(checkDistBuilt([pkg(REAL_ENTRY)]).status).toBe('PASS');
   });
 });
 

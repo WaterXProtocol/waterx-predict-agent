@@ -30,6 +30,12 @@ export const GLOBAL_FLAGS = new Set([
   // only narrow what the configuration already allows.
   'approve',
   'policy',
+  // Opens the authorization link. Dispatcher-owned rather than an input field
+  // on purpose: a model host reaches this CLI through `--input <json>` and the
+  // adapters' operator-flag allowlist, and neither can reach a global flag — so
+  // launching a browser on an operator's machine stays something only a person
+  // at that machine can ask for. Same posture as `--approve`.
+  'open',
   // Which local Runner the strategy family talks to. An address, not part of any
   // intent: the same strategy sent to two runtime directories is two strategies,
   // and neither the schema nor the Runner should have to know how it was reached.

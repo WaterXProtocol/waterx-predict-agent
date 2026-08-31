@@ -39,6 +39,16 @@ committed, so a surface that cannot import a Node module reads the same contract
 `agent-instructions/AGENT_INSTRUCTIONS.md` is generated from `packages/adapters`
 the same way: it is what the MCP adapter returns at `initialize`, and what a host
 that cannot run this toolchain pastes into a system prompt instead.
+`agent-instructions/SKILL.md` comes from the same generator and is the thin
+trigger-and-route a skill host loads — it cites the rules and never restates
+them, and a test fails if it grows past half their length.
+
+**Each of those reaches a consumer through a tarball, not through this
+repository.** `packages/sdk` ships `AGENT_INSTRUCTIONS.md` and `SKILL.md`,
+`packages/schema` ships `agent-commands.json`, every copy is byte-compared to
+the committed one, and `npx @waterx/predict-agent-sdk` reports what an
+installation still needs with no configuration and no network. A document that
+exists only here is a document for people who already cloned this.
 `sbom/v1/*.cdx.json` is generated from `packages/release` and held to the same
 rule: it states what a published package installs into a consumer, and CI fails
 if the committed bytes are no longer the generator's output.
@@ -73,6 +83,12 @@ pnpm instructions:generate   # rewrite agent-instructions/AGENT_INSTRUCTIONS.md
 pnpm sbom:generate           # rewrite sbom/v1/*.cdx.json from the installed tree
 pnpm release:preflight       # is this workspace fit to publish, and what is unresolved
 
+# What a consumer gets, before anything is published. Both pack the working
+# tree, so rebuild first and re-run after any rebuild.
+pnpm consumer:kit ~/tmp/consumer   # a portable project against the packed tarballs
+pnpm consumer:registry             # serve the same tarballs, resolvable by name
+pnpm consumer:check                # pack, install, assert what arrived — CI runs this
+
 # What the CLI is, with no configuration and no network.
 node packages/cli/dist/src/main.js describe
 
@@ -99,8 +115,9 @@ Node.js 20+ and ESM. macOS and Linux; Windows is not verified (ADR-0002).
   would prove, and the named list of what an operator and an account owner must
   each supply before one can happen.
 - [`packages/release/README.md`](packages/release/README.md) — how the SBOM is
-  built, why a licence is never guessed, and what the preflight's three outcomes
-  mean.
+  built, why a licence is never guessed, what the preflight's three outcomes
+  mean, and the two ways to install what is about to ship before it ships: a
+  portable consumer kit, and a scoped local registry that resolves by name.
 - [`docs/RELEASE.md`](docs/RELEASE.md) — what ships, the pre-publish gates,
   provenance, the support window, upgrade and rollback, and telemetry (none).
 - [`docs/IMPLEMENTATION_BACKLOG.md`](docs/IMPLEMENTATION_BACKLOG.md) — the only

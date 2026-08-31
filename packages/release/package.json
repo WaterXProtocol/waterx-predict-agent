@@ -5,18 +5,26 @@
   "description": "Release readiness for the workspace: the CycloneDX SBOM of every published package, generated from what is actually installed, and the mechanical preflight that must pass before anything is published. Ships to nobody.",
   "license": "MIT",
   "type": "module",
-  "bin": { "waterx-predict-release-preflight": "dist/src/bin/preflight.js" },
+  "bin": {
+    "waterx-predict-release-preflight": "dist/src/bin/preflight.js",
+    "waterx-predict-consumer-kit": "dist/src/bin/kit.js",
+    "waterx-predict-local-registry": "dist/src/bin/registry.js",
+    "waterx-predict-consumer-check": "dist/src/bin/check.js"
+  },
   "main": "dist/src/index.js",
   "types": "dist/src/index.d.ts",
   "engines": { "node": ">=20" },
   "scripts": {
-    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json && node -e \"require('node:fs').chmodSync('dist/src/bin/preflight.js',0o755)\"",
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json && node -e \"for (const f of ['preflight','kit','registry','check']) require('node:fs').chmodSync('dist/src/bin/'+f+'.js',0o755)\"",
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "generate": "pnpm run build && node dist/src/generate.js ../../sbom/v1",
     "generate:check": "pnpm run build && node dist/src/generate.js ../../sbom/v1 --check",
-    "preflight": "pnpm run build && node dist/src/bin/preflight.js"
+    "preflight": "pnpm run build && node dist/src/bin/preflight.js",
+    "kit": "pnpm run build && node dist/src/bin/kit.js",
+    "registry": "pnpm run build && node dist/src/bin/registry.js",
+    "check": "pnpm run build && node dist/src/bin/check.js"
   },
   "devDependencies": {
     "@types/node": "^24.12.0",

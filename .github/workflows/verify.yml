@@ -39,17 +39,26 @@ jobs:
       # longer reproduces it byte-for-byte means the schema and the contract
       # have diverged, which `packages/schema/tests` cannot catch on its own
       # once the artifact is edited by hand.
+      #
+      # Both copies. The one inside the package is what `files` ships, so it is
+      # the only one a consumer ever reads — and the only one nobody here would
+      # notice going stale.
       - run: pnpm schema:generate
       - name: schema artifact is reproducible
-        run: git diff --exit-code -- schemas/
+        run: git diff --exit-code -- schemas/ packages/schema/agent-commands.json
 
-      # And the same rule for the host-neutral instructions. This is the
-      # document the MCP adapter returns at `initialize` and the one a host
-      # that cannot run this toolchain reads instead, so a hand edit here would
-      # give two hosts different rules.
+      # And the same rule for the host-neutral instructions and the skill. These
+      # are the document the MCP adapter returns at `initialize`, the one a host
+      # that cannot run this toolchain reads instead, and the one a skill host
+      # loads — so a hand edit here would give two hosts different rules. The
+      # copies under `packages/sdk` are what that package's `files` ships.
       - run: pnpm instructions:generate
       - name: agent instructions are reproducible
-        run: git diff --exit-code -- agent-instructions/
+        run: |
+          git diff --exit-code -- \
+            agent-instructions/ \
+            packages/sdk/AGENT_INSTRUCTIONS.md \
+            packages/sdk/SKILL.md
 
       # The SBOM is held to the same rule. It carries no timestamp and a
       # content-derived serial precisely so this diff means something: a change
@@ -64,6 +73,37 @@ jobs:
       # the output. The release workflow runs the same gate with --strict.
       - name: release preflight (report only)
         run: pnpm release:preflight
+
+  # Everything in `verify` reads a manifest or compares bytes in the working
+  # tree. None of it runs npm — so a `files` list that omits the document the
+  # package exists to deliver passes every check above and fails for the first
+  # consumer. This packs, installs into a throwaway project, and asserts that
+  # what each manifest promised arrived: every literal `files` entry, `main`,
+  # `types`, every `bin`, an `import()` by name, and every binary spawned far
+  # enough to prove it can resolve its own imports.
+  #
+  # Its own job because it is a different question from "does the code pass",
+  # and because it reaches the network for real dependencies.
+  install:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # The tarballs are packed from the working tree, so this has to build
+      # first: a stale `dist/` is the one way to pass this check while shipping
+      # something else.
+      - run: pnpm build
+
+      - run: pnpm consumer:check
 
   # The published packages promise `engines.node: ">=20"`. Verifying only on the
   # Runner's Node 24 would leave that promise untested, and a consumer on 20 is

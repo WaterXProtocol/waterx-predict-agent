@@ -807,6 +807,72 @@ const runtimeDoctor: AgentCommandSpec = {
   ],
 };
 
+const runtimeOnboard: AgentCommandSpec = {
+  ...readOnly,
+  name: 'runtime.onboard',
+  cli: 'onboard',
+  summary: 'Get this agent authorized: the link an owner signs, and where the grants stand.',
+  description:
+    'The first command of an integration, and the only one that addresses a HUMAN. Reports what is missing before this agent may trade and returns the authorization URL an ACCOUNT OWNER opens to grant it. The URL names this agent wallet and carries no token, no secret and no pre-authorization: everything it can do, the owner does with their own wallet in their own session. This runtime never signs a delegation, never writes a risk profile and never raises a limit — an agent runtime that could grant its own authority would make the authority meaningless (ADR-0003). Pass wait to poll until the owner has signed; without it this answers immediately with the current state, because a model host must not be blocked for the minutes a person takes to find their wallet. DELEGATION_UNKNOWN means the on-chain read FAILED and is never reported as a refusal: telling an owner to re-sign a grant they already made is worse than saying nothing was learned.',
+  sideEffects: ['AUTHENTICATES'],
+  implementation: {
+    kind: 'runtime',
+    note: 'Composes authenticate() and listAuthorizedAccounts() through describeOnboarding/waitForAuthorization. Writes nothing, anywhere.',
+  },
+  input: {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      accountId: { $ref: '#/$defs/accountId' },
+      label: {
+        title: 'Agent label',
+        description:
+          'A human name carried in the link so an owner can tell two agents apart. Cosmetic; it authorizes nothing.',
+        type: 'string',
+        minLength: 1,
+        maxLength: 64,
+      },
+      wait: {
+        title: 'Wait for the owner',
+        description:
+          'Poll until the grants land. Absent means answer now. A wait that runs out is NOT a failure — the owner may sign a minute later — so the answer carries timedOut and the last state, and resuming means calling again.',
+        type: 'boolean',
+      },
+      timeoutMs: {
+        title: 'Wait timeout (ms)',
+        description: 'Only meaningful with wait. Default 600000 — a person has to find a wallet and read a screen.',
+        type: 'integer',
+        minimum: 1_000,
+        maximum: 3_600_000,
+      },
+      consoleUrl: {
+        title: 'Console base URL',
+        description:
+          'Where the owner signs. Defaults to the console paired with the configured API deployment; there is no global default, because the deployment decides whether an order spends real money.',
+        type: 'string',
+        minLength: 1,
+        maxLength: 2_048,
+      },
+    },
+  },
+  examples: [
+    { title: 'Where does authorization stand', input: {} },
+    { title: 'Print the link and wait for the owner', input: { wait: true, label: 'momentum-bot' } },
+  ],
+};
+
+const accountList: AgentCommandSpec = {
+  ...readOnly,
+  name: 'account.list',
+  cli: 'account list',
+  summary: 'The accounts this agent has been onboarded onto.',
+  description:
+    'The one account read that takes no account id — every other one demands an identifier that belongs to the owner and that an agent has no way to discover. The rows come from the owner\'s own mandate writes, so an account appears here only because an owner deliberately configured this agent on it; this is not a search of accounts the agent might reach. A listed account is NOT a promise it can trade: delegation carries the on-chain grant, where null means the chain read FAILED rather than that permission was refused, and a suspended mandate still lists because silence would read as revoked.',
+  implementation: { kind: 'sdk', method: 'listAuthorizedAccounts' },
+  input: { type: 'object', additionalProperties: false, properties: {} },
+  examples: [{ title: 'Which accounts may this agent trade on', input: {} }],
+};
+
 const accountStatus: AgentCommandSpec = {
   ...readOnly,
   name: 'account.status',
@@ -1094,10 +1160,12 @@ export const AGENT_COMMANDS: readonly AgentCommandSpec[] = [
   runtimeDescribe,
   runtimeCommandSchema,
   runtimeDoctor,
+  runtimeOnboard,
   marketList,
   marketSearch,
   marketGet,
   marketQuote,
+  accountList,
   accountStatus,
   accountAllowance,
   accountRiskLimits,

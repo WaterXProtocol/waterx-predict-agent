@@ -12,9 +12,17 @@
  * one. It reports the policy in force and the one write-blocking fact it can
  * settle without trading — a delegation whose window has already closed.
  */
-import { isPredictAgentApiError } from '@waterx/predict-agent-sdk';
+import {
+  describeOnboarding,
+  isPredictAgentApiError,
+  nextStepFor,
+  type OnboardingActor,
+  type OnboardingState,
+  type ResolvedRequirement,
+} from '@waterx/predict-agent-sdk';
 
 import type { ResolvedConfig } from '../config.ts';
+import { resolveRequirements } from '../requirements.ts';
 import type { CommandContext } from '../context.ts';
 import type { EnvelopeError } from '../envelope.ts';
 import { isCliError, isCliErrorCode } from '../errors.ts';
@@ -36,6 +44,18 @@ export interface DoctorReport {
   readonly checks: readonly DoctorCheck[];
   readonly failed: number;
   readonly skipped: number;
+  /**
+   * The six things a trade needs, each with its supplier and how to supply it.
+   *
+   * The checks say what happened; these say what to do, in fields rather than in
+   * a sentence somebody has to parse. Same list the SDK reports before anything
+   * is configured, settled here with the three more facts a session can reach.
+   */
+  readonly requirements: readonly ResolvedRequirement[];
+  readonly missing: readonly ResolvedRequirement[];
+  /** Not evaluated. Never to be reported, or read, as missing. */
+  readonly unchecked: readonly ResolvedRequirement[];
+  readonly nextStep: { actor: OnboardingActor; action: string };
   readonly checkedAt: string;
 }
 
@@ -105,6 +125,8 @@ export async function runDoctor(context: CommandContext): Promise<DoctorReport> 
   const checks: DoctorCheck[] = [];
   /** Flipped by any branch that has already accounted for the catalog check. */
   let catalogSettled = false;
+  /** True once a client exists, which is the precondition for any read below. */
+  let sessionOpen = false;
 
   const configured = config.baseUrl !== undefined;
   checks.push(
@@ -118,8 +140,9 @@ export async function runDoctor(context: CommandContext): Promise<DoctorReport> 
           id: 'config',
           status: 'FAIL',
           code: 'NOT_CONFIGURED',
-          summary: 'No API base URL is configured.',
-          detail: 'Set WATERX_PREDICT_BASE_URL, or `baseUrl` in the config file.',
+          summary: 'No deployment is configured.',
+          detail:
+            'Name the network and the host follows: WATERX_PREDICT_ENVIRONMENT=testnet (or production), or `environment` in the config file. Nobody should be typing a hostname — a private or preview deployment is the one case that has no name, and WATERX_PREDICT_BASE_URL is for that.',
         },
   );
 
@@ -166,6 +189,7 @@ export async function runDoctor(context: CommandContext): Promise<DoctorReport> 
       // not-attempted rather than as passing on no evidence — the catalog read
       // below is what actually exercises that token.
       await context.client();
+      sessionOpen = true;
       const probed = config.token === undefined;
       checks.push(
         probed
@@ -243,8 +267,71 @@ export async function runDoctor(context: CommandContext): Promise<DoctorReport> 
     }
   }
 
-  const accountId =
+  const named =
     typeof context.input.accountId === 'string' ? context.input.accountId : config.defaultAccountId;
+
+  // What an owner has granted, read the same way `onboard` reads it. This is the
+  // half of "why can I not trade" that no local check can answer, and the half
+  // that is true most often on a machine whose configuration is perfect.
+  //
+  // It runs BEFORE the account checks on purpose: the account id is something
+  // the server can answer for, so a person who has not named one is not missing
+  // a setting — they are one authenticated read away from the answer. Asking
+  // them to copy a 66-character hex string out of a browser was the friction the
+  // onboarding work removed, and reintroducing it here would put it back.
+  //
+  // A failure here settles nothing rather than settling it negatively: the three
+  // requirements behind this read belong to the account owner, and an absence
+  // reported on a request that never completed sends a person to sign something
+  // they may already have signed.
+  let onboarding: OnboardingState | undefined;
+  let unknownBecause: string | undefined;
+  if (!canCallApi) {
+    unknownBecause = 'Configuration or signer is incomplete, so no request was made.';
+  } else if (!sessionOpen) {
+    unknownBecause = 'No session was opened, so the authorized-account listing was not read.';
+  } else {
+    try {
+      const client = await context.client();
+      const listing = await client.listAuthorizedAccounts(context.signal());
+      onboarding = describeOnboarding(listing, named === undefined ? {} : { accountId: named });
+    } catch (error: unknown) {
+      unknownBecause = `The authorized-account listing could not be read (${failureCode(error)}). That is not evidence that nothing is granted.`;
+    }
+  }
+
+  const resolved = onboarding?.account?.accountId;
+  const accountId = named ?? resolved;
+
+  if (accountId !== undefined && named === undefined) {
+    checks.push({
+      id: 'account-identity',
+      status: 'PASS',
+      summary: 'Resolved the account this agent may trade on, with no id supplied.',
+      detail:
+        'From `listAuthorizedAccounts`. Nobody has to copy an account id out of a browser; where more than one is ready, this runtime asks rather than choosing whose money trades.',
+    });
+  } else if (named !== undefined) {
+    checks.push({
+      id: 'account-identity',
+      status: 'PASS',
+      summary: 'Using the account that was named.',
+      detail: 'Given explicitly, so no listing decided it.',
+    });
+  } else {
+    checks.push({
+      id: 'account-identity',
+      status: onboarding === undefined ? 'SKIP' : 'FAIL',
+      ...(onboarding === undefined
+        ? {}
+        : { code: onboarding.status === 'AMBIGUOUS' ? 'POLICY_DENIED' : 'NOT_CONFIGURED' }),
+      summary:
+        onboarding === undefined
+          ? 'Not attempted: the authorized-account listing was not read.'
+          : `No account resolved (${onboarding.status}).`,
+      detail: onboarding?.nextStep.action ?? unknownBecause ?? '',
+    });
+  }
 
   if (!canCallApi || accountId === undefined) {
     checks.push({
@@ -252,7 +339,7 @@ export async function runDoctor(context: CommandContext): Promise<DoctorReport> 
       status: 'SKIP',
       summary:
         accountId === undefined
-          ? 'Not attempted: no account was given and none is configured. Pass --accountId, or set WATERX_PREDICT_ACCOUNT_ID.'
+          ? 'Not attempted: no account resolved. See `account-identity`.'
           : 'Not attempted: configuration or signer is incomplete.',
     });
   } else {
@@ -279,10 +366,16 @@ export async function runDoctor(context: CommandContext): Promise<DoctorReport> 
 
   checks.push(writePlaneCheck(config, context.now()));
 
+  const requirements = resolveRequirements(config, onboarding, unknownBecause);
+
   return {
     checks,
     failed: checks.filter((check) => check.status === 'FAIL').length,
     skipped: checks.filter((check) => check.status === 'SKIP').length,
+    requirements,
+    missing: requirements.filter((requirement) => requirement.state === 'MISSING'),
+    unchecked: requirements.filter((requirement) => requirement.state === 'UNCHECKED'),
+    nextStep: nextStepFor(requirements),
     checkedAt: context.now().toISOString(),
   };
 }

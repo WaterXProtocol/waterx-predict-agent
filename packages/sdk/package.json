@@ -12,11 +12,12 @@
       "import": "./dist/src/index.js"
     }
   },
-  "files": ["dist", "LICENSE", "package.json", "README.md"],
+  "bin": { "waterx-predict-agent-sdk": "dist/src/bin/describe.js" },
+  "files": ["dist", "AGENT_INSTRUCTIONS.md", "SKILL.md", "LICENSE", "package.json", "README.md"],
   "engines": { "node": ">=20" },
   "publishConfig": { "access": "public", "provenance": true },
   "scripts": {
-    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json && node -e \"require('node:fs').chmodSync('dist/src/bin/describe.js',0o755)\"",
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest"

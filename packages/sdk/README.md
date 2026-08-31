@@ -14,6 +14,79 @@ is loaded lazily, so nothing but [the execution stream](#execution-stream) and
 > Status: **0.1.0, pre-release.** The API it targets is gated off by default on
 > the server side, so confirm your account is enabled before planning around it.
 
+## If you are an agent, read this first
+
+This package ships the operating rules in its own tarball, so they are on disk
+the moment it installs — no repository to find, no documentation site to fetch:
+
+```
+node_modules/@waterx/predict-agent-sdk/AGENT_INSTRUCTIONS.md
+```
+
+Thirty rules with symbolic ids, and a command table whose `SDK` column
+names the method on this client for each one — or says which surface you would
+need instead, because several commands are composed by the `waterx-predict` CLI
+and the durable `strategy.*` family is driven by a local Runner process.
+
+For the exact shape of a call, this package's own types are the contract. The
+same contract is published as plain JSON in
+`@waterx/predict-agent-schema/agent-commands.json`, for a surface that cannot
+import a Node module — **this package does not depend on it**, so that file is
+present only if you installed it as well.
+
+Read it before the first order. Each rule corresponds to a refusal you would
+otherwise meet with real money in flight — a JSON number where a decimal string
+belongs, a `buyAmount` on a SELL, a timeout reported as a failure and retried
+under a fresh key.
+
+Then ask this installation what it still needs. It answers with nothing
+configured, no network and no signer, which is the state you are in when the
+question matters:
+
+```bash
+npx @waterx/predict-agent-sdk
+```
+
+```ts
+import { describeInstallation } from '@waterx/predict-agent-sdk';
+
+// `supplied` for anything you pass to the constructor rather than the
+// environment — otherwise a correctly configured caller reads MISSING.
+const report = describeInstallation({ supplied: { deployment: true, signer: true } });
+report.missing;    // nothing supplies these, and nothing will until someone does
+report.unchecked;  // needs an authenticated read; NOT the same as missing
+report.nextStep;   // who acts next, and what they do
+```
+
+Six things stand between a fresh install and an order, and they come from two
+different people. Three are yours — which network, an agent wallet, and a signer
+for it. Neither a hostname nor an account id is among them, by design. The other three — an authorized account, an
+on-chain delegation and a risk profile — are the account owner's, they are
+granted in one signature at the console, and nothing in this package can
+provision them for you (ADR-0003). `waterx-predict onboard` prints the link that
+starts that, and polls until the grants land.
+
+### Loading this as a skill
+
+`SKILL.md` ships beside the instructions: a trigger and a route, ~90 lines,
+citing the rules rather than restating them. For a host that reads skills from
+a project directory:
+
+```bash
+mkdir -p .claude/skills/waterx-predict
+cp node_modules/@waterx/predict-agent-sdk/SKILL.md .claude/skills/waterx-predict/
+```
+
+For a host that reads a single project file, append it to `AGENTS.md`. For an
+MCP client, none of this is needed — the adapter returns the full instructions
+at `initialize`.
+
+What the skill will **not** do is finish a bet by itself, and it says so. Under
+the default `interactive` policy the approval for a write is issued at the
+command core by an operator, per order; a tool call cannot supply one and is
+refused `POLICY_DENIED`. The completed task is a previewed order and the exact
+line a person runs to approve it.
+
 ## Install
 
 ```bash
@@ -24,12 +97,14 @@ pnpm add @waterx/predict-agent-sdk
 
 ```ts
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
-import { PredictAgentClient } from '@waterx/predict-agent-sdk';
+import { PredictAgentClient, PREDICT_AGENT_ENDPOINTS } from '@waterx/predict-agent-sdk';
 
 // A Sui Keypair satisfies AgentSigner structurally — no adapter needed.
 const signer = Ed25519Keypair.fromSecretKey(process.env.AGENT_SECRET_KEY!);
 
-const client = new PredictAgentClient({ baseUrl: 'https://api.waterx.app', signer });
+// There is no default base URL. Name the deployment you mean — see below.
+// Name the network. The host comes from the SDK — never type one.
+const client = new PredictAgentClient({ deployment: 'testnet', signer });
 await client.authenticate();
 
 // Quotes live ~3 seconds and are never extended — fetch immediately before ordering.
@@ -64,7 +139,86 @@ if (result.terminal && result.status === 'FILLED') {
 `executeMarketOrder` hides the API's three steps — create, sign the returned
 sponsored bytes, submit — behind one await.
 
+## Onboarding: what a person still has to do
+
+Three things must exist before a write is accepted, and exactly one of them is
+irreducibly human:
+
+| | Who | Automatable |
+| --- | --- | --- |
+| Account id | the owner's | **Yes** — `listAuthorizedAccounts()` answers for it |
+| On-chain delegation | the owner signs with their own wallet | **No**, and never (ADR-0003) |
+| Risk profile (the mandate) | the owner | Yes, in the same signing session |
+
+So the flow is: build a link that names this agent, hand it to the owner, poll
+until the grants land.
+
+```ts
+import {
+  PREDICT_AGENT_CONSOLE_ENDPOINTS,
+  buildAuthorizationUrl,
+  waitForAuthorization,
+} from '@waterx/predict-agent-sdk';
+
+await client.authenticate();
+
+console.log(buildAuthorizationUrl({
+  consoleBaseUrl: PREDICT_AGENT_CONSOLE_ENDPOINTS.testnet,
+  agentWallet: signer.toSuiAddress(),
+  label: 'momentum-bot',
+}));
+
+const ready = await waitForAuthorization(client, {
+  onChange: (state) => console.log(state.status, state.nextStep.action),
+});
+if (ready.status === 'READY') {
+  // ready.account.accountId — nobody copied it out of a browser.
+}
+```
+
+The link carries the agent's address and nothing else: no token, no secret, no
+pre-authorization. Everything it can do, the owner does with their own wallet in
+their own session, so it is safe to paste into a chat.
+
+`describeOnboarding` is the same decision without the polling, and its statuses
+are chosen so nobody is sent to do the wrong thing:
+
+- `DELEGATION_MISSING` — the owner never signed. **They** must act.
+- `DELEGATION_UNKNOWN` — the chain read failed. Retry; do **not** ask the owner
+  to sign a grant they may already have made.
+- `SUSPENDED` — the owner switched this agent off. Re-signing will not help.
+- `AMBIGUOUS` — more than one account is ready, and choosing whose money a
+  strategy trades is not this SDK's call.
+
+A timeout is not a failure here either: the owner may sign a minute later, so the
+result carries `timedOut` and the last state, and you resume by calling again.
+
 ## The things that will bite you
+
+**Name the deployment; never type a hostname.** The SDK ships every host it
+talks to, so a URL in your code is a hostname nobody needed to know — and one
+that can differ from the intended one by a hyphen, silently, against real money.
+
+```ts
+new PredictAgentClient({ deployment: 'testnet', signer });   // or 'production'
+new PredictAgentClient({ baseUrl: 'https://…', signer });    // a private host
+```
+
+Exactly one, never both: they can name different networks, and choosing between
+them for you would decide where your orders go. A private or preview deployment
+has no name, and `baseUrl` is what it has instead. The lookup behind the names
+is exported as `PREDICT_AGENT_ENDPOINTS` if you need the string itself.
+
+**There is no default, and there will not be one.** Which network this is
+decides whether an order spends real money. A default of `testnet` would make a
+production caller fail in ways that look like a broken install; a default of
+`production` would point somebody's first experiment at real funds. An
+unconfigured client throws, and the message names both ways to answer it.
+
+**Nobody types an account id either.** `listAuthorizedAccounts()` reports the
+accounts an owner has granted this agent and `describeOnboarding()` turns that
+into a decision. Where exactly one is ready it is resolved for you; where more
+than one is, this SDK asks rather than choosing whose money trades.
 
 **Money is a decimal string, never a number.** A JS `number` cannot hold 6-dp
 money exactly. `'50'`, not `50`.

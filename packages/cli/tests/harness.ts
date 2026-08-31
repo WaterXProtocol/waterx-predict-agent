@@ -23,6 +23,8 @@ export interface Invocation {
   readonly envelope: Envelope;
   readonly fetches: readonly FetchCall[];
   readonly signerRuns: readonly SignerRun[];
+  /** URLs `--open` asked this machine to open. Recorded, never opened. */
+  readonly opened: readonly string[];
   /**
    * Every socket path dialled. Empty is an assertion in its own right: a refusal
    * the CLI could reach on its own must cost no socket traffic.
@@ -64,6 +66,8 @@ export interface InvokeOptions {
   /** Overrides the default signer, which returns a fixed fake signature. */
   readonly signer?: (command: readonly string[], input: string) => SignerResult;
   readonly homeDir?: string | null;
+  /** Makes this machine one that cannot open a browser, so the refusal is visible. */
+  readonly browserFails?: boolean;
   /**
    * A Runner listening in {@link RUNNER_DIR}. Absent means there is none — the
    * runtime directory does not exist, and the CLI must say so without dialling.
@@ -296,6 +300,7 @@ export async function invoke(
   const stderr: string[] = [];
   const fetches: FetchCall[] = [];
   const signerRuns: SignerRun[] = [];
+  const opened: string[] = [];
   const routes = options.routes ?? {};
   const runnerRecord: RunnerRecord = { dials: [], frames: [] };
   const script = options.runner;
@@ -344,6 +349,10 @@ export async function invoke(
         headers: { 'content-type': 'application/json' },
       });
     }) as unknown as typeof globalThis.fetch,
+    openUrl: (url: string) => {
+      if (options.browserFails === true) throw new Error('no DISPLAY or WAYLAND_DISPLAY is set');
+      opened.push(url);
+    },
     runSigner: (command, input) => {
       signerRuns.push({ command, input });
       const result = options.signer?.(command, input) ?? {
@@ -397,6 +406,7 @@ export async function invoke(
     },
     fetches,
     signerRuns,
+    opened,
     runnerDials: runnerRecord.dials,
     runnerFrames: runnerRecord.frames,
     secretWrites,

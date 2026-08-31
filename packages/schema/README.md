@@ -16,6 +16,12 @@ function adapter — validates against it and then compiles to the same SDK call
 That is the property that stops two hosts from turning the same instruction into
 two different orders.
 
+The emitted document ships **inside this package**, at
+`node_modules/@waterx/predict-agent-schema/agent-commands.json`, byte-identical
+to `schemas/v1/agent-commands.json`. The whole point of emitting plain JSON is
+that a surface which cannot import a Node module can still read the contract,
+and a copy reachable only by cloning this repository does not serve that reader.
+
 ## Why runtime validation
 
 TypeScript types do not run. A CLI argument, a JSON file, an MCP tool call and a

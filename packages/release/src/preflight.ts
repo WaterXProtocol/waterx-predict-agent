@@ -185,7 +185,14 @@ const checkVersions = (packages: readonly WorkspacePackage[]): Check => {
   );
 };
 
-const checkDistBuilt = (packages: readonly WorkspacePackage[]): Check => {
+/**
+ * Exported for the test that a synthetic package can exercise and this
+ * workspace cannot: `pnpm test` runs before `pnpm build`, so the real report's
+ * `dist-built` is expected to fail locally and is excluded from the assertions
+ * there. Without a direct test, a `bin` typo would be caught by nobody until a
+ * consumer ran `npx`.
+ */
+export const checkDistBuilt = (packages: readonly WorkspacePackage[]): Check => {
   const problems: string[] = [];
   for (const pkg of packages) {
     for (const key of ['main', 'types'] as const) {
@@ -196,6 +203,28 @@ const checkDistBuilt = (packages: readonly WorkspacePackage[]): Check => {
       }
       if (!existsSync(join(pkg.directory, entry))) {
         problems.push(`${pkg.name}: ${key} points at ${entry}, which is not built`);
+      }
+    }
+
+    // A `bin` is an entry point too, and the first one a consumer reaches —
+    // `npx <package>` runs before anything has been imported. It is also the
+    // one this workspace cannot notice being wrong, because nobody here invokes
+    // the package by name; a path that is not built is `command not found` for
+    // every consumer and for no one who works on it.
+    const bin = field(pkg, 'bin');
+    const targets =
+      typeof bin === 'string'
+        ? [[pkg.name, bin] as const]
+        : typeof bin === 'object' && bin !== null
+          ? Object.entries(bin as Record<string, unknown>)
+          : [];
+    for (const [name, target] of targets) {
+      if (typeof target !== 'string') {
+        problems.push(`${pkg.name}: bin ${name} is not a path`);
+        continue;
+      }
+      if (!existsSync(join(pkg.directory, target))) {
+        problems.push(`${pkg.name}: bin ${name} points at ${target}, which is not built`);
       }
     }
   }

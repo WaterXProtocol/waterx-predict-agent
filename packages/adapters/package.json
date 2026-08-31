@@ -14,8 +14,8 @@
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
-    "generate": "pnpm run build && node dist/src/generate.js ../../agent-instructions/AGENT_INSTRUCTIONS.md",
-    "generate:check": "pnpm run build && node dist/src/generate.js ../../agent-instructions/AGENT_INSTRUCTIONS.md --check"
+    "generate": "pnpm run build && node dist/src/generate.js ../../agent-instructions/AGENT_INSTRUCTIONS.md ../sdk/AGENT_INSTRUCTIONS.md && node dist/src/generate.js --skill ../../agent-instructions/SKILL.md ../sdk/SKILL.md",
+    "generate:check": "pnpm run build && node dist/src/generate.js ../../agent-instructions/AGENT_INSTRUCTIONS.md ../sdk/AGENT_INSTRUCTIONS.md --check && node dist/src/generate.js --skill ../../agent-instructions/SKILL.md ../sdk/SKILL.md --check"
   },
   "dependencies": {
     "@waterx/predict-agent-cli": "workspace:*",

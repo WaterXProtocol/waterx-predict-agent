@@ -68,6 +68,13 @@ export const CAPABILITIES: readonly Capability[] = [
     summary: 'Check configuration, signer, reachability and authentication.',
   },
   {
+    id: 'onboard',
+    command: 'runtime.onboard',
+    status: 'AVAILABLE',
+    summary:
+      'What is still missing before this agent may trade, and the link an owner opens to grant it.',
+  },
+  {
     id: 'market list',
     command: 'market.list',
     status: 'AVAILABLE',
@@ -102,6 +109,12 @@ export const CAPABILITIES: readonly Capability[] = [
     alternative:
       'Poll `market quote` and record the series yourself, understanding that it is your observation and not the exchange’s record.',
     tracking: 'D-25',
+  },
+  {
+    id: 'account list',
+    command: 'account.list',
+    status: 'AVAILABLE',
+    summary: 'The accounts an owner has onboarded this agent onto. The only account read needing no id.',
   },
   {
     id: 'account status',

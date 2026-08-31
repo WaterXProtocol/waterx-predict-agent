@@ -493,6 +493,48 @@ export interface PredictEffectiveLimitsResponseBody {
   asOf: Iso8601;
 }
 
+/**
+ * One account this agent has been onboarded onto.
+ *
+ * WHY THIS EXISTS: every other account-scoped route takes an `accountId` the
+ * agent cannot discover, because the id belongs to the owner. Without this the
+ * first step of every integration is a person copying a 66-character hex string
+ * out of a web UI into a config file — friction with no security value, since the
+ * mandate and the on-chain delegation are what authorize the agent and both are
+ * re-checked on every write.
+ *
+ * The rows come from the OWNER'S OWN WRITES: an account appears only because an
+ * owner deliberately configured this agent on it.
+ */
+export interface PredictAgentAccountSummary {
+  accountId: string;
+  /** The owner who granted the mandate. */
+  ownerAddress: string;
+  /** The owner's kill switch. A suspended mandate still lists — silence would read as revoked. */
+  isSuspended: boolean;
+  /** Increments on every owner write, so a client can detect a policy change. */
+  policyVersion: number;
+  /**
+   * On-chain delegation for THIS account, reported beside the mandate rather than
+   * folded into it: the two are separate grants that fail independently, and an
+   * owner who wrote a profile but never signed the delegation is the normal
+   * half-finished onboarding state. `null` means the chain read FAILED.
+   */
+  delegation: PredictDelegationFacts;
+  grantedAt: Iso8601;
+  updatedAt: Iso8601;
+}
+
+/**
+ * Every account this agent may act on, newest mandate first.
+ *
+ * An empty list is a complete answer, not an error: no owner has onboarded this
+ * agent yet.
+ */
+export interface ListAgentAccountsResponseBody {
+  accounts: PredictAgentAccountSummary[];
+}
+
 /* ── Owner controls ──────────────────────────────────────────────────────── */
 
 /**
@@ -556,7 +598,22 @@ export type PredictAgentErrorCode =
   | 'EXECUTION_TIMEOUT'
   | 'RECONCILIATION_REQUIRED'
   | 'UNAUTHENTICATED'
-  | 'INVALID_REQUEST';
+  | 'INVALID_REQUEST'
+  /**
+   * The server failed for a reason it did not anticipate, on a request that
+   * changed nothing — a safe method, so repeating it is safe by definition and
+   * the usual cause is transient.
+   *
+   * Vendored from the backend's own taxonomy. It exists because the alternative
+   * was `RECONCILIATION_REQUIRED` on a READ, which tells this SDK that a WRITE
+   * may have landed: the documented recovery for that is to reconcile BY
+   * READING, so a read answering "reconcile" is a loop with no exit.
+   *
+   * Not in `RETRYABLE_PREDICT_AGENT_ERROR_CODES` below by accident — it IS
+   * retryable, and the list says so. Retrying is decided from the `retryable`
+   * field on the wire, so an older client meets this correctly either way.
+   */
+  | 'INTERNAL_ERROR';
 
 /**
  * Error envelope. FLAT and NOT wrapped in the app-wide `{ success, data }` shape
@@ -583,6 +640,7 @@ export const RETRYABLE_PREDICT_AGENT_ERROR_CODES = [
   'RATE_LIMITED',
   'SPONSOR_UNAVAILABLE',
   'EXECUTION_TIMEOUT',
+  'INTERNAL_ERROR',
 ] as const satisfies readonly PredictAgentErrorCode[];
 
 /* ── Private execution stream ────────────────────────────────────────────── */
@@ -1170,6 +1228,7 @@ export const PREDICT_AGENT_API_ROUTES = {
   executions: 'agent-api/v1/predict/executions',
   submitExecution: 'agent-api/v1/predict/executions/:executionId/submit',
   getExecution: 'agent-api/v1/predict/executions/:executionId',
+  agentAccounts: 'agent-api/v1/predict/accounts',
   allowance: 'agent-api/v1/predict/accounts/:accountId/allowance',
   effectiveLimits: 'agent-api/v1/predict/accounts/:accountId/effective-limits',
   positions: 'agent-api/v1/predict/accounts/:accountId/positions',
@@ -1179,6 +1238,33 @@ export const PREDICT_AGENT_API_ROUTES = {
   riskProfile: 'agent-api/v1/predict/accounts/:accountId/agents/:agentWallet/risk-profile',
   listRiskProfiles: 'agent-api/v1/predict/accounts/agents/risk-profiles',
 } as const;
+
+/* ── Deployments ─────────────────────────────────────────────────────────── */
+
+/**
+ * The deployments this API version is served from, by name.
+ *
+ * A LOOKUP, and deliberately NOT a default. `baseUrl` stays required on the
+ * client because the deployment is the one thing no library may choose on a
+ * caller's behalf: a default would make "unconfigured" mean production, which
+ * is the most expensive way to be wrong. What this map removes is the other
+ * failure — a hand-typed host that differs from the intended one by a hyphen —
+ * and it makes the environment visible in the diff that changes it:
+ *
+ * ```ts
+ * new PredictAgentClient({ baseUrl: PREDICT_AGENT_ENDPOINTS.testnet, signer });
+ * ```
+ *
+ * A deployment absent from this map is not thereby invalid; a private or
+ * preview host is still passed as a plain string.
+ */
+export const PREDICT_AGENT_ENDPOINTS = {
+  production: 'https://api.waterx.app',
+  testnet: 'https://api-testnet.waterx.app',
+} as const;
+
+/** The named deployments in {@link PREDICT_AGENT_ENDPOINTS}. */
+export type PredictAgentDeployment = keyof typeof PREDICT_AGENT_ENDPOINTS;
 
 /** Header carrying the agent-generated idempotency token on execution creation. */
 export const IDEMPOTENCY_KEY_HEADER = 'Idempotency-Key';

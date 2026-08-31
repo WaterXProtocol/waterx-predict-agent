@@ -58,6 +58,16 @@ describe('the operator flag allowlist', () => {
     expect(() => assertOperatorFlags(['--approve', 'apv1_deadbeef'])).toThrow(/one exact intent/u);
   });
 
+  it('refuses to let a model open a browser on somebody else’s machine', () => {
+    // `--open` hands the authorization link to a desktop. That desktop belongs
+    // to the operator, and the person who must actually see the page is the
+    // ACCOUNT OWNER, who is frequently neither of them. A model host pinning
+    // this would be launching windows on a machine it cannot see, for a step it
+    // is not the actor in.
+    expect(() => assertOperatorFlags(['--open'])).toThrow();
+    expect(ALLOWED_OPERATOR_FLAGS).not.toContain('--open');
+  });
+
   it('refuses to let an input arrive from anywhere but the dispatcher', () => {
     for (const flag of ['--input', '--file', '--stdin']) {
       expect(() => assertOperatorFlags([flag, 'x'])).toThrow();

@@ -20,12 +20,14 @@ import { AGENT_COMMANDS, type AgentCommandSpec } from '@waterx/predict-agent-sch
 import type { PredictAgentClient } from '@waterx/predict-agent-sdk';
 
 import { CAPABILITIES, getCapability, type Capability } from './capabilities.ts';
+import { resolveOpener } from './browser.ts';
 import { createClient, deadline, toEnvelopeError } from './client.ts';
 import { readCachedSession, writeCachedSession, type SessionCacheIo } from './session-cache.ts';
 import {
   accountAllowance,
   accountExecutions,
   accountFills,
+  accountList,
   accountPerformance,
   accountPositions,
   accountRiskLimits,
@@ -35,6 +37,7 @@ import { commandSchema } from './commands/command-schema.ts';
 import { describeRuntime } from './commands/describe.ts';
 import { doctorFailure, runDoctor } from './commands/doctor.ts';
 import { marketGet, marketList, marketQuote, marketSearch } from './commands/market.ts';
+import { runtimeOnboard } from './commands/onboard.ts';
 import {
   orderExecute,
   orderExecuteMany,
@@ -109,6 +112,14 @@ export interface CliIo {
    * token minted again.
    */
   writeSecretFile?(path: string, contents: string): void;
+  /**
+   * Hands a URL to this machine's browser.
+   *
+   * A seam so a test can prove `--open` asked for the right thing without a
+   * window appearing, and optional so a host that cannot open one refuses the
+   * flag instead of pretending. Throws with a reason a person can act on.
+   */
+  openUrl?(url: string): void;
   /** This process's uid, for the cache's ownership check. Absent disables it. */
   readonly uid?: number | undefined;
   /** Injected so an envelope is reproducible in a test. */
@@ -128,6 +139,8 @@ const HANDLERS: Readonly<Record<string, CommandHandler>> = {
   'market.search': marketSearch,
   'market.get': marketGet,
   'market.quote': marketQuote,
+  'runtime.onboard': runtimeOnboard,
+  'account.list': accountList,
   'account.status': accountStatus,
   'account.allowance': accountAllowance,
   'account.risk-limits': accountRiskLimits,
@@ -322,8 +335,32 @@ export async function run(io: CliIo): Promise<number> {
     });
 
     meta = buildMeta(config, built.defaultsApplied);
+    // `--open` belongs to one command. Accepted globally by the parser, refused
+    // here rather than ignored: a flag that silently does nothing is one an
+    // operator keeps passing, believing it worked.
+    const wantsBrowser = parsed.flags.get('open') === true;
+    if (parsed.flags.has('open') && !wantsBrowser) {
+      throw new CliError('USAGE', '`--open` takes no value.');
+    }
+    if (wantsBrowser && spec.name !== 'runtime.onboard') {
+      throw new CliError(
+        'USAGE',
+        `\`--open\` applies to \`onboard\`, which is the only command with a link to open. \`${spec.cli}\` has none.`,
+        { command: spec.name },
+      );
+    }
+
     const invocation = createContext(io, config, built.input, diagnostic, {
       approval: requireFlagValue(parsed.flags, 'approve'),
+      // Always a function when asked for, never a silent absence: a host with no
+      // opener has to be able to SAY so, and `undefined` here would be
+      // indistinguishable from the flag not being passed at all.
+      openInBrowser: wantsBrowser
+        ? (io.openUrl?.bind(io) ??
+          (() => {
+            throw new Error('this build has no way to open a browser');
+          }))
+        : undefined,
       runnerDir: requireFlagValue(parsed.flags, 'runner-dir'),
       exitAs,
       onSecret: (secret) => redactor.register(secret),
@@ -404,6 +441,7 @@ function createContext(
   diagnostic: (text: string) => void,
   options: {
     approval: string | undefined;
+    openInBrowser: ((url: string) => void) | undefined;
     runnerDir: string | undefined;
     exitAs: (code: ExitCode) => void;
     onSecret: (secret: string) => void;
@@ -509,6 +547,7 @@ function createContext(
       input,
       config,
       approval: options.approval,
+      openInBrowser: options.openInBrowser,
       gate,
       client: () => (session ??= open()),
       runner: () => (runner ??= openRunner()),
@@ -560,6 +599,28 @@ export function createNodeIo(overrides: Partial<CliIo> = {}): CliIo {
     streams: createNodeStreams(),
     fetch: globalThis.fetch.bind(globalThis),
     runSigner: createNodeSignerRunner(spawn),
+    /**
+     * Hands the link to whatever this desktop uses.
+     *
+     * Detached and with its stdio discarded: the browser outlives this process
+     * by design, and a child holding the pipes open would keep the CLI alive
+     * after its envelope was written. The decision about WHETHER to spawn is
+     * `resolveOpener`, so the refusals are testable without a window appearing.
+     */
+    openUrl: (url: string): void => {
+      const decision = resolveOpener(process.platform, process.env, url);
+      if (decision.kind === 'refused') throw new Error(decision.reason);
+      const child = spawn(decision.command, [...decision.args], {
+        detached: true,
+        stdio: 'ignore',
+      });
+      child.on('error', () => {
+        // Nothing to do with it here — the envelope has already been decided,
+        // and the link is on stderr either way. Swallowed rather than left to
+        // become an unhandled 'error' event that kills the process.
+      });
+      child.unref();
+    },
     dialRunner: createNodeRunnerDialer(connect),
     pathStat: createNodePathStat(statSync),
     readFile: readFileOrNull,

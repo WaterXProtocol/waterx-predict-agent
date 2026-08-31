@@ -31,6 +31,17 @@ export interface CommandContext {
    */
   readonly approval: string | undefined;
   /**
+   * Hands the authorization link to this machine's browser, when `--open` was
+   * given and this host can. Absent otherwise, which a command reports rather
+   * than working around — an operator who believes a window opened waits for
+   * one that never appears.
+   *
+   * Deliberately reachable only from a terminal: `--open` is a dispatcher flag,
+   * so it is neither a schema field a model can fill in nor an operator flag an
+   * adapter may pin.
+   */
+  readonly openInBrowser: ((url: string) => void) | undefined;
+  /**
    * Permits the signer spends. A command that authorizes a write grants here;
    * the signer consumes before it spawns. A command that forgets to grant cannot
    * sign, which is the point.

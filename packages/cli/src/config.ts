@@ -17,6 +17,11 @@
  * value — an error message that quotes the secret it is objecting to has leaked
  * it to every log the message reaches.
  */
+import {
+  PREDICT_AGENT_ENDPOINTS,
+  type PredictAgentDeployment,
+} from '@waterx/predict-agent-sdk';
+
 import { CliError } from './errors.ts';
 import { parseExecutionPolicy, type ExecutionPolicy } from './policy.ts';
 
@@ -25,6 +30,15 @@ export interface ResolvedConfig {
   /** Free-form label, e.g. `testnet`. Reported by `describe`, never inferred. */
   readonly environment: string | undefined;
   readonly agentWallet: string | undefined;
+  /**
+   * The web console an OWNER opens to authorize this agent.
+   *
+   * Configured rather than derived-and-forgotten: `onboard` falls back to the
+   * console paired with a known API deployment, but a private or preview
+   * deployment has no such pair and a guessed host would send an owner somewhere
+   * that cannot grant anything.
+   */
+  readonly consoleUrl: string | undefined;
   readonly defaultAccountId: string | undefined;
   /** argv for the external signer process. Never a key. */
   readonly signerCommand: readonly string[] | undefined;
@@ -55,6 +69,7 @@ const KNOWN_FILE_KEYS = new Set([
   'baseUrl',
   'environment',
   'agentWallet',
+  'consoleUrl',
   'defaultAccountId',
   'signerCommand',
   'policy',
@@ -66,6 +81,7 @@ export const ENV_KEYS = {
   baseUrl: 'WATERX_PREDICT_BASE_URL',
   environment: 'WATERX_PREDICT_ENVIRONMENT',
   agentWallet: 'WATERX_PREDICT_AGENT_WALLET',
+  consoleUrl: 'WATERX_PREDICT_CONSOLE_URL',
   accountId: 'WATERX_PREDICT_ACCOUNT_ID',
   signerCommand: 'WATERX_PREDICT_SIGNER_COMMAND',
   policy: 'WATERX_PREDICT_POLICY',
@@ -93,6 +109,7 @@ interface FileConfig {
   baseUrl?: unknown;
   environment?: unknown;
   agentWallet?: unknown;
+  consoleUrl?: unknown;
   defaultAccountId?: unknown;
   signerCommand?: unknown;
   policy?: unknown;
@@ -267,9 +284,32 @@ export function loadConfig(sources: ConfigSources): ResolvedConfig {
   const env = sources.env;
   const warnings: string[] = [];
 
-  const baseUrl =
+  const environment =
+    asString(env[ENV_KEYS.environment], ENV_KEYS.environment, 'the environment') ??
+    asString(config.environment, 'environment', where);
+
+  const explicitBaseUrl =
     asString(env[ENV_KEYS.baseUrl], ENV_KEYS.baseUrl, 'the environment') ??
     asString(config.baseUrl, 'baseUrl', where);
+
+  /**
+   * Naming the deployment is enough; the host comes from the SDK.
+   *
+   * Nobody should be typing `https://api-testnet.waterx.app`. The SDK ships
+   * every host it talks to (`PREDICT_AGENT_ENDPOINTS`), a hand-typed one that
+   * differs by a hyphen is a silent failure, and an operator who has already
+   * said which network this is has said everything the runtime needs.
+   *
+   * An explicit URL still wins, and it is the only way to reach a private or
+   * preview deployment — one that has no name is exactly the case a lookup
+   * cannot serve. A label that names no known deployment is left alone rather
+   * than rejected: `environment` is also a free-form marker other things read.
+   */
+  const derivedBaseUrl =
+    environment !== undefined && environment in PREDICT_AGENT_ENDPOINTS
+      ? PREDICT_AGENT_ENDPOINTS[environment as PredictAgentDeployment]
+      : undefined;
+  const baseUrl = explicitBaseUrl ?? derivedBaseUrl;
 
   const timeoutMs =
     sources.timeoutMs ??
@@ -296,12 +336,14 @@ export function loadConfig(sources: ConfigSources): ResolvedConfig {
 
   return {
     baseUrl: baseUrl?.replace(/\/+$/u, ''),
-    environment:
-      asString(env[ENV_KEYS.environment], ENV_KEYS.environment, 'the environment') ??
-      asString(config.environment, 'environment', where),
+    environment,
     agentWallet:
       asString(env[ENV_KEYS.agentWallet], ENV_KEYS.agentWallet, 'the environment') ??
       asString(config.agentWallet, 'agentWallet', where),
+    consoleUrl: (
+      asString(env[ENV_KEYS.consoleUrl], ENV_KEYS.consoleUrl, 'the environment') ??
+      asString(config.consoleUrl, 'consoleUrl', where)
+    )?.replace(/\/+$/u, ''),
     defaultAccountId:
       asString(env[ENV_KEYS.accountId], ENV_KEYS.accountId, 'the environment') ??
       asString(config.defaultAccountId, 'defaultAccountId', where),

@@ -31,28 +31,54 @@ export WATERX_PREDICT_BASE_URL='https://<your-agent-api-host>'
 export WATERX_PREDICT_AGENT_WALLET='0x<64 hex>'
 export WATERX_PREDICT_SIGNER_COMMAND='/path/to/your-signer'
 
-# 3. Check the setup before trusting any read from it.
+# 3. Get authorized. Prints the link an OWNER opens; --wait polls until they sign.
+waterx-predict onboard --label momentum-bot --wait
+#    → the accountId comes back from the server. Nobody copies it out of a browser.
+
+# 4. Check the setup before trusting any read from it.
 waterx-predict doctor --accountId 0x<64 hex>
 
-# 4. Read.
+# 5. Read.
 waterx-predict market list --limit 10 --tradeable
 waterx-predict market get --marketId 0x<64 hex>
 waterx-predict account status --accountId 0x<64 hex>
 
-# 5. Preview a trade. This signs nothing and places nothing.
+# 6. Preview a trade. This signs nothing and places nothing.
 waterx-predict order preview --input '{
   "accountId": "0x…", "marketId": "0x…", "outcomeId": "YES",
   "side": "BUY", "size": { "buyAmount": "25.00" }, "maxSlippageBps": 100
 }'
 
-# 6. Execute it, carrying the approval the preview published and a fresh quote.
+# 7. Execute it, carrying the approval the preview published and a fresh quote.
 waterx-predict order execute --approve apv1_… --input '{ …, "referenceQuoteId": "…" }'
 ```
 
 Steps 1 and 2 are in that order on purpose: discovery precedes setup, because a
 runtime you must configure before you may ask what it needs is a runtime you are
-guessing at. Steps 5 and 6 are in that order because a write here is never the
+guessing at. Steps 6 and 7 are in that order because a write here is never the
 incidental result of a single call.
+
+Step 3 is the only one that addresses a person. Of the three things that must
+exist before a write is accepted, two are automatable and one is not:
+
+| | Who | Automated |
+| --- | --- | --- |
+| Account id | the owner's | **Yes** — `account list` answers for it |
+| On-chain delegation | the owner signs, with their own wallet | **No**, and never (ADR-0003) |
+| Risk profile (the mandate) | the owner | Yes, in the same signing session |
+
+`onboard` prints a link that names this agent wallet and carries no token, no
+secret and no pre-authorization — it is safe to paste into a chat, because
+everything it can do the owner does with their own wallet. This CLI cannot sign a
+delegation, write a risk profile or raise a limit; a runtime that could grant its
+own authority would make the authority meaningless.
+
+Its statuses are chosen so nobody is sent to do the wrong thing:
+`DELEGATION_MISSING` is the owner's to fix, `DELEGATION_UNKNOWN` means the chain
+read **failed** and is not a refusal, `SUSPENDED` will not be fixed by signing
+again, and `AMBIGUOUS` means more than one account is ready — choosing whose
+money is traded is not this CLI's call. A `--wait` that runs out is not a failure
+either: run it again.
 
 ## The envelope
 
@@ -127,6 +153,8 @@ it without reconciling is how an agent places the same order twice.
 | Command | Status |
 | --- | --- |
 | `describe`, `command-schema`, `doctor` | available; the first two need no network |
+| `onboard` | available; prints the owner's authorization link and reports what is still missing |
+| `account list` | available; the only account read that needs no `accountId` |
 | `market list`, `market get`, `market quote` | available |
 | `market search` | available; the **server** resolves the text, exits 11 unless exactly one matched |
 | `account status`, `account allowance`, `account positions`, `account executions`, `account fills` | available |
@@ -165,6 +193,57 @@ the client learning to approximate one:
   `{ "available": false, "reason": "NO_RISK_PROFILE" }`: absence is denial, not
   an unlimited default. A `null` delegation permission means the chain read
   **failed**, which is not the same as `false`.
+
+## `onboard --open`
+
+`onboard` prints the authorization link and stops. `--open` also hands it to
+this machine's browser.
+
+It is a **terminal affordance, and only that**. `--open` is a dispatcher flag,
+so it is neither a field in any command's input schema nor an entry in the
+adapters' operator-flag allowlist — a model host cannot request it and an
+adapter cannot pin it. That is the same posture `--approve` has, for a related
+reason: the link opens on the operator's desktop, and the person who has to see
+that page is the ACCOUNT OWNER, who is frequently somewhere else entirely.
+
+It refuses rather than guesses. No `DISPLAY` or `WAYLAND_DISPLAY` on Linux, `CI`
+set, a platform this runtime has not been verified on — each is reported on
+stderr and the command still succeeds, because the link above it is just as
+valid and failing the command would throw away the answer that was asked for.
+
+The outcome is on stderr and nowhere else. It is a fact about this terminal
+rather than about the onboarding state, and a program driving this cannot pass
+the flag in the first place.
+
+## What `doctor` reports
+
+Two things, and they answer different questions.
+
+**`checks`** say what happened, as PASS, FAIL or SKIP. SKIP is load-bearing: a
+check that could not run because a prerequisite failed is not a pass, and
+reporting it as one is how an operator concludes a broken setup is healthy.
+
+**`requirements`** say what to do, as fields rather than as a sentence a caller
+has to parse. The six things that must exist before this runtime may trade,
+each with `suppliedBy`, `why`, `supplyWith` and `settledBy`, plus `missing`,
+`unchecked` and one `nextStep`. It is the same list
+`@waterx/predict-agent-sdk`'s `describeInstallation()` reports before anything is
+configured — one list, so an agent holding only the library and an operator
+running `doctor` are never told two different stories. `doctor` settles three
+more of them, because it can authenticate and read what an owner has granted.
+
+`UNCHECKED` is not a soft `MISSING`. It means this invocation had no way to
+look — no session, or a listing that failed — and reporting an owner's
+delegation as absent on that basis sends a person to re-sign a grant they may
+already have made. A `mayPlaceOrder` of `null` is the same fact one level down:
+the chain read failed, so the requirement stays `UNCHECKED`.
+
+**An outstanding grant is not a failing `doctor`.** A machine whose
+configuration and signer are sound, waiting on a delegation nobody has signed
+yet, is not a broken machine — the exit code keeps meaning "your setup is
+wrong", and `nextStep` says "your owner has not signed yet". They are different
+actions by different people, and `waterx-predict onboard` is where the second
+one starts.
 
 ## Execution policy
 

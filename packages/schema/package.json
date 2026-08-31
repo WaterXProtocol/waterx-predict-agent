@@ -12,7 +12,7 @@
       "import": "./dist/src/index.js"
     }
   },
-  "files": ["dist", "LICENSE", "package.json", "README.md"],
+  "files": ["dist", "agent-commands.json", "LICENSE", "package.json", "README.md"],
   "engines": { "node": ">=20" },
   "publishConfig": { "access": "public", "provenance": true },
   "scripts": {
@@ -20,8 +20,8 @@
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
-    "generate": "pnpm run build && node dist/src/generate.js ../../schemas/v1/agent-commands.json",
-    "generate:check": "pnpm run build && node dist/src/generate.js ../../schemas/v1/agent-commands.json --check"
+    "generate": "pnpm run build && node dist/src/generate.js ../../schemas/v1/agent-commands.json agent-commands.json",
+    "generate:check": "pnpm run build && node dist/src/generate.js ../../schemas/v1/agent-commands.json agent-commands.json --check"
   },
   "devDependencies": {
     "@types/node": "^24.12.0",
