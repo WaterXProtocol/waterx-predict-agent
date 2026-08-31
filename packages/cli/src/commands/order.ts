@@ -24,6 +24,8 @@
  *  - enforce a limit locally. The blockers a preview reports are the server's
  *    reading a moment ago; the server decides again at execution time.
  */
+import { randomUUID } from 'node:crypto';
+
 import type {
   CreateQuoteRequestBody,
   ExecuteManyResult,
@@ -188,11 +190,46 @@ const requireQuoteId = (input: Readonly<Record<string, unknown>>): string => {
   return id;
 };
 
-/** An explicit key makes the intent replayable across a restart; absent, the SDK mints one. */
-const idempotencyKeyOf = (input: Readonly<Record<string, unknown>>): string | undefined =>
-  typeof input.idempotencyKey === 'string' && input.idempotencyKey !== ''
-    ? input.idempotencyKey
-    : undefined;
+/**
+ * The key this write will carry, minted here rather than deeper down, and
+ * announced before the request leaves.
+ *
+ * The SDK mints one when a caller omits it, and reuses it across every internal
+ * retry — but that value only ever exists inside the call. A process killed
+ * mid-write therefore takes with it the one handle that could tell anybody
+ * whether the order landed, and a re-run mints a different key, which is how one
+ * intent becomes two orders.
+ *
+ * The Runner solved the same problem by writing the key to its durable store
+ * before the create (`packages/runner/src/recovery.ts`). A one-shot command has
+ * no store and does not need one: minting the key here and printing it BEFORE
+ * the write puts it somewhere that outlives the process — a terminal, a log, a
+ * CI transcript — which is all a replay needs, since the caller still holds the
+ * input they typed.
+ *
+ * This does not disturb the approval: `NormalizedLeg` deliberately excludes
+ * `idempotencyKey`, because it changes how a retry behaves and not what is
+ * traded, so a token minted by `order preview` still matches.
+ */
+const idempotencyKeyFor = (
+  input: Readonly<Record<string, unknown>>,
+  context: CommandContext,
+  /** Present for `execute-many`, where a key belongs to one leg among several. */
+  legIndex?: number,
+): string => {
+  const supplied =
+    typeof input.idempotencyKey === 'string' && input.idempotencyKey !== ''
+      ? input.idempotencyKey
+      : undefined;
+  if (supplied !== undefined) return supplied;
+
+  const minted = randomUUID();
+  const which = legIndex === undefined ? 'this order' : `leg ${String(legIndex)}`;
+  context.diagnostic(
+    `Idempotency key for ${which}: ${minted}\nIf this command dies before it answers, the order may still have been placed. Replay the SAME input with \`idempotencyKey: "${minted}"\` — never a fresh one.\n`,
+  );
+  return minted;
+};
 
 /* ── Authorization ─────────────────────────────────────────────────────────── */
 
@@ -568,8 +605,10 @@ export async function orderExecute(context: CommandContext): Promise<unknown> {
   const authorization = await authorize(context, 'order.execute', [leg]);
 
   const client = await context.client();
+  // Minted and announced BEFORE the request, so a process that dies mid-write
+  // leaves the key behind rather than taking it with it.
   const result = await client.executeMarketOrder(
-    toIntent(leg, referenceQuoteId, idempotencyKeyOf(context.input)),
+    toIntent(leg, referenceQuoteId, idempotencyKeyFor(context.input, context)),
     waitOptions(context),
   );
 
@@ -780,7 +819,12 @@ export async function orderExecuteMany(context: CommandContext): Promise<unknown
   const quoteIds = orders.map((order) => optionalQuoteId(order));
   // One key per LEG, not one per call: the legs are separate logical intents and
   // sharing a key between them would make the second a duplicate of the first.
-  const keys = orders.map((order) => idempotencyKeyOf(order));
+  //
+  // Announced per leg, and by index, because this call is never atomic: a
+  // process that dies partway leaves some legs placed and some not, and the only
+  // way to replay exactly the ones that did not land is to know which key
+  // belonged to which.
+  const keys = orders.map((order, index) => idempotencyKeyFor(order, context, index));
 
   const authorization = await authorize(context, 'order.execute-many', legs);
 

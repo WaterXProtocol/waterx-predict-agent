@@ -9,6 +9,7 @@ import {
   PredictAgentClient,
   PredictAgentTransportError,
   isPredictAgentApiError,
+  isUnresolvedWrite,
 } from '@waterx/predict-agent-sdk';
 
 import type { ResolvedConfig } from './config.ts';
@@ -88,6 +89,29 @@ export function deadline(timeoutMs: number): AbortSignal {
  * a write it would mean the outcome is unknown, and collapsing the two would
  * teach a caller the wrong habit here and cost it money there.
  */
+/**
+ * The handles an unresolved write hands back, for the envelope's `details`.
+ *
+ * This is the most dangerous outcome this CLI can produce: the order may have
+ * landed and nobody knows. The documented recovery is to read — `order
+ * reconcile` by execution id — or, failing that, to replay the SAME key with the
+ * SAME bytes; a fresh key is how one intent becomes two orders.
+ *
+ * Both of those need a value the SDK already computed and handed over on the
+ * error. Dropping it here left an operator told "we do not know what happened"
+ * and holding nothing they could use to find out.
+ */
+const unresolvedHandles = (error: unknown): Record<string, unknown> => {
+  if (!isUnresolvedWrite(error)) return {};
+  const executionId = (error as { executionId?: unknown }).executionId;
+  return {
+    idempotencyKey: error.idempotencyKey,
+    ...(typeof executionId === 'string' ? { executionId } : {}),
+    recovery:
+      'This write is UNRESOLVED, not failed. Read it back with `order reconcile` when an executionId is present; otherwise replay this exact input with `--input` plus `idempotencyKey`. Never resubmit under a fresh key.',
+  };
+};
+
 export function toEnvelopeError(error: unknown, timeoutMs: number): EnvelopeError {
   if (error instanceof CliError) {
     return {
@@ -121,6 +145,7 @@ export function toEnvelopeError(error: unknown, timeoutMs: number): EnvelopeErro
       details: {
         httpStatus: error.httpStatus,
         ...(error.executionId !== undefined ? { executionId: error.executionId } : {}),
+        ...unresolvedHandles(error),
       },
     };
   }
@@ -137,6 +162,10 @@ export function toEnvelopeError(error: unknown, timeoutMs: number): EnvelopeErro
         : error.message,
       retryable: false,
       source: 'TRANSPORT',
+      // A transport failure normally carries nothing to act on. An UNRESOLVED
+      // one does, and it is the case where acting on the wrong thing costs a
+      // second order.
+      ...(isUnresolvedWrite(error) ? { details: unresolvedHandles(error) } : {}),
     };
   }
 
