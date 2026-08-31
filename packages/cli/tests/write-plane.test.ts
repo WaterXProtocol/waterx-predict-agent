@@ -988,3 +988,79 @@ describe('the write plane keeps its secrets', () => {
     expect(result.writes).toBe(1);
   });
 });
+
+/**
+ * The key an operator needs when nobody knows what happened.
+ *
+ * An unresolved write is the most dangerous outcome this CLI produces: the order
+ * may have landed and nothing here can say. The documented recovery is to read
+ * it back, or to replay the SAME key with the SAME bytes — and both need a value
+ * the SDK computes and hands over on the error. It used to be dropped on the way
+ * to the envelope, so an operator was told "we do not know" and given nothing to
+ * find out with.
+ */
+describe('order execute: the idempotency key survives the failure', () => {
+  it('announces a minted key BEFORE the request leaves', async () => {
+    // The SDK mints one when a caller omits it, but that value only ever exists
+    // inside the call — a process killed mid-write takes it with it, and a
+    // re-run mints a different one, which is how one intent becomes two orders.
+    const token = await previewToken();
+    const result = await invoke(
+      ['order', 'execute', '--approve', token, '--input', input({ referenceQuoteId: QUOTE_ID })],
+      { env: CONFIGURED_ENV, routes: WRITE_ROUTES },
+    );
+
+    expect(result.stderr).toContain('Idempotency key for this order:');
+    expect(result.stderr).toContain('never a fresh one');
+    const announced = /Idempotency key for this order: ([0-9a-f-]{36})/u.exec(result.stderr)?.[1];
+    expect(announced).toBeDefined();
+    // The one that was announced is the one that was used, or the announcement
+    // is worse than none: it would send a replay under a key nothing carries.
+    const data = result.envelope.data as { idempotencyKey: string };
+    expect(data.idempotencyKey).toBe(announced);
+  });
+
+  it('says nothing when the caller brought their own key', async () => {
+    // Theirs already outlives the process; announcing it again is noise on the
+    // one channel a human is reading for the link between failure and recovery.
+    const token = await previewToken();
+    const result = await invoke(
+      [
+        'order',
+        'execute',
+        '--approve',
+        token,
+        '--input',
+        input({ referenceQuoteId: QUOTE_ID, idempotencyKey: 'idem-mine' }),
+      ],
+      { env: CONFIGURED_ENV, routes: WRITE_ROUTES },
+    );
+
+    expect(result.stderr).not.toContain('Idempotency key for this order:');
+    expect((result.envelope.data as { idempotencyKey: string }).idempotencyKey).toBe('idem-mine');
+  });
+
+  it('carries the key into the envelope when the write is unresolved', async () => {
+    // A create that times out: the SDK raises an unresolved write rather than a
+    // failure, because the order may be live. The envelope has to hand the
+    // operator the same handle.
+    const token = await previewToken();
+    const result = await invoke(
+      ['order', 'execute', '--approve', token, '--input', input({ referenceQuoteId: QUOTE_ID })],
+      {
+        env: CONFIGURED_ENV,
+        routes: { ...READ_ROUTES, [`POST ${EXECUTIONS_PATH}`]: { throws: new Error('socket hang up') } },
+      },
+    );
+
+    expect(result.envelope.ok).toBe(false);
+    const details = result.envelope.error?.details as
+      | { idempotencyKey?: string; recovery?: string }
+      | undefined;
+    expect(details?.idempotencyKey).toBeDefined();
+    // And it is the key the operator was told about, so the two agree.
+    const announced = /Idempotency key for this order: ([0-9a-f-]{36})/u.exec(result.stderr)?.[1];
+    expect(details?.idempotencyKey).toBe(announced);
+    expect(details?.recovery).toContain('Never resubmit under a fresh key');
+  });
+});

@@ -100,9 +100,10 @@ import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { PredictAgentClient, PREDICT_AGENT_ENDPOINTS } from '@waterx/predict-agent-sdk';
 
 // A Sui Keypair satisfies AgentSigner structurally — no adapter needed.
-const signer = Ed25519Keypair.fromSecretKey(process.env.AGENT_SECRET_KEY!);
+// Where the key comes from is YOUR decision, and it is the load-bearing one on
+// this page. See "Where the key lives" below before you copy this line.
+const signer = Ed25519Keypair.fromSecretKey(await loadAgentSecretKey());
 
-// There is no default base URL. Name the deployment you mean — see below.
 // Name the network. The host comes from the SDK — never type one.
 const client = new PredictAgentClient({ deployment: 'testnet', signer });
 await client.authenticate();
@@ -194,6 +195,31 @@ A timeout is not a failure here either: the owner may sign a minute later, so th
 result carries `timedOut` and the last state, and you resume by calling again.
 
 ## The things that will bite you
+
+**Where the key lives is your decision, and the SDK deliberately does not make
+it.** `AgentSigner` is two methods — `signTransaction` and `signPersonalMessage`
+— so anything that can hold a key and sign with it satisfies it: a KMS, an HSM,
+a hardware wallet, a separate process. A Sui `Keypair` matches structurally, and
+that convenience is the trap: the shortest line that produces one reads a raw
+private key out of `process.env`.
+
+Do not ship that. A key in an environment variable is readable by every
+dependency in the process, is inherited by every child process you spawn, lands
+in crash dumps and `docker inspect`, and is one careless log line from a CI
+transcript. This is an agent wallet holding a delegated mandate, so the loss is
+bounded by the owner's risk profile rather than by their whole account — but
+bounded is not small, and the bound is somebody else's to set.
+
+What this repository does with the same problem: the CLI and the Runner never
+hold a key at all. They spawn a signer as a separate PROCESS over a documented
+protocol and receive a signature back, so a key never enters the process that
+talks to the exchange. If you are writing something long-lived, do that. If you
+are writing a script, at minimum read the key from wherever you already keep
+secrets rather than from the environment, and never write it to a file this repo
+would not have written `0600`.
+
+Whatever you choose: **the private key is never sent anywhere, never logged, and
+never returned by any call in this SDK.**
 
 **Name the deployment; never type a hostname.** The SDK ships every host it
 talks to, so a URL in your code is a hostname nobody needed to know — and one
