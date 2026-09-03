@@ -79,6 +79,16 @@ export interface IntentRecord {
    * MIGHT exist, an execution id tells you what to read back.
    */
   readonly executionId?: string;
+  /**
+   * The price the chain enforced for that execution.
+   *
+   * Recorded beside the id because it is the one fact about a completed write
+   * that a later READ cannot recover — `getExecution` does not carry it. Without
+   * it, resolving an intent by reading its execution back could not produce a
+   * complete result, and the code that does so falls through to sending instead
+   * of inventing a number.
+   */
+  readonly enforcedWorstPrice?: string;
   readonly settledAt?: string;
   /** The terminal status observed, when one was. Free text, from the server. */
   readonly outcome?: string;
@@ -112,8 +122,13 @@ export interface IntentStore {
    * the same key both times, which is the entire guarantee.
    */
   reserve(intent: Readonly<Record<string, unknown>>): Promise<IntentReservation>;
-  /** Record the execution id as soon as the server admits the write exists. */
-  attach(idempotencyKey: string, executionId: string): Promise<void>;
+  /**
+   * Record the execution as soon as the server admits the write exists.
+   *
+   * `enforcedWorstPrice` comes along because the create is the only place it is
+   * ever seen; see {@link IntentRecord.enforcedWorstPrice}.
+   */
+  attach(idempotencyKey: string, executionId: string, enforcedWorstPrice?: string): Promise<void>;
   /** Mark the intent finished. `outcome` is the terminal status observed. */
   settle(idempotencyKey: string, outcome: string): Promise<void>;
   /** Every intent reserved and never settled — what a restart must reconcile. */
@@ -239,8 +254,16 @@ abstract class BaseIntentStore implements IntentStore {
     });
   }
 
-  async attach(idempotencyKey: string, executionId: string): Promise<void> {
-    await this.update(idempotencyKey, (record) => ({ ...record, executionId }));
+  async attach(
+    idempotencyKey: string,
+    executionId: string,
+    enforcedWorstPrice?: string,
+  ): Promise<void> {
+    await this.update(idempotencyKey, (record) => ({
+      ...record,
+      executionId,
+      ...(enforcedWorstPrice === undefined ? {} : { enforcedWorstPrice }),
+    }));
   }
 
   async settle(idempotencyKey: string, outcome: string): Promise<void> {

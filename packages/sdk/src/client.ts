@@ -629,6 +629,35 @@ export class PredictAgentClient {
       const reservation = await store.reserve(rest);
       idempotencyKey = reservation.idempotencyKey;
       idempotencyKeyReplayed = reservation.replayed;
+
+      // This intent already has an execution. Resolve it by READING, which is
+      // the rule everywhere else in this runtime and is no less true here.
+      //
+      // Sending anyway is what this did first, and the server's answer showed
+      // why it must not: a key bound to a finished attempt comes back
+      // `RECONCILIATION_REQUIRED` — which this client correctly classifies as
+      // an unresolved write — so a caller re-running a completed order was told
+      // its outcome was UNKNOWN while the store beside it held FILLED and the
+      // execution id. A store that makes the reporting worse than no store is
+      // not worth having.
+      //
+      // Both states, not only the settled one. A PENDING record with an id is a
+      // write somebody stopped watching, and reading it back is the documented
+      // recovery for exactly that.
+      //
+      // Requires the enforced price as well as the id, because a read cannot
+      // recover it and this will not invent one. Absent, it falls through and
+      // sends — the behaviour before this guard existed.
+      const known = reservation.record;
+      if (known.executionId !== undefined && known.enforcedWorstPrice !== undefined) {
+        return await this.resolveRecordedExecution(
+          known.executionId,
+          known.enforcedWorstPrice,
+          idempotencyKey,
+          store,
+          options,
+        );
+      }
     } else {
       idempotencyKey = randomUUID();
     }
@@ -720,7 +749,7 @@ export class PredictAgentClient {
     // The execution exists. Recording its id is what makes a crash from here on
     // recoverable by READING rather than by guessing: a key alone says an order
     // might exist, an id says what to read back.
-    await store?.attach(idempotencyKey, created.executionId);
+    await store?.attach(idempotencyKey, created.executionId, created.enforcedWorstPrice);
 
     // Past this line the execution EXISTS. A caller's deadline expiring from here
     // on is not "nothing happened" — it is "this process stopped being able to
@@ -786,6 +815,32 @@ export class PredictAgentClient {
       // The store record stays PENDING on purpose. This is the one state a
       // restart must act on, and it now carries the execution id to act with.
     }
+  }
+
+  /**
+   * An intent the store already has an execution for, read back rather than
+   * re-sent.
+   *
+   * `idempotencyKeyReplayed` is always true here, and it is the whole of the
+   * caller's signal: this result describes the order that already existed, not
+   * one this call placed. An agent reporting "order placed" off it is reporting
+   * the wrong thing, and the flag is how it can tell.
+   */
+  private async resolveRecordedExecution(
+    executionId: string,
+    enforcedWorstPrice: string,
+    idempotencyKey: string,
+    store: IntentStore,
+    options: ExecuteMarketOrderOptions,
+  ): Promise<ExecuteMarketOrderResult> {
+    const outcome =
+      options.waitFor === 'TERMINAL'
+        ? await this.waitForExecution(executionId, options)
+        : toExecutionOutcome(await this.getExecution(executionId, options.signal), false);
+    // A record that was PENDING and has since finished leaves the pending list
+    // here, which is the only place that can notice.
+    if (outcome.terminal) await store.settle(idempotencyKey, outcome.status);
+    return { ...outcome, enforcedWorstPrice, idempotencyKey, idempotencyKeyReplayed: true };
   }
 
   /**

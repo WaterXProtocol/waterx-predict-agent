@@ -994,6 +994,77 @@ describe('executeMarketOrder with an intent store', () => {
     expect(await clientStore.pending()).toHaveLength(0);
   });
 
+  it('reads a completed intent back instead of re-sending it', async () => {
+    // Found by running this against the real server. Re-sending under a key the
+    // server has already finished answers RECONCILIATION_REQUIRED, which this
+    // client correctly classifies as an UNRESOLVED write — so a caller re-running
+    // a filled order was told the outcome was unknown while the store beside it
+    // held FILLED and the execution id.
+    const store = createMemoryIntentStore();
+    const first = withStore(
+      [
+        json(201, CREATED),
+        json(202, SUBMITTED),
+        json(200, { executionId: 'exec-1', status: 'FILLED', transactionDigest: 'd' }),
+      ],
+      store,
+    );
+    await first.client.executeMarketOrder(unpriced, { waitFor: 'TERMINAL', pollIntervalMs: 0 });
+
+    const second = withStore(
+      [json(200, { executionId: 'exec-1', status: 'FILLED', transactionDigest: 'd' })],
+      store,
+    );
+    const replay = await second.client.executeMarketOrder(unpriced, {
+      waitFor: 'TERMINAL',
+      pollIntervalMs: 0,
+    });
+
+    expect(replay.status).toBe('FILLED');
+    expect(replay.idempotencyKeyReplayed).toBe(true);
+    expect(replay.enforcedWorstPrice).toBe('0.505');
+    // One READ, and no create and no submit. That is the whole fix.
+    expect(second.calls).toHaveLength(1);
+    expect(second.calls[0]?.method).toBe('GET');
+  });
+
+  it('reads back a PENDING intent too, which is the documented recovery', async () => {
+    const store = createMemoryIntentStore();
+    const first = withStore([json(201, CREATED), json(202, SUBMITTED)], store);
+    await first.client.executeMarketOrder(unpriced);
+    expect(await store.pending()).toHaveLength(1);
+
+    const second = withStore(
+      [json(200, { executionId: 'exec-1', status: 'FILLED', transactionDigest: 'd' })],
+      store,
+    );
+    const replay = await second.client.executeMarketOrder(unpriced, {
+      waitFor: 'TERMINAL',
+      pollIntervalMs: 0,
+    });
+
+    expect(replay.status).toBe('FILLED');
+    expect(second.calls.every((call) => call.method === 'GET')).toBe(true);
+    // And it leaves the pending list, which only this path can notice.
+    expect(await store.pending()).toEqual([]);
+  });
+
+  it('still SENDS when the record has no execution id to read', async () => {
+    // A create that never came back with an id is the one case a read cannot
+    // resolve. Re-sending under the same key is the only way to learn anything,
+    // and it is safe precisely because the key is the same.
+    const store = createMemoryIntentStore();
+    const failed = withStore([apiError(409, 'RECONCILIATION_REQUIRED', false)], store);
+    await failed.client.executeMarketOrder(unpriced).catch(() => undefined);
+    expect((await store.pending())[0]?.executionId).toBeUndefined();
+
+    const retry = withStore([json(201, CREATED), json(202, SUBMITTED)], store);
+    const result = await retry.client.executeMarketOrder(unpriced);
+
+    expect(retry.calls[0]?.method).toBe('POST');
+    expect(result.idempotencyKeyReplayed).toBe(true);
+  });
+
   it('mints a per-call key when no store is configured, exactly as before', async () => {
     const { client } = makeClient([json(201, CREATED), json(202, SUBMITTED)]);
 
