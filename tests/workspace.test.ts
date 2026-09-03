@@ -36,8 +36,22 @@ import {
 } from '../packages/signer-browser/src/index.ts';
 import { SIGNER_PROTOCOL as KEYSTORE_SIGNER_PROTOCOL } from '../packages/signer-keystore/src/index.ts';
 import { JOB_STATES } from '../packages/runner/src/state-machine.ts';
-import { AGENT_COMMANDS, type JsonSchema } from '../packages/schema/src/index.ts';
-import { PredictAgentClient } from '../packages/sdk/src/index.ts';
+import {
+  AGENT_COMMANDS,
+  DECIMAL_SCALE,
+  type JsonSchema,
+  POSITIVE_DECIMAL_AMOUNT_PATTERN,
+  PROBABILITY_PRICE_PATTERN,
+  SUI_ADDRESS_PATTERN,
+} from '../packages/schema/src/index.ts';
+import {
+  DECIMAL_SCALE as SDK_DECIMAL_SCALE,
+  POSITIVE_DECIMAL_AMOUNT_PATTERN as SDK_POSITIVE_DECIMAL_AMOUNT_PATTERN,
+  PredictAgentClient,
+  PROBABILITY_PRICE_PATTERN as SDK_PROBABILITY_PRICE_PATTERN,
+  SUI_ADDRESS_PATTERN as SDK_SUI_ADDRESS_PATTERN,
+  unrecoverableIntentReason,
+} from '../packages/sdk/src/index.ts';
 
 /** Repository root, with a trailing slash. */
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
@@ -352,6 +366,62 @@ describe('the SDK discovery entry point', () => {
   });
 });
 
+describe('the order rules the SDK vendors', () => {
+  /**
+   * The SDK cannot import `@waterx/predict-agent-schema` — one runtime
+   * dependency, asserted elsewhere in this file — so the intent store carries
+   * its own copy of the canonical patterns. A copy is only safe while something
+   * compares it, and this is that something.
+   *
+   * The rules matter to the ledger and not only to the wire. A reservation is
+   * durable: it takes a key, goes on disk, and every later attempt replays it.
+   * An intent the server will refuse becomes a key held against an order that
+   * can never exist, and the recovery path calls it recoverable forever.
+   */
+  it('vendors the canonical patterns byte for byte', () => {
+    expect(SDK_POSITIVE_DECIMAL_AMOUNT_PATTERN).toBe(POSITIVE_DECIMAL_AMOUNT_PATTERN);
+    expect(SDK_PROBABILITY_PRICE_PATTERN).toBe(PROBABILITY_PRICE_PATTERN);
+    expect(SDK_SUI_ADDRESS_PATTERN).toBe(SUI_ADDRESS_PATTERN);
+    expect(SDK_DECIMAL_SCALE).toBe(DECIMAL_SCALE);
+  });
+
+  it('refuses the intents the command schema refuses', () => {
+    const valid = {
+      accountId: `0x${'10'.repeat(32)}`,
+      marketId: `0x${'22'.repeat(32)}`,
+      outcomeId: 'YES',
+      side: 'BUY',
+      size: { buyAmount: '5' },
+      maxSlippageBps: 100,
+    };
+    expect(unrecoverableIntentReason(valid)).toBeUndefined();
+
+    // Every one of these reached the durable ledger before the store used the
+    // canonical rules, and none of them can ever be finished.
+    for (const [label, intent] of [
+      ['outcome outside the closed set', { ...valid, outcomeId: 'MAYBE' }],
+      ['BUY sized in shares', { ...valid, size: { sellShares: '5' } }],
+      ['SELL sized in currency', { ...valid, side: 'SELL', positionId: '1' }],
+      ['SELL with no position', { ...valid, side: 'SELL', size: { sellShares: '5' } }],
+      ['BUY naming a position', { ...valid, positionId: '1145' }],
+      ['size that is not a decimal', { ...valid, size: { buyAmount: 'not-a-decimal' } }],
+      ['size of zero', { ...valid, size: { buyAmount: '0' } }],
+      ['negative size', { ...valid, size: { buyAmount: '-1' } }],
+      ['exponent notation', { ...valid, size: { buyAmount: '1e3' } }],
+      ['seven decimal places', { ...valid, size: { buyAmount: '0.1234567' } }],
+      ['both size units', { ...valid, size: { buyAmount: '5', sellShares: '5' } }],
+      ['negative slippage', { ...valid, maxSlippageBps: -1 }],
+      ['fractional slippage', { ...valid, maxSlippageBps: 0.5 }],
+      ['slippage that removes protection', { ...valid, maxSlippageBps: 10_000 }],
+      ['price outside 0–1', { ...valid, worstAcceptablePrice: '2.0' }],
+      ['empty optional identifier', { ...valid, clientOrderId: '' }],
+      ['account id that is not an address', { ...valid, accountId: '0xacct' }],
+    ] as const) {
+      expect(unrecoverableIntentReason(intent), label).toBeTypeOf('string');
+    }
+  });
+});
+
 describe('the shipped recipes', () => {
   /**
    * Why they exist, and therefore what they are not allowed to become.
@@ -389,16 +459,30 @@ describe('the shipped recipes', () => {
    * Those are refused rather than resolved: nothing static can follow a variable,
    * and a recipe has no reason to build a module name.
    */
-  const specifiersOf = (
+  /**
+   * Names that acquire a module loader or evaluate code.
+   *
+   * A blacklist, and the second layer rather than the first — the whitelist
+   * below is what actually decides. These exist because a loader can be
+   * obtained without naming a module at all:
+   * `process.getBuiltinModule('node:module').createRequire(import.meta.url)`
+   * is a first-class Node API that produces no import to check, and defeated
+   * the version of this test that only walked import forms.
+   */
+  const LOADER_ACQUISITION = new Set([
+    'getBuiltinModule',
+    'createRequire',
+    'binding',
+    'register',
+    'runInThisContext',
+    'compileFunction',
+  ]);
+
+  const scan = (
     name: string,
-  ): { resolved: string[]; computed: string[]; unparsed: number } => {
-    const source = ts.createSourceFile(
-      name,
-      readFileSync(`${RECIPE_DIR}/${name}`, 'utf8'),
-      ts.ScriptTarget.Latest,
-      true,
-      ts.ScriptKind.JS,
-    );
+    text: string,
+  ): { resolved: string[]; computed: string[]; loaders: string[]; unparsed: number } => {
+    const source = ts.createSourceFile(name, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
     // A file the parser could not read is a file this cannot make claims about,
     // and staying quiet about it is how a guard fails OPEN on syntax the parser
     // is too old for. Not public API, and the cast says so.
@@ -406,6 +490,7 @@ describe('the shipped recipes', () => {
       .parseDiagnostics?.length ?? 0;
     const resolved: string[] = [];
     const computed: string[] = [];
+    const loaders: string[] = [];
 
     const take = (node: ts.Node | undefined, where: string): void => {
       if (node === undefined) return;
@@ -421,6 +506,15 @@ describe('the shipped recipes', () => {
     };
 
     const walk = (node: ts.Node): void => {
+      if (ts.isPropertyAccessExpression(node) && LOADER_ACQUISITION.has(node.name.text)) {
+        loaders.push(node.getText(source));
+      } else if (
+        ts.isIdentifier(node) &&
+        (node.text === 'eval' || node.text === 'Function') &&
+        !ts.isPropertyAccessExpression(node.parent)
+      ) {
+        loaders.push(node.getText(source));
+      }
       if (ts.isImportDeclaration(node)) take(node.moduleSpecifier, 'import');
       else if (ts.isExportDeclaration(node) && node.moduleSpecifier !== undefined) {
         take(node.moduleSpecifier, 'export from');
@@ -434,23 +528,36 @@ describe('the shipped recipes', () => {
       ts.forEachChild(node, walk);
     };
     walk(source);
-    return { resolved, computed, unparsed };
+    return { resolved, computed, loaders, unparsed };
   };
 
+  const specifiersOf = (
+    name: string,
+  ): { resolved: string[]; computed: string[]; loaders: string[]; unparsed: number } =>
+    scan(name, readFileSync(`${RECIPE_DIR}/${name}`, 'utf8'));
+
   /**
-   * Every module a recipe may load. A WHITELIST, and that is the point.
+   * Every module a recipe may load. A WHITELIST, and that is the first line.
    *
-   * Forbidding the modules that look dangerous is a game with no end — the last
-   * version of this test was defeated by
-   * `createRequire(import.meta.url)('../dist/src/client.js')`, which loads the
-   * internals through a function call on a variable and mentions neither
-   * `require` nor a suspicious path. `node:module` is one door; `node:vm` is
-   * another; the next one has not been written yet.
+   * These are six small scripts whose imports are countable, so anything not on
+   * this list fails and somebody has to say why it belongs.
    *
-   * So the question is inverted. These are six small scripts and their imports
-   * are countable, so anything not on this list fails and somebody has to say
-   * why it belongs. That closes every door at once, including the ones nobody
-   * has thought of.
+   * WHAT THIS DOES AND DOES NOT GUARANTEE, because an earlier version of this
+   * comment claimed more than it could and was shown to be wrong. Two forms
+   * walked past it in review: `createRequire(…)(…)` through a variable, then
+   * `process.getBuiltinModule('node:module').createRequire(…)` — a first-class
+   * Node loader that names no module and so produced nothing to check. Both are
+   * refused now, by name, alongside `eval` and `Function`.
+   *
+   * A static reading of source cannot enumerate every way a runtime can be
+   * asked for a module; it can only refuse the ways that are known. So the
+   * honest claim is narrower than the last one: this catches every module these
+   * files NAME, and every loader-acquisition form known when it was written. It
+   * is a review aid and an accident-catcher, not a sandbox, and an author
+   * determined to reach past the entry point can. The boundary that holds
+   * against a stranger is the package's `exports` map, which admits `.` and
+   * nothing else — these files are inside the package, so nothing here can put
+   * them outside it.
    */
   const ALLOWED_RECIPE_IMPORTS = new Set([
     './_client.mjs',
@@ -508,8 +615,9 @@ describe('the shipped recipes', () => {
       // resolve rather than what the file happens to spell — and they are
       // checked against a whitelist, so a module nobody anticipated fails
       // rather than slipping through a pattern written before it existed.
-      const { resolved, unparsed } = specifiersOf(name);
+      const { resolved, loaders, unparsed } = specifiersOf(name);
       expect(unparsed, `${name} did not parse cleanly, so nothing here can vouch for it`).toBe(0);
+      expect(loaders, `${name} acquires a module loader or evaluates code`).toEqual([]);
       for (const target of resolved) {
         expect(
           ALLOWED_RECIPE_IMPORTS.has(target),
@@ -517,6 +625,53 @@ describe('the shipped recipes', () => {
         ).toBe(true);
       }
     }
+  });
+
+  it('refuses the loader-acquisition forms that walked past earlier versions', () => {
+    // The exact shapes from review, as fixtures rather than as prose. Each is a
+    // legal module load that reaches the internals; each must be rejected by
+    // one of the three checks above.
+    const rejected = (source: string): boolean => {
+      const { resolved, computed, loaders } = scan('probe.mjs', source);
+      return (
+        loaders.length > 0 ||
+        computed.length > 0 ||
+        resolved.some((target) => !ALLOWED_RECIPE_IMPORTS.has(target))
+      );
+    };
+
+    for (const [label, source] of [
+      [
+        'getBuiltinModule',
+        `const load = process
+           .getBuiltinModule('node:module')
+           .createRequire(import.meta.url);
+         load('../dist/src/client.js');`,
+      ],
+      [
+        'createRequire via import',
+        `import { createRequire as cr } from 'node:module';
+         cr(import.meta.url)('../dist/src/client.js');`,
+      ],
+      ['escaped literal', String.raw`await import('../dist/src/client.js');`],
+      ['template literal', 'await import(`../dist/src/client.js`);'],
+      ['variable specifier', "const p = '../dist/src/client.js'; await import(p);"],
+      ['concatenation', "await import('../di' + 'st/src/client.js');"],
+      ['side-effect import', "import '../dist/src/client.js';"],
+      ['require, double quoted', 'const x = require("../dist/src/client.js");'],
+      ['export from', "export { a } from '../dist/src/client.js';"],
+      ['unlisted package', "import { x } from 'some-random-package';"],
+      ['vm', "const vm = await import('node:vm');"],
+      ['eval', "eval(\"import('../dist/src/client.js')\");"],
+      ['Function', 'new Function("return import(\'../dist/src/client.js\')")();'],
+    ] as const) {
+      expect(rejected(source), label).toBe(true);
+    }
+
+    // And the real imports still pass, or the guard is only refusing things.
+    expect(
+      rejected("import { connect } from './_client.mjs';\nimport { readFileSync } from 'node:fs';"),
+    ).toBe(false);
   });
 
   it('names every module it loads as a plain literal', () => {

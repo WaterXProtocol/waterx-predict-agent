@@ -68,8 +68,19 @@ export {
   type IntentReservation,
   type IntentStore,
   normalizeIntent,
-  unrecoverableIntentReason,
 } from './intent-store.ts';
+export {
+  DECIMAL_SCALE,
+  IDENTIFIER_MAX_LENGTH,
+  IDENTIFIER_MIN_LENGTH,
+  MAX_SLIPPAGE_BPS_MAX,
+  MAX_SLIPPAGE_BPS_MIN,
+  POSITIVE_DECIMAL_AMOUNT_PATTERN,
+  PROBABILITY_PRICE_PATTERN,
+  SUI_ADDRESS_PATTERN,
+  unrecoverableIntentReason,
+  unusableIdempotencyKeyReason,
+} from './intent-shape.ts';
 export {
   type MarketCandidate,
   type MarketNarrowing,

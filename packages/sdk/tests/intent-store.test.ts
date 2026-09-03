@@ -34,9 +34,13 @@ import {
   normalizeIntent,
 } from '../src/intent-store.ts';
 
+/** Canonical shapes: a full Sui address, a real outcome, one size unit. */
+const ACCOUNT = `0x${'10'.repeat(32)}`;
+const MARKET = `0x${'22'.repeat(32)}`;
+
 const INTENT = {
-  accountId: '0xacct',
-  marketId: '0xmarket',
+  accountId: ACCOUNT,
+  marketId: MARKET,
   outcomeId: 'YES',
   side: 'BUY',
   size: { buyAmount: '5' },
@@ -85,12 +89,11 @@ describe('the intent digest', () => {
   it('discriminates on every field that changes what the order does', () => {
     const base = intentDigest(INTENT);
     for (const change of [
-      { accountId: '0xother' },
-      { marketId: '0xother' },
+      { accountId: `0x${'99'.repeat(32)}` },
+      { marketId: `0x${'88'.repeat(32)}` },
       { outcomeId: 'NO' },
-      { side: 'SELL' },
+      { side: 'SELL', size: { sellShares: '5' }, positionId: '1145' },
       { size: { buyAmount: '6' } },
-      { size: { sellShares: '5' } },
       { maxSlippageBps: 50 },
       { positionId: '1145' },
       { worstAcceptablePrice: '0.53' },
@@ -379,23 +382,39 @@ describe('the file store', () => {
       JSON.stringify({
         version: 1,
         intents: {
-          [digest]: { idempotencyKey: 'k', intent: {}, status: 'PENDING', createdAt: 'now' },
+          [digest]: { idempotencyKey: 'k', digest, intent: {}, status: 'PENDING', createdAt: 'now' },
         },
       }),
     );
 
     await expect(createFileIntentStore(ledger).pending()).rejects.toThrow(/could not be re-sent/u);
-    await expect(createFileIntentStore(ledger).pending()).rejects.toThrow(/`accountId` is missing/u);
+    await expect(createFileIntentStore(ledger).pending()).rejects.toThrow(
+      /`accountId` is not a full 0x-prefixed Sui address/u,
+    );
   });
 
-  it('refuses a record whose intent is missing any field a re-send needs', async () => {
+  it('refuses an intent the canonical order rules would reject', async () => {
     for (const [field, broken] of [
       ['marketId', { ...INTENT, marketId: undefined }],
       ['side', { ...INTENT, side: 'MAYBE' }],
+      ['outcomeId', { ...INTENT, outcomeId: 'MAYBE' }],
+      ['accountId', { ...INTENT, accountId: '0xacct' }],
       ['maxSlippageBps', { ...INTENT, maxSlippageBps: '100' }],
+      ['maxSlippageBps', { ...INTENT, maxSlippageBps: 0.5 }],
+      ['maxSlippageBps', { ...INTENT, maxSlippageBps: 10_000 }],
+      ['maxSlippageBps', { ...INTENT, maxSlippageBps: -1 }],
       ['size', { ...INTENT, size: {} }],
       ['size', { ...INTENT, size: { buyAmount: '5', sellShares: '5' } }],
+      ['size', { ...INTENT, size: { sellShares: '5' } }],
+      ['size', { ...INTENT, size: { buyAmount: 'not-a-decimal' } }],
+      ['size', { ...INTENT, size: { buyAmount: '0' } }],
+      ['size', { ...INTENT, size: { buyAmount: '-1' } }],
+      ['size', { ...INTENT, size: { buyAmount: '1e3' } }],
+      ['size', { ...INTENT, size: { buyAmount: '0.1234567' } }],
       ['positionId', { ...INTENT, positionId: 7 }],
+      ['positionId', { ...INTENT, positionId: '1145' }],
+      ['worstAcceptablePrice', { ...INTENT, worstAcceptablePrice: '2.0' }],
+      ['clientOrderId', { ...INTENT, clientOrderId: '' }],
     ] as const) {
       const intent = Object.fromEntries(
         Object.entries(broken).filter(([, value]) => value !== undefined),
@@ -408,6 +427,7 @@ describe('the file store', () => {
           intents: {
             [intentDigest(intent)]: {
               idempotencyKey: 'k',
+              digest: intentDigest(intent),
               intent,
               status: 'PENDING',
               createdAt: 'now',
@@ -429,7 +449,7 @@ describe('the file store', () => {
     const { marketId: _dropped, ...withoutMarket } = INTENT;
 
     await expect(store.reserve(withoutMarket)).rejects.toThrow(TypeError);
-    await expect(store.reserve(withoutMarket)).rejects.toThrow(/`marketId` is missing/u);
+    await expect(store.reserve(withoutMarket)).rejects.toThrow(/`marketId` is not a string/u);
     expect(existsSync(ledger)).toBe(false);
   });
 
@@ -445,12 +465,14 @@ describe('the file store', () => {
         intents: {
           [intentDigest(INTENT)]: {
             idempotencyKey: 'shared',
+            digest: intentDigest(INTENT),
             intent: INTENT,
             status: 'PENDING',
             createdAt: 'now',
           },
           [intentDigest(other)]: {
             idempotencyKey: 'shared',
+            digest: intentDigest(other),
             intent: other,
             status: 'PENDING',
             createdAt: 'now',

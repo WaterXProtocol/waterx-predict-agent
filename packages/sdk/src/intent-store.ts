@@ -89,6 +89,10 @@ import {
 import { hostname } from 'node:os';
 import { dirname, join } from 'node:path';
 
+import {
+  unrecoverableIntentReason,
+  unusableIdempotencyKeyReason,
+} from './intent-shape.ts';
 import { sleep } from './sleep.ts';
 
 /**
@@ -232,79 +236,6 @@ export function canonicalJson(value: unknown): string {
     throw new TypeError('not representable in an intent digest: bigint');
   }
   return JSON.stringify(value) ?? 'null';
-}
-
-/**
- * The fields a record has to carry for its intent to be re-sendable.
- *
- * A ledger exists so that an interrupted write can be finished, and finishing
- * one means re-running the SAME intent. A record whose intent is missing any of
- * these cannot be re-run: whatever the operator reconstructs hashes differently,
- * gets a different key, and becomes a second order beside the first. So an
- * intent this could not recover is refused at the moment it is written and
- * refused again when it is read, rather than discovered at the one moment it
- * needed to work.
- *
- * Required only. An intent carrying fields nothing here knows about is fine and
- * stays fine — `intentDigest` counts them, which is the point of a denylist.
- */
-const REQUIRED_INTENT_FIELDS = [
-  'accountId',
-  'marketId',
-  'outcomeId',
-  'side',
-  'size',
-  'maxSlippageBps',
-] as const;
-
-/** Optional intent fields, and the type each must be when it is present. */
-const OPTIONAL_INTENT_STRINGS = [
-  'positionId',
-  'worstAcceptablePrice',
-  'strategyId',
-  'clientOrderId',
-] as const;
-
-/**
- * Whether this intent could be re-sent from the record alone.
- *
- * Returns the reason it could not, or `undefined`. Not a schema validator for
- * the API — the server owns that — but the narrower question this module has to
- * answer: is what we are about to write down enough to finish the write.
- */
-export function unrecoverableIntentReason(
-  intent: Readonly<Record<string, unknown>>,
-): string | undefined {
-  for (const field of REQUIRED_INTENT_FIELDS) {
-    if (intent[field] === undefined) return `\`${field}\` is missing`;
-  }
-  for (const field of ['accountId', 'marketId', 'outcomeId'] as const) {
-    if (typeof intent[field] !== 'string' || intent[field] === '') {
-      return `\`${field}\` is not a non-empty string`;
-    }
-  }
-  if (intent.side !== 'BUY' && intent.side !== 'SELL') return '`side` is not BUY or SELL';
-  if (typeof intent.maxSlippageBps !== 'number' || !Number.isFinite(intent.maxSlippageBps)) {
-    return '`maxSlippageBps` is not a finite number';
-  }
-  const size = intent.size as Record<string, unknown> | null;
-  if (size === null || typeof size !== 'object') return '`size` is not an object';
-  const units = (['buyAmount', 'sellShares'] as const).filter(
-    (unit) => size[unit] !== undefined,
-  );
-  if (units.length !== 1) {
-    return '`size` must carry exactly one of `buyAmount` or `sellShares`';
-  }
-  const unit = units[0] as 'buyAmount' | 'sellShares';
-  if (typeof size[unit] !== 'string' || size[unit] === '') {
-    return `\`size.${unit}\` is not a non-empty decimal string`;
-  }
-  for (const field of OPTIONAL_INTENT_STRINGS) {
-    if (intent[field] !== undefined && typeof intent[field] !== 'string') {
-      return `\`${field}\` is present and is not a string`;
-    }
-  }
-  return undefined;
 }
 
 /** The intent, minus the fields the header explains must not discriminate. */
@@ -716,6 +647,7 @@ class FileIntentStore extends BaseIntentStore {
 
     const records = new Map<string, IntentRecord>();
     const byKey = new Map<string, string>();
+    const byExecution = new Map<string, string>();
     for (const [digest, value] of Object.entries(entries as Record<string, unknown>)) {
       const record = this.validate(digest, value);
       // One key, one intent — the whole guarantee, and nothing enforced it.
@@ -730,6 +662,21 @@ class FileIntentStore extends BaseIntentStore {
         );
       }
       byKey.set(record.idempotencyKey, digest);
+
+      // And one execution, one intent. Enforcing key uniqueness alone left the
+      // same identity confusion one field over: the replay path trusts the
+      // recorded execution id and reads it back, so two records naming one
+      // execution report it as the outcome of whichever intent asked. The
+      // second economic order is swallowed and announced as the first.
+      if (record.executionId !== undefined) {
+        const claimed = byExecution.get(record.executionId);
+        if (claimed !== undefined) {
+          throw new Error(
+            `The intent ledger at ${this.path} has one execution on two records — ${claimed} and ${digest} both name ${record.executionId}. They are different intents, so reading that execution back would report it as the outcome of whichever one asked. This refuses to load; read the execution and the account history to establish which intent actually placed it.`,
+          );
+        }
+        byExecution.set(record.executionId, digest);
+      }
       records.set(digest, record);
     }
     return records;
@@ -764,10 +711,24 @@ class FileIntentStore extends BaseIntentStore {
       );
     };
     if (record === null || typeof record !== 'object') bad('record');
-    if (typeof record?.idempotencyKey !== 'string') bad('idempotencyKey');
     if (record?.intent === null || typeof record?.intent !== 'object') bad('intent');
     if (record?.status !== 'PENDING' && record?.status !== 'SETTLED') bad('status');
     if (typeof record?.createdAt !== 'string') bad('createdAt');
+    // Present, not merely the right type when it happens to be there. `digest`
+    // is required by the record interface and written on every save, so a
+    // record without one was not written by this module — and synthesizing it
+    // from the map key is the silent repair the three-way check exists to
+    // refuse.
+    if (typeof record?.digest !== 'string') bad('digest');
+    // Bounded, because it is replayed straight into the `Idempotency-Key`
+    // header and the contract admits 1–128 characters. An empty string passed
+    // a `typeof` check and would have been sent as a header with no value.
+    const unusableKey = unusableIdempotencyKeyReason(record?.idempotencyKey);
+    if (unusableKey !== undefined) {
+      throw new Error(
+        `The intent ledger at ${this.path} has a record under ${digest} whose \`idempotencyKey\` is ${unusableKey}. It is replayed into the request header verbatim, so a key the API cannot accept is a write that can never be finished under it.`,
+      );
+    }
     for (const field of ['executionId', 'enforcedWorstPrice', 'settledAt', 'outcome'] as const) {
       if (record?.[field] !== undefined && typeof record[field] !== 'string') bad(field);
     }
@@ -789,7 +750,7 @@ class FileIntentStore extends BaseIntentStore {
     // nothing for that intent, mints a second key, and places a second order.
     const computed = intentDigest(intent);
     const stored = (record as { digest?: unknown }).digest;
-    if (stored !== undefined && stored !== digest) {
+    if (stored !== digest) {
       throw new Error(
         `The intent ledger at ${this.path} has a record filed under ${digest} that records its own digest as ${String(stored)}. Overwriting one with the other would decide which is right on no evidence, so this refuses to load.`,
       );

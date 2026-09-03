@@ -83,8 +83,8 @@ const CREATED = {
 const SUBMITTED = { executionId: 'exec-1', status: 'SUBMITTED', transactionDigest: 'exec-digest' };
 
 const intent = {
-  accountId: '0xacct',
-  marketId: '0xmarket',
+  accountId: `0x${'10'.repeat(32)}`,
+  marketId: `0x${'22'.repeat(32)}`,
   outcomeId: 'YES' as const,
   side: 'BUY' as const,
   size: { buyAmount: '50' },
@@ -320,7 +320,7 @@ describe('executeMarketOrder', () => {
 
 describe('quoting a leg when it runs', () => {
   const unquoted = {
-    accountId: '0xacct',
+    accountId: `0x${'10'.repeat(32)}`,
     marketId: '0xmarket',
     outcomeId: 'YES' as const,
     side: 'BUY' as const,
@@ -832,8 +832,8 @@ describe('what a long-lived embedder can reach', () => {
  */
 describe('executeMarketOrder with an intent store', () => {
   const unpriced = {
-    accountId: '0xacct',
-    marketId: '0xmarket',
+    accountId: `0x${'10'.repeat(32)}`,
+    marketId: `0x${'22'.repeat(32)}`,
     outcomeId: 'YES' as const,
     side: 'BUY' as const,
     size: { buyAmount: '5' },
@@ -1124,8 +1124,8 @@ describe('executeMarketOrder with an intent store', () => {
  */
 describe('an execution left waiting for this agent to sign', () => {
   const unpriced = {
-    accountId: '0xacct',
-    marketId: '0xmarket',
+    accountId: `0x${'10'.repeat(32)}`,
+    marketId: `0x${'22'.repeat(32)}`,
     outcomeId: 'YES' as const,
     side: 'BUY' as const,
     size: { buyAmount: '5' },

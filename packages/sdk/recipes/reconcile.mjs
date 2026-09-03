@@ -71,21 +71,42 @@ const resumeCommand = (record) => {
   };
   if (intentDigest(rebuilt) !== record.digest) return undefined;
 
-  return [
-    'node recipes/order.mjs',
+  // The argv a caller should run, as data. `--json` carries this so nothing
+  // downstream has to parse a shell line back apart to get at the arguments.
+  const argv = [
+    'node',
+    'recipes/order.mjs',
     intent.marketId,
     intent.outcomeId,
     intent.side,
     amount,
     String(intent.maxSlippageBps),
-    intent.positionId ?? '',
-    `--account ${intent.accountId}`,
-  ]
-    .filter((part) => part !== '')
+    ...(intent.positionId === undefined ? [] : [intent.positionId]),
+    '--account',
+    intent.accountId,
+  ];
+  // And the same thing quoted, for the person reading the terminal.
+  const line = argv
+    .map((part, index) => (index < 2 || part.startsWith('--') ? part : shellQuote(part)))
     .join(' ');
+  return { argv, line };
 };
 
 /** What to say when the command line cannot express this intent. */
+/**
+ * One argument, safe to paste into a shell.
+ *
+ * Not defence in depth — necessary. A market id is an opaque identifier the
+ * server hands out, and the contract bounds its LENGTH and not its characters,
+ * so a semicolon can live inside a perfectly canonical one. This line is
+ * printed for a person to copy, and an unquoted argument carrying `;` is a
+ * second command that person did not read and did not intend to run.
+ *
+ * POSIX single quotes take everything literally; the only character that has to
+ * be handled is the quote itself, closed and re-opened around an escaped one.
+ */
+const shellQuote = (value) => `'${String(value).replaceAll("'", String.raw`'\''`)}'`;
+
 const RESUME_BY_HAND =
   'this intent carries fields `order.mjs` cannot take on a command line, so no line is offered — re-run it from your own code with the SAME intent object and the same store. Anything else is a new key.';
 
@@ -118,8 +139,13 @@ for (const record of pending) {
     out('  do          : re-run the SAME intent. The key replays and the server');
     out('                resolves it to the original order if one exists. Never');
     out('                change a field and never mint a new key to "try again".');
-    out(resume === undefined ? `                ${RESUME_BY_HAND}` : `                ${resume}`);
-    resolved.push({ ...record, disposition: 'NO_EXECUTION_ID', resume: resume ?? null });
+    out(`                ${resume === undefined ? RESUME_BY_HAND : resume.line}`);
+    resolved.push({
+      ...record,
+      disposition: 'NO_EXECUTION_ID',
+      resume: resume?.line ?? null,
+      resumeArgv: resume?.argv ?? null,
+    });
     continue;
   }
 
@@ -140,12 +166,13 @@ for (const record of pending) {
       out('  do          : re-run the SAME intent. The key replays, the server returns');
       out('                this execution with bytes to sign, and it goes out. Not a');
       out('                second order — the first one, finally sent.');
-      out(resume === undefined ? `                ${RESUME_BY_HAND}` : `                ${resume}`);
+      out(`                ${resume === undefined ? RESUME_BY_HAND : resume.line}`);
       resolved.push({
         ...record,
         status: execution.status,
         disposition: 'AWAITING_OUR_SIGNATURE',
-        resume: resume ?? null,
+        resume: resume?.line ?? null,
+        resumeArgv: resume?.argv ?? null,
         execution,
       });
     } else {
