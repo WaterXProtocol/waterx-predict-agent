@@ -16,6 +16,7 @@ import type {
   PredictAgentMarket,
   PredictMarketResolution,
 } from '../src/contract.ts';
+import { PredictAgentApiError } from '../src/errors.ts';
 import { resolveMarket, type MarketSearcher } from '../src/market-resolution.ts';
 
 function market(closesAt: string, overrides: Partial<PredictAgentMarket> = {}): PredictAgentMarket {
@@ -134,9 +135,9 @@ describe('with an expiry the caller supplied', () => {
   });
 
   it('resolves against a server that ignores the window, and says it did so locally', async () => {
-    // An older server narrows on neither and answers exactly as it did before.
-    // Reporting that as a server-side narrowing would hide the one limitation a
-    // local one carries.
+    // A server that narrows on neither and answers as it did before. Reporting
+    // that as a server-side narrowing would hide the one limitation a local one
+    // carries.
     const result = await resolveMarket(searcher(ROUNDS), {
       search: 'BTC 5m Up or Down',
       closesAt: '2026-09-02T08:15:00.000Z',
@@ -145,6 +146,48 @@ describe('with an expiry the caller supplied', () => {
     expect(result.status).toBe('RESOLVED');
     expect(result.narrowedBy).toBe('CLIENT');
     expect(result.market?.closesAt).toBe('2026-09-02T08:15:00.000Z');
+  });
+
+  it('resolves against a server that REFUSES the window, which is what the API does today', async () => {
+    // The deployed API validates its query strictly: an unknown filter is a 400,
+    // not something it shrugs off. A client that only handled the shrug would
+    // simply fail here, which is what the first local run of this did.
+    const client = strict(ROUNDS);
+
+    const result = await resolveMarket(client, {
+      search: 'BTC 5m Up or Down',
+      closesAt: '2026-09-02T08:15:00.000Z',
+    });
+
+    expect(result.status).toBe('RESOLVED');
+    expect(result.narrowedBy).toBe('CLIENT');
+    expect(client.queries).toHaveLength(2);
+    expect(client.queries[0]?.closesBefore).toBeDefined();
+    expect(client.queries[1]?.closesBefore).toBeUndefined();
+  });
+
+  it('probes a refusing server once per client, not once per call', async () => {
+    const client = strict(ROUNDS);
+    const query = { search: 'BTC 5m Up or Down', closesAt: '2026-09-02T08:15:00.000Z' };
+
+    await resolveMarket(client, query);
+    await resolveMarket(client, query);
+
+    // Two calls, three requests: the probe, its fallback, then straight to the
+    // bare query.
+    expect(client.queries).toHaveLength(3);
+    expect(client.queries[2]?.closesBefore).toBeUndefined();
+  });
+
+  it('surfaces an INVALID_REQUEST that was NOT about the window', async () => {
+    // The fallback is a retry, not a rescue. A refusal with another cause fails
+    // the second call the same way, and the caller sees the real error instead
+    // of a page this narrowed behind their back.
+    const client = strict(ROUNDS, { always: true });
+
+    await expect(
+      resolveMarket(client, { search: 'x', closesAt: '2026-09-02T08:15:00.000Z' }),
+    ).rejects.toThrow(PredictAgentApiError);
   });
 
   it('refuses to claim uniqueness off a page that could not hold every match', async () => {
@@ -182,6 +225,36 @@ describe('with an expiry the caller supplied', () => {
     expect(result.candidates.map((entry) => entry.marketId)).toEqual(['0x20260902081500000']);
   });
 });
+
+/**
+ * A server that REFUSES an unknown filter rather than ignoring one — which is
+ * what the deployed API actually does.
+ *
+ * `always` keeps refusing even without the window, standing in for an
+ * INVALID_REQUEST whose cause was something else entirely.
+ */
+function strict(
+  markets: PredictAgentMarket[],
+  options: { always?: boolean } = {},
+): MarketSearcher & { queries: (ListMarketsQuery & { search: string })[] } {
+  const inner = searcher(markets);
+  return {
+    queries: inner.queries,
+    searchMarkets: async (query, signal) => {
+      const carriesWindow =
+        query.closesAfter !== undefined || query.closesBefore !== undefined;
+      if (carriesWindow || options.always === true) {
+        inner.queries.push(query);
+        throw new PredictAgentApiError(400, {
+          code: 'INVALID_REQUEST',
+          message: 'property closesAfter should not exist, property closesBefore should not exist',
+          retryable: false,
+        });
+      }
+      return await inner.searchMarkets(query, signal);
+    },
+  };
+}
 
 describe('refusals', () => {
   it('will not take two ways of naming the round at once', async () => {

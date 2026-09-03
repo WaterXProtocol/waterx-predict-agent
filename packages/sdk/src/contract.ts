@@ -1018,9 +1018,13 @@ export interface ListMarketsQuery {
    * A market with a null `closesAt` has no scheduled end and is excluded by
    * either bound — it cannot satisfy a claim about when it closes.
    *
-   * A server that predates these narrows on neither, and answers exactly as it
-   * did before. `resolveMarket()` detects that and applies the same predicate
-   * locally rather than reporting a narrowing that did not happen.
+   * NOT YET ACCEPTED BY THE DEPLOYED API. Its query validation is strict, so a
+   * request carrying either is refused `INVALID_REQUEST: property closesAfter
+   * should not exist` rather than answered without the narrowing. They are
+   * declared here because the contract is where a proposed filter belongs and
+   * because `resolveMarket()` already handles both worlds: it sends them, falls
+   * back to asking without them, applies the same predicate locally, and reports
+   * which happened. Sending them from anywhere else will 400 today.
    */
   closesAfter?: Iso8601;
   closesBefore?: Iso8601;

@@ -23,10 +23,25 @@
  *
  * SERVER FIRST, THEN LOCALLY, AND IT SAYS WHICH. The window is sent as
  * `closesAfter` / `closesBefore` so a server that understands them does the
- * narrowing over the whole catalog. A server that does not simply ignores them,
- * and the same predicate is applied to the page that came back. Those are not
- * equivalent and the result says which happened (`narrowedBy`), because a local
- * narrowing carries a limitation a server-side one does not:
+ * narrowing over the whole catalog.
+ *
+ * A server that does not understand them REFUSES THE REQUEST. That is worth
+ * stating plainly because the obvious assumption is the other one: the deployed
+ * API validates its query strictly and answers `INVALID_REQUEST: property
+ * closesAfter should not exist`, so a client that sent the window and hoped for
+ * the best would 400 instead of falling back. It is asked again without the
+ * window, and the same predicate is applied here.
+ *
+ * The refusal is detected by its CODE and not by its message. If an
+ * `INVALID_REQUEST` was really about something else — a malformed `category`,
+ * say — the retry without the window fails the same way and that error reaches
+ * the caller, so a false match costs one round trip and never a wrong answer.
+ * The answer is remembered per client, so it costs that round trip once rather
+ * than once per call.
+ *
+ * Server-side and local narrowing are not equivalent and the result says which
+ * happened (`narrowedBy`), because a local one carries a limitation the other
+ * does not:
  *
  * A LOCAL NARROWING CANNOT CLAIM UNIQUENESS OFF A TRUNCATED PAGE. `matchCount`
  * counts the whole filtered catalog; `markets` is one page of it. If the page
@@ -44,7 +59,19 @@ import type {
   PredictMarketResolution,
   PredictMarketResolutionStatus,
 } from './contract.ts';
+import { isPredictAgentApiError } from './errors.ts';
 import { describeSpread, type PriceSpread } from './quote-cost.ts';
+
+/**
+ * Clients already found to reject the `closesAt` window, so the compatibility
+ * probe runs once each rather than once per call.
+ *
+ * Weak, because this is a fact about a server reached through a particular
+ * client and must not keep that client alive. It is never un-set: a deployment
+ * does not lose a filter it once accepted, and a client outlives no upgrade
+ * that would matter.
+ */
+const windowUnsupported = new WeakMap<object, true>();
 
 /** The slice of the client this needs. Narrow, so it is testable without one. */
 export interface MarketSearcher {
@@ -212,22 +239,45 @@ export async function resolveMarket(
   const before = closesAt ?? closesBefore;
   const windowed = after !== undefined || before !== undefined;
 
-  const response = await client.searchMarkets(
-    {
-      ...rest,
-      ...(after !== undefined ? { closesAfter: after } : {}),
-      ...(before !== undefined ? { closesBefore: before } : {}),
-    },
-    signal,
-  );
+  const sendWindow = windowed && !windowUnsupported.has(client);
+  const bare = { ...rest };
+  const withWindow = {
+    ...rest,
+    ...(after !== undefined ? { closesAfter: after } : {}),
+    ...(before !== undefined ? { closesBefore: before } : {}),
+  };
+
+  let response;
+  let refused = false;
+  if (sendWindow) {
+    try {
+      response = await client.searchMarkets(withWindow, signal);
+    } catch (error: unknown) {
+      // Only INVALID_REQUEST, and only ever once per client. Anything else is
+      // this caller's problem to see.
+      if (!isPredictAgentApiError(error) || error.code !== 'INVALID_REQUEST') throw error;
+      windowUnsupported.set(client, true);
+      refused = true;
+      // If the refusal was not about the window, this throws the same way and
+      // the caller gets the real error rather than a silently narrowed page.
+      response = await client.searchMarkets(bare, signal);
+    }
+  } else {
+    response = await client.searchMarkets(bare, signal);
+  }
+
   const { resolution } = response;
   const returned = response.markets;
 
-  // Did the server honour the window? It did if nothing it returned falls
-  // outside — which is also true when the window excluded nothing, and that is
-  // fine: in that case there is no narrowing to attribute either way.
+  // Did the server honour the window? Only if it was sent, not refused, and
+  // nothing it returned falls outside — which is also true when the window
+  // excluded nothing, and that is fine: there is no narrowing to attribute
+  // either way.
   const serverNarrowed =
-    windowed && returned.every((market) => withinWindow(market.closesAt, after, before));
+    windowed &&
+    sendWindow &&
+    !refused &&
+    returned.every((market) => withinWindow(market.closesAt, after, before));
   const kept = serverNarrowed
     ? returned
     : returned.filter((market) => withinWindow(market.closesAt, after, before));
