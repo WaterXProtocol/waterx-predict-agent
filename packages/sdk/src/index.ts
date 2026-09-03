@@ -68,6 +68,7 @@ export {
   type IntentReservation,
   type IntentStore,
   normalizeIntent,
+  unrecoverableIntentReason,
 } from './intent-store.ts';
 export {
   type MarketCandidate,

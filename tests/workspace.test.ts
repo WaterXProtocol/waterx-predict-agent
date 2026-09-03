@@ -389,7 +389,9 @@ describe('the shipped recipes', () => {
    * Those are refused rather than resolved: nothing static can follow a variable,
    * and a recipe has no reason to build a module name.
    */
-  const specifiersOf = (name: string): { resolved: string[]; computed: string[] } => {
+  const specifiersOf = (
+    name: string,
+  ): { resolved: string[]; computed: string[]; unparsed: number } => {
     const source = ts.createSourceFile(
       name,
       readFileSync(`${RECIPE_DIR}/${name}`, 'utf8'),
@@ -397,6 +399,11 @@ describe('the shipped recipes', () => {
       true,
       ts.ScriptKind.JS,
     );
+    // A file the parser could not read is a file this cannot make claims about,
+    // and staying quiet about it is how a guard fails OPEN on syntax the parser
+    // is too old for. Not public API, and the cast says so.
+    const unparsed = (source as unknown as { parseDiagnostics?: readonly unknown[] })
+      .parseDiagnostics?.length ?? 0;
     const resolved: string[] = [];
     const computed: string[] = [];
 
@@ -427,8 +434,30 @@ describe('the shipped recipes', () => {
       ts.forEachChild(node, walk);
     };
     walk(source);
-    return { resolved, computed };
+    return { resolved, computed, unparsed };
   };
+
+  /**
+   * Every module a recipe may load. A WHITELIST, and that is the point.
+   *
+   * Forbidding the modules that look dangerous is a game with no end — the last
+   * version of this test was defeated by
+   * `createRequire(import.meta.url)('../dist/src/client.js')`, which loads the
+   * internals through a function call on a variable and mentions neither
+   * `require` nor a suspicious path. `node:module` is one door; `node:vm` is
+   * another; the next one has not been written yet.
+   *
+   * So the question is inverted. These are six small scripts and their imports
+   * are countable, so anything not on this list fails and somebody has to say
+   * why it belongs. That closes every door at once, including the ones nobody
+   * has thought of.
+   */
+  const ALLOWED_RECIPE_IMPORTS = new Set([
+    './_client.mjs',
+    '@waterx/predict-agent-sdk',
+    '@mysten/sui/keypairs/ed25519',
+    'node:fs',
+  ]);
 
   /** Source with block comments removed, for the checks that are about text. */
   const code = (name: string): string =>
@@ -476,12 +505,16 @@ describe('the shipped recipes', () => {
       // would have waved it through.
       //
       // The specifiers come from the parser, so this sees what the runtime will
-      // resolve rather than what the file happens to spell.
-      for (const target of specifiersOf(name).resolved) {
-        const internal =
-          /(?:^|\/)(?:dist|src)\//u.test(target) ||
-          /@waterx\/predict-agent-sdk\/./u.test(target);
-        expect(internal, `${name} imports the internal path ${target}`).toBe(false);
+      // resolve rather than what the file happens to spell — and they are
+      // checked against a whitelist, so a module nobody anticipated fails
+      // rather than slipping through a pattern written before it existed.
+      const { resolved, unparsed } = specifiersOf(name);
+      expect(unparsed, `${name} did not parse cleanly, so nothing here can vouch for it`).toBe(0);
+      for (const target of resolved) {
+        expect(
+          ALLOWED_RECIPE_IMPORTS.has(target),
+          `${name} imports ${target}, which is not on the recipe whitelist`,
+        ).toBe(true);
       }
     }
   });

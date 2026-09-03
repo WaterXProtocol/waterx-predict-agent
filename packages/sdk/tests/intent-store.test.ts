@@ -309,14 +309,40 @@ describe('the file store', () => {
     document.intents = { wrong0000: document.intents[String(rightDigest)] };
     writeFileSync(ledger, JSON.stringify(document));
 
+    // Caught by the three-way check first, which is the more precise answer: the
+    // record still carries the digest it was written with, and it no longer
+    // matches where the record sits.
     await expect(createFileIntentStore(ledger).reserve(INTENT)).rejects.toThrow(
       /filed under wrong0000/u,
     );
-    // And it says where the record belongs, because the intent inside it is fine.
-    await expect(createFileIntentStore(ledger).reserve(INTENT)).rejects.toThrow(
-      new RegExp(`belongs under ${String(rightDigest)}`, 'u'),
-    );
     expect(idempotencyKey).toBeTypeOf('string');
+    expect(rightDigest).toBeTypeOf('string');
+  });
+
+  it('will not say which side of a digest mismatch is the right one', async () => {
+    // The message used to call the stored intent intact and name the digest it
+    // "belongs under". A mismatch proves the key and the intent disagree; it
+    // proves nothing about which of them changed. If the INTENT is what was
+    // damaged, re-filing under the computed digest attaches this record's key —
+    // and the execution it names — to an order it was never minted for.
+    const store = createFileIntentStore(ledger);
+    await store.reserve(INTENT);
+
+    const document = JSON.parse(readFileSync(ledger, 'utf8')) as {
+      intents: Record<string, { digest: string; intent: Record<string, unknown> }>;
+    };
+    const [key] = Object.keys(document.intents);
+    // Damage the INTENT, and keep the record internally consistent, so only the
+    // key-versus-content check can see it.
+    const record = document.intents[String(key)];
+    if (record !== undefined) record.intent = { ...record.intent, marketId: '0xsomewhere-else' };
+    writeFileSync(ledger, JSON.stringify(document));
+
+    const failing = createFileIntentStore(ledger);
+    await expect(failing.pending()).rejects.toThrow(/cannot tell which/u);
+    await expect(failing.pending()).rejects.not.toThrow(/belongs under/u);
+    // It points at the evidence instead: what the server says happened.
+    await expect(failing.pending()).rejects.toThrow(/to establish what actually happened/u);
   });
 
   it('refuses a file with no `intents`, rather than reading it as empty', async () => {
@@ -342,17 +368,125 @@ describe('the file store', () => {
     await expect(createFileIntentStore(ledger).pending()).rejects.toThrow(/root is not an object/u);
   });
 
-  it('refuses an empty intent, which hashes nowhere near its key', async () => {
+  it('refuses an empty intent even when it is filed under its OWN digest', async () => {
+    // Self-consistent and still useless. The digest check cannot see this — the
+    // record hashes exactly to where it sits — and a PENDING record whose intent
+    // cannot be re-sent is a key held against a write nothing can finish.
+    const digest = intentDigest({});
     mkdirSync(dirname(ledger), { recursive: true });
     writeFileSync(
       ledger,
       JSON.stringify({
         version: 1,
-        intents: { abc: { idempotencyKey: 'k', intent: {}, status: 'PENDING', createdAt: 'now' } },
+        intents: {
+          [digest]: { idempotencyKey: 'k', intent: {}, status: 'PENDING', createdAt: 'now' },
+        },
       }),
     );
 
-    await expect(createFileIntentStore(ledger).pending()).rejects.toThrow(/filed under abc/u);
+    await expect(createFileIntentStore(ledger).pending()).rejects.toThrow(/could not be re-sent/u);
+    await expect(createFileIntentStore(ledger).pending()).rejects.toThrow(/`accountId` is missing/u);
+  });
+
+  it('refuses a record whose intent is missing any field a re-send needs', async () => {
+    for (const [field, broken] of [
+      ['marketId', { ...INTENT, marketId: undefined }],
+      ['side', { ...INTENT, side: 'MAYBE' }],
+      ['maxSlippageBps', { ...INTENT, maxSlippageBps: '100' }],
+      ['size', { ...INTENT, size: {} }],
+      ['size', { ...INTENT, size: { buyAmount: '5', sellShares: '5' } }],
+      ['positionId', { ...INTENT, positionId: 7 }],
+    ] as const) {
+      const intent = Object.fromEntries(
+        Object.entries(broken).filter(([, value]) => value !== undefined),
+      );
+      mkdirSync(dirname(ledger), { recursive: true });
+      writeFileSync(
+        ledger,
+        JSON.stringify({
+          version: 1,
+          intents: {
+            [intentDigest(intent)]: {
+              idempotencyKey: 'k',
+              intent,
+              status: 'PENDING',
+              createdAt: 'now',
+            },
+          },
+        }),
+      );
+
+      await expect(createFileIntentStore(ledger).pending(), field).rejects.toThrow(
+        /could not be re-sent/u,
+      );
+    }
+  });
+
+  it('refuses to reserve a key for an intent it could not re-send', async () => {
+    // At the door, rather than at the one moment the record had to work. A
+    // record that holds a key and cannot finish its write is worse than none.
+    const store = createFileIntentStore(ledger);
+    const { marketId: _dropped, ...withoutMarket } = INTENT;
+
+    await expect(store.reserve(withoutMarket)).rejects.toThrow(TypeError);
+    await expect(store.reserve(withoutMarket)).rejects.toThrow(/`marketId` is missing/u);
+    expect(existsSync(ledger)).toBe(false);
+  });
+
+  it('refuses two records that share one idempotency key', async () => {
+    // Different intents replaying one key: the server sends the second to the
+    // first's execution, or swallows the trade that was actually asked for.
+    const other = { ...INTENT, clientOrderId: 'second' };
+    mkdirSync(dirname(ledger), { recursive: true });
+    writeFileSync(
+      ledger,
+      JSON.stringify({
+        version: 1,
+        intents: {
+          [intentDigest(INTENT)]: {
+            idempotencyKey: 'shared',
+            intent: INTENT,
+            status: 'PENDING',
+            createdAt: 'now',
+          },
+          [intentDigest(other)]: {
+            idempotencyKey: 'shared',
+            intent: other,
+            status: 'PENDING',
+            createdAt: 'now',
+          },
+        },
+      }),
+    );
+
+    await expect(createFileIntentStore(ledger).pending()).rejects.toThrow(
+      /one idempotency key on two records/u,
+    );
+  });
+
+  it('refuses a record whose recorded digest disagrees with its key', async () => {
+    // Three names for one thing. Silently preferring either would decide which
+    // is right on no evidence.
+    mkdirSync(dirname(ledger), { recursive: true });
+    writeFileSync(
+      ledger,
+      JSON.stringify({
+        version: 1,
+        intents: {
+          [intentDigest(INTENT)]: {
+            idempotencyKey: 'k',
+            digest: 'something-else',
+            intent: INTENT,
+            status: 'PENDING',
+            createdAt: 'now',
+          },
+        },
+      }),
+    );
+
+    await expect(createFileIntentStore(ledger).pending()).rejects.toThrow(
+      /records its own digest as something-else/u,
+    );
   });
 
   it('round-trips a ledger it wrote itself', async () => {

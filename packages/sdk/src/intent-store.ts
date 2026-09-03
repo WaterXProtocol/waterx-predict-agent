@@ -234,6 +234,79 @@ export function canonicalJson(value: unknown): string {
   return JSON.stringify(value) ?? 'null';
 }
 
+/**
+ * The fields a record has to carry for its intent to be re-sendable.
+ *
+ * A ledger exists so that an interrupted write can be finished, and finishing
+ * one means re-running the SAME intent. A record whose intent is missing any of
+ * these cannot be re-run: whatever the operator reconstructs hashes differently,
+ * gets a different key, and becomes a second order beside the first. So an
+ * intent this could not recover is refused at the moment it is written and
+ * refused again when it is read, rather than discovered at the one moment it
+ * needed to work.
+ *
+ * Required only. An intent carrying fields nothing here knows about is fine and
+ * stays fine — `intentDigest` counts them, which is the point of a denylist.
+ */
+const REQUIRED_INTENT_FIELDS = [
+  'accountId',
+  'marketId',
+  'outcomeId',
+  'side',
+  'size',
+  'maxSlippageBps',
+] as const;
+
+/** Optional intent fields, and the type each must be when it is present. */
+const OPTIONAL_INTENT_STRINGS = [
+  'positionId',
+  'worstAcceptablePrice',
+  'strategyId',
+  'clientOrderId',
+] as const;
+
+/**
+ * Whether this intent could be re-sent from the record alone.
+ *
+ * Returns the reason it could not, or `undefined`. Not a schema validator for
+ * the API — the server owns that — but the narrower question this module has to
+ * answer: is what we are about to write down enough to finish the write.
+ */
+export function unrecoverableIntentReason(
+  intent: Readonly<Record<string, unknown>>,
+): string | undefined {
+  for (const field of REQUIRED_INTENT_FIELDS) {
+    if (intent[field] === undefined) return `\`${field}\` is missing`;
+  }
+  for (const field of ['accountId', 'marketId', 'outcomeId'] as const) {
+    if (typeof intent[field] !== 'string' || intent[field] === '') {
+      return `\`${field}\` is not a non-empty string`;
+    }
+  }
+  if (intent.side !== 'BUY' && intent.side !== 'SELL') return '`side` is not BUY or SELL';
+  if (typeof intent.maxSlippageBps !== 'number' || !Number.isFinite(intent.maxSlippageBps)) {
+    return '`maxSlippageBps` is not a finite number';
+  }
+  const size = intent.size as Record<string, unknown> | null;
+  if (size === null || typeof size !== 'object') return '`size` is not an object';
+  const units = (['buyAmount', 'sellShares'] as const).filter(
+    (unit) => size[unit] !== undefined,
+  );
+  if (units.length !== 1) {
+    return '`size` must carry exactly one of `buyAmount` or `sellShares`';
+  }
+  const unit = units[0] as 'buyAmount' | 'sellShares';
+  if (typeof size[unit] !== 'string' || size[unit] === '') {
+    return `\`size.${unit}\` is not a non-empty decimal string`;
+  }
+  for (const field of OPTIONAL_INTENT_STRINGS) {
+    if (intent[field] !== undefined && typeof intent[field] !== 'string') {
+      return `\`${field}\` is present and is not a string`;
+    }
+  }
+  return undefined;
+}
+
 /** The intent, minus the fields the header explains must not discriminate. */
 export function normalizeIntent(
   intent: Readonly<Record<string, unknown>>,
@@ -298,6 +371,15 @@ abstract class BaseIntentStore implements IntentStore {
   }
 
   async reserve(intent: Readonly<Record<string, unknown>>): Promise<IntentReservation> {
+    // Refused at the door. A record that cannot be re-sent is worse than no
+    // record: it holds a key, so the write looks tracked, and it cannot finish
+    // the write it was tracking.
+    const unrecoverable = unrecoverableIntentReason(normalizeIntent(intent));
+    if (unrecoverable !== undefined) {
+      throw new TypeError(
+        `Refusing to reserve a key for an intent that could not be re-sent from the record: ${unrecoverable}. Finishing an interrupted write means re-running the same intent, and an intent missing a field hashes differently the second time — which is a second order, not a resumption.`,
+      );
+    }
     const digest = intentDigest(intent);
     return await this.serialize(() => {
       const records = this.load();
@@ -305,8 +387,15 @@ abstract class BaseIntentStore implements IntentStore {
       if (existing !== undefined) {
         return { idempotencyKey: existing.idempotencyKey, replayed: true, record: existing };
       }
+      // Checked rather than assumed. A v4 collision is not a real risk; the
+      // invariant "one key, one intent" being TOTAL rather than overwhelmingly
+      // likely is what lets everything downstream stop asking.
+      const taken = new Set([...records.values()].map((entry) => entry.idempotencyKey));
+      let idempotencyKey = randomUUID();
+      while (taken.has(idempotencyKey)) idempotencyKey = randomUUID();
+
       const record: IntentRecord = {
-        idempotencyKey: randomUUID(),
+        idempotencyKey,
         digest,
         intent: normalizeIntent(intent),
         status: 'PENDING',
@@ -355,8 +444,14 @@ abstract class BaseIntentStore implements IntentStore {
   async forget(idempotencyKey: string): Promise<void> {
     await this.serialize(() => {
       const records = this.load();
+      // One, because a key belongs to one record — enforced when the ledger
+      // loads and when a key is minted. Deleting "every match" was the same bug
+      // as `update` taking "the first match" seen from the other side: two
+      // shapes of behaviour for a state that must not exist.
       for (const [digest, record] of records) {
-        if (record.idempotencyKey === idempotencyKey) records.delete(digest);
+        if (record.idempotencyKey !== idempotencyKey) continue;
+        records.delete(digest);
+        break;
       }
       this.save(records);
     });
@@ -620,8 +715,22 @@ class FileIntentStore extends BaseIntentStore {
     }
 
     const records = new Map<string, IntentRecord>();
+    const byKey = new Map<string, string>();
     for (const [digest, value] of Object.entries(entries as Record<string, unknown>)) {
-      records.set(digest, this.validate(digest, value));
+      const record = this.validate(digest, value);
+      // One key, one intent — the whole guarantee, and nothing enforced it.
+      // Two records sharing a key both replay it, so a second economic intent
+      // is deduped by the server onto the FIRST execution or swallows the trade
+      // that was actually asked for. It also splits this module against itself:
+      // `attach` finds one of them and `forget` removes both.
+      const already = byKey.get(record.idempotencyKey);
+      if (already !== undefined) {
+        throw new Error(
+          `The intent ledger at ${this.path} has one idempotency key on two records — ${already} and ${digest} both hold ${record.idempotencyKey}. They are different intents, so replaying that key sends one of them to the other's execution. This refuses to load; the executions they name have to be read back before either is used again.`,
+        );
+      }
+      byKey.set(record.idempotencyKey, digest);
+      records.set(digest, record);
     }
     return records;
   }
@@ -663,17 +772,37 @@ class FileIntentStore extends BaseIntentStore {
       if (record?.[field] !== undefined && typeof record[field] !== 'string') bad(field);
     }
 
-    // The key IS the content, so a record must hash to where it is filed. This
-    // is the check that makes the index self-verifying, and it is the one that
-    // matters most: a record under the wrong key is invisible to `reserve`,
-    // which finds nothing for that intent, mints a second key, and places a
-    // second order — while the first key, and possibly a live execution, sit
-    // under a name nothing will look up. Truncation, a hand edit, a merge of
-    // two ledgers, a partially rewritten field: all of them land here.
-    const computed = intentDigest(record?.intent as Record<string, unknown>);
-    if (computed !== digest) {
+    const intent = normalizeIntent(record?.intent as Record<string, unknown>);
+    // Written by a build that checked less, or by hand. Either way, a PENDING
+    // record whose intent cannot be re-sent is a key held against a write
+    // nothing can finish.
+    const unrecoverable = unrecoverableIntentReason(intent);
+    if (unrecoverable !== undefined) {
       throw new Error(
-        `The intent ledger at ${this.path} has a record filed under ${digest} whose intent hashes to ${computed}. A record under the wrong key is invisible to the lookup that prevents a second order, so this refuses to load rather than mint a fresh key for an intent that already has one. Inspect the file — the intent it holds is intact, and it belongs under ${computed}.`,
+        `The intent ledger at ${this.path} has a record under ${digest} whose intent could not be re-sent: ${unrecoverable}. Finishing an interrupted write means re-running the same intent, and this record does not hold one — whatever is reconstructed hashes differently and becomes a second order. Read ${record?.executionId === undefined ? 'the account history' : `execution ${String(record.executionId)}`} to establish what happened before writing anything else.`,
+      );
+    }
+
+    // Three names for one thing: the key it is filed under, the digest recorded
+    // inside it, and the digest its intent actually hashes to. All three have to
+    // agree. A record under the wrong key is invisible to `reserve`, which finds
+    // nothing for that intent, mints a second key, and places a second order.
+    const computed = intentDigest(intent);
+    const stored = (record as { digest?: unknown }).digest;
+    if (stored !== undefined && stored !== digest) {
+      throw new Error(
+        `The intent ledger at ${this.path} has a record filed under ${digest} that records its own digest as ${String(stored)}. Overwriting one with the other would decide which is right on no evidence, so this refuses to load.`,
+      );
+    }
+    if (computed !== digest) {
+      // Deliberately no instruction to re-file it. A mismatch says the key and
+      // the intent disagree; it does NOT say which of them changed. If the
+      // INTENT is what was damaged, re-indexing under the computed digest
+      // attaches this record's key — and the execution it names — to a
+      // different order than the one it was minted for. The only thing that
+      // settles it is what the server says happened.
+      throw new Error(
+        `The intent ledger at ${this.path} has a record filed under ${digest} whose intent hashes to ${computed}. Something changed one of them and this cannot tell which, so it will neither load the record nor suggest re-filing it — re-indexing a damaged INTENT would attach this key, and the execution it names, to an order it was never minted for. ${record?.executionId === undefined ? 'Read the account history' : `Read execution ${String(record.executionId)}`} to establish what actually happened, then rebuild the entry from that.`,
       );
     }
     return { ...(record as IntentRecord), digest };

@@ -67,12 +67,18 @@ intent the moment an owner authorizes a different one. `reconcile.mjs` always
 passes it.
 
 **The ledger is read strictly, and its index verifies itself.** Every record has
-to hash to the key it is filed under — that check is what stops a record from
-becoming invisible to the lookup that prevents a second order. A record under
-the wrong key, a file with no `intents`, a version this build does not read: all
-refusals naming what is wrong, never a skipped row and never "absent means
-empty". A record nobody can read may be the one naming an order that exists, and
-dropping it frees the next attempt to mint a new key.
+to hash to the key it is filed under, no two records may hold one idempotency
+key, and every intent has to carry enough to be re-sent — because a record that
+holds a key and cannot finish its write is worse than no record at all. A record
+under the wrong key, two records sharing a key, a file with no `intents`, a
+version this build does not read: all refusals naming what is wrong, never a
+skipped row and never "absent means empty". A record nobody can read may be the
+one naming an order that exists, and dropping it frees the next attempt to mint
+a new key.
+
+Where a refusal cannot tell *which side* is wrong — a key and an intent that
+disagree — it says so and points at the execution to read back, rather than
+suggesting a repair that could attach a live key to a different order.
 
 **Nothing removes a lock it did not create.** If a run is killed mid-write, the
 next one stops and tells you whether the holder is still running, so you know
