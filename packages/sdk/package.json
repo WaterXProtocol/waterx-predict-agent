@@ -13,7 +13,7 @@
     }
   },
   "bin": { "waterx-predict-agent-sdk": "dist/src/bin/describe.js" },
-  "files": ["dist", "AGENT_INSTRUCTIONS.md", "SKILL.md", "LICENSE", "package.json", "README.md"],
+  "files": ["dist", "recipes", "AGENT_INSTRUCTIONS.md", "SKILL.md", "LICENSE", "package.json", "README.md"],
   "engines": { "node": ">=20" },
   "publishConfig": { "access": "public", "provenance": true },
   "scripts": {

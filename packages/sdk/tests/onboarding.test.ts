@@ -12,6 +12,7 @@ import {
   buildAuthorizationUrl,
   describeOnboarding,
   PREDICT_AGENT_CONSOLE_ENDPOINTS,
+  startOnboarding,
   waitForAuthorization,
 } from '../src/onboarding.ts';
 
@@ -198,5 +199,103 @@ describe('waitForAuthorization', () => {
     await waitForAuthorization({ listAuthorizedAccounts }, { pollIntervalMs: 1, onChange });
 
     expect(onChange.mock.calls.map(([state]) => state.status)).toEqual(['NOT_ONBOARDED', 'READY']);
+  });
+});
+
+/**
+ * The half that was routinely skipped.
+ *
+ * Every piece of this existed and was exported. What did not exist was the thing
+ * that makes the poll the obvious next step rather than a fourth import, and the
+ * cost of that omission is measurable: an agent builds the link out of three
+ * modules, prints it, and stops — leaving a person to sign in another window and
+ * come back to a dead terminal to announce that they did.
+ */
+describe('startOnboarding', () => {
+  const poller = (
+    ...responses: ListAgentAccountsResponseBody[]
+  ): {
+    agentWallet: string;
+    deployment: 'testnet';
+    listAuthorizedAccounts: () => Promise<ListAgentAccountsResponseBody>;
+    calls: number;
+  } => {
+    let index = 0;
+    const client = {
+      agentWallet: AGENT,
+      deployment: 'testnet' as const,
+      calls: 0,
+      listAuthorizedAccounts: async (): Promise<ListAgentAccountsResponseBody> => {
+        client.calls += 1;
+        const next = responses[Math.min(index, responses.length - 1)];
+        index += 1;
+        return await Promise.resolve(next ?? listing());
+      },
+    };
+    return client;
+  };
+
+  it('hands back the link and the state in one call', async () => {
+    const handle = await startOnboarding(poller(listing()), { label: 'my-bot' });
+
+    expect(handle.url).toBe(
+      `https://testnet.waterx.app/agent/authorize?agent=${AGENT}&label=my-bot`,
+    );
+    expect(handle.state.status).toBe('NOT_ONBOARDED');
+    expect(handle.ready).toBe(false);
+  });
+
+  it('hands back a wait that resolves once the grants land', async () => {
+    const client = poller(listing(), listing(account()));
+
+    const handle = await startOnboarding(client);
+    const result = await handle.wait({ pollIntervalMs: 0 });
+
+    expect(result.status).toBe('READY');
+    expect(result.timedOut).toBe(false);
+  });
+
+  it('reports each state change once, so a terminal can show progress', async () => {
+    const client = poller(listing(), listing(), listing(account()));
+    const seen: string[] = [];
+
+    const handle = await startOnboarding(client);
+    await handle.wait({ pollIntervalMs: 0, onChange: (state) => seen.push(state.status) });
+
+    expect(seen).toEqual(['NOT_ONBOARDED', 'READY']);
+  });
+
+  it('says so immediately when the owner has already signed', async () => {
+    const handle = await startOnboarding(poller(listing(account())));
+
+    expect(handle.ready).toBe(true);
+    expect(handle.state.account?.accountId).toBe('0xacct');
+  });
+
+  it('carries an account narrowing into the link AND into the wait', async () => {
+    const client = poller(listing(account({ accountId: '0xother' })));
+
+    const handle = await startOnboarding(client, { accountId: '0xacct' });
+    const result = await handle.wait({ pollIntervalMs: 0, timeoutMs: 0 });
+
+    expect(handle.url).toContain('account=0xacct');
+    // The other account is ready, and it is NOT silently substituted.
+    expect(result.status).toBe('NOT_ONBOARDED');
+  });
+
+  it('refuses to guess a console for a deployment nobody paired one with', async () => {
+    // A link to the wrong console sends an owner somewhere else to sign.
+    await expect(
+      startOnboarding({ ...poller(listing()), deployment: undefined }),
+    ).rejects.toThrow(TypeError);
+  });
+
+  it('uses a console the caller named for a private deployment', async () => {
+    const handle = await startOnboarding(
+      { ...poller(listing()), deployment: undefined },
+      { consoleBaseUrl: 'https://console.internal/' },
+    );
+
+    expect(handle.url).toBe(`https://console.internal/agent/authorize?agent=${AGENT}`);
   });
 });

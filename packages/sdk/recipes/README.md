@@ -1,0 +1,74 @@
+# Recipes
+
+Runnable scripts for everything a caller holding only this library has to do.
+They ship inside the tarball, so they are on disk the moment the package
+installs:
+
+```
+node_modules/@waterx/predict-agent-sdk/recipes/
+```
+
+## Why they exist
+
+Because the alternative was measured. In the session these were written after,
+an agent holding only the library answered eight questions by writing eight
+throwaway scripts — 248 lines — and every one of them opened with the same four
+lines: read the key, build the keypair, construct the client, authenticate. None
+of those scripts was *about* that preamble, and the one that mattered, the
+order, also had to invent a durable idempotency store on the spot because the
+SDK documented that as the caller's job.
+
+A recipe is not a second trading surface. Every one of these calls the same
+public entry point you would; there is no route built here, no retry, no signing
+and no policy. `tests/workspace.test.ts` fails if that stops being true.
+
+## The scripts
+
+| | What it answers |
+| --- | --- |
+| `diagnose.mjs` | May this agent trade right now, and if not, who does what? Run it first, and run it again whenever something stops working. |
+| `onboard.mjs` | Prints the owner's authorization link **and waits for the signature**, instead of stopping and asking someone to come back and say they are done. |
+| `markets.mjs` | Free text — plus, when you have it, `--closes-at` — to one market, or to a shortlist with the prices already attached. |
+| `order.mjs` | One protected market order, with the spread and the size confidence stated *before* it goes, and the key kept on disk. |
+| `positions.mjs` | What is held, and what is left to spend. |
+| `reconcile.mjs` | What did this project start writing and never see land? Reads it back. Never resends. |
+
+## Running them
+
+```bash
+# Your key file. The agent's own wallet — never the account owner's.
+export WATERX_PREDICT_KEY_FILE=./agent.key
+export WATERX_PREDICT_ENVIRONMENT=testnet     # practice money
+
+node node_modules/@waterx/predict-agent-sdk/recipes/diagnose.mjs
+```
+
+Copy them into your project if you want to edit them. They are examples that
+run, not a framework:
+
+```bash
+cp -r node_modules/@waterx/predict-agent-sdk/recipes ./waterx-recipes
+```
+
+Every script takes `--json` and writes one JSON document to stdout with the
+human lines on stderr, so a caller parsing stdout never has to strip prose out
+of it.
+
+## The one dependency they add
+
+`@mysten/sui`, to load an Ed25519 key from a file — **yours, not this
+package's**. The SDK takes a signer structurally, so a caller holding their key
+in a KMS or an HSM implements `signTransaction`, `signPersonalMessage` and
+`toSuiAddress` and never installs it. `_client.mjs` is where that choice is
+made, and it is the only file to change.
+
+## Exit codes
+
+| | |
+| --- | --- |
+| `0` | Done. |
+| `2` | The arguments were wrong. Nothing was sent. |
+| `3` | Not ready to trade, or not resolved to one market. Nothing was sent. |
+| `4` | A wait expired. **Not a failure** — the order or the signature may still land. |
+| `5` | An unresolved write. The outcome is unknown; run `reconcile.mjs`. |
+| `6` | The server refused the order, and said why. |

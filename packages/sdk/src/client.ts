@@ -40,6 +40,22 @@ import {
   type SubmitExecutionResponseBody,
 } from './contract.ts';
 import { targetReached } from './decimal.ts';
+import {
+  type AgentDiagnosis,
+  diagnose,
+  type DiagnoseOptions,
+} from './diagnosis.ts';
+import type { IntentStore } from './intent-store.ts';
+import {
+  type MarketResolution,
+  resolveMarket,
+  type ResolveMarketQuery,
+} from './market-resolution.ts';
+import {
+  type OnboardingHandle,
+  startOnboarding,
+  type StartOnboardingOptions,
+} from './onboarding.ts';
 import { pageQuery } from './pagination.ts';
 import {
   isAmbiguousOutcome,
@@ -109,6 +125,26 @@ export type PredictAgentClientOptions = Omit<TransportOptions, 'baseUrl'> &
    * the first session is always explicit.
    */
   autoReauthenticate?: boolean;
+  /**
+   * Where idempotency keys are minted and remembered, so one logical intent
+   * keeps one key ACROSS PROCESS RESTARTS rather than only across the retries
+   * inside a single call.
+   *
+   * Without it the behaviour is what it always was: a key per call, covering
+   * in-process retries, and a caller who wants more passes `idempotencyKey`
+   * itself. With it, `executeMarketOrder` reserves the key from the store
+   * before the create and settles it on a terminal read — so a crash between
+   * those two leaves a PENDING record naming the execution to read back,
+   * instead of nothing at all.
+   *
+   * `createFileIntentStore('.waterx/intents.json')` is the durable one.
+   *
+   * ONE CONSEQUENCE WORTH KNOWING. Reservation is content-addressed: the same
+   * account, market, outcome, side, size and bound is the same intent and gets
+   * the same key, so a deliberate second identical order would be deduped by
+   * the server. Distinguish it with `clientOrderId`, which the digest counts.
+   */
+  intentStore?: IntentStore;
   /**
    * Override how prices are observed. Takes precedence over `quoteStream`;
    * omitted with no quote stream either, price waits poll `POST /quotes`.
@@ -216,6 +252,8 @@ export interface ExecuteMarketOrderOptions extends WaitForExecutionOptions {
    * and only a terminal read carries fill, fee and remaining-allowance facts.
    */
   waitFor?: 'SUBMITTED' | 'TERMINAL';
+  /** Overrides the client's store for this write. See `intentStore` there. */
+  intentStore?: IntentStore;
 }
 
 export interface ExecuteMarketOrderResult extends ExecutionOutcome {
@@ -223,6 +261,16 @@ export interface ExecuteMarketOrderResult extends ExecutionOutcome {
   enforcedWorstPrice: string;
   /** Echoed so a caller can persist it and resume the same intent later. */
   idempotencyKey: string;
+  /**
+   * True when an intent store handed back a key it had already minted.
+   *
+   * Which means this intent was attempted before. On a success that is simply a
+   * retry resolving to the original execution — the guarantee working. It is
+   * worth surfacing anyway: an agent that reports "order placed" after a replay
+   * should be reporting "the order that already existed", and only this field
+   * tells it which one happened.
+   */
+  idempotencyKeyReplayed: boolean;
 }
 
 /**
@@ -337,9 +385,12 @@ export class PredictAgentClient {
   /** Only set for `quoteStream: 'native'` — the socket this client must close. */
   private ownedQuoteStream: SocketQuoteStream | undefined;
   private readonly session: AuthSession;
+  /** Default store for every write from this client. See the option's docs. */
+  private readonly intentStore: IntentStore | undefined;
 
   constructor(options: PredictAgentClientOptions) {
     this.signer = options.signer;
+    this.intentStore = options.intentStore;
     this.baseUrl = resolveBaseUrl(options);
     this.deployment = options.deployment;
     // The session is constructed first because the transport asks it for a token
@@ -388,6 +439,17 @@ export class PredictAgentClient {
   }
 
   /**
+   * The address this client authenticates as.
+   *
+   * Public because it is not a secret and every onboarding step needs it: it is
+   * what the authorization link carries and what an owner grants a delegation
+   * to. The KEY behind it stays inside the signer and appears nowhere.
+   */
+  get agentWallet(): string {
+    return this.signer.toSuiAddress();
+  }
+
+  /**
    * Whether a session token is held — the boolean, never the token.
    *
    * For a long-lived embedder that must open a session before its first call and
@@ -402,6 +464,35 @@ export class PredictAgentClient {
    */
   isAuthenticated(): boolean {
     return this.session.peek() !== undefined;
+  }
+
+  /**
+   * "May this agent trade right now, and if not, who does what?" — in one call.
+   *
+   * The first question after an install, and until now it took two reports that
+   * each answered half of it, a merge the caller had to get right, and a third
+   * module to build the authorization link out of. It also takes the write gate
+   * off guesswork: what admits or refuses a write from THIS surface is the
+   * owner's on-chain delegation, read from the server, not the `waterx-predict`
+   * execution policy — which is enforced inside that CLI's own process and
+   * whose `POLICY_DENIED` is not an error code this API can even return.
+   *
+   * Opens a session if none is held, and says so in the report. See
+   * `diagnosis.ts` for why this one method is allowed to.
+   */
+  async diagnose(options: DiagnoseOptions = {}): Promise<AgentDiagnosis> {
+    return await diagnose(this, options);
+  }
+
+  /**
+   * The authorization link, the current state, and the poll that waits for it.
+   *
+   * `handle.wait()` is the half that turns a signature into a step rather than
+   * a conversation: without it an agent prints a link, stops, and the person has
+   * to come back and announce they are done.
+   */
+  async startOnboarding(options: StartOnboardingOptions = {}): Promise<OnboardingHandle> {
+    return await startOnboarding(this, options);
   }
 
   /**
@@ -514,8 +605,33 @@ export class PredictAgentClient {
     intent: ExecuteMarketOrderIntent,
     options: ExecuteMarketOrderOptions = {},
   ): Promise<ExecuteMarketOrderResult> {
-    const idempotencyKey = intent.idempotencyKey ?? randomUUID();
-    const { idempotencyKey: _ignored, referenceQuoteId, ...rest } = intent;
+    const store = options.intentStore ?? this.intentStore;
+    const { idempotencyKey: explicitKey, referenceQuoteId, ...rest } = intent;
+
+    // Three ways to get a key, in precedence order.
+    //
+    // An explicit one wins outright and is not recorded against a digest: a
+    // caller passing its own key has its own scheme for what "the same intent"
+    // means, and quietly filing it under this module's digest would make two
+    // schemes disagree about that on the same file.
+    //
+    // A store reserves one, content-addressed, so the same intent replays the
+    // same key after a restart. `rest` is already the intent minus the key and
+    // minus the reference quote — exactly what the digest must cover.
+    //
+    // Neither, and it is `randomUUID()` as it always was: in-process retries
+    // only, which is all a caller who configured nothing has ever been promised.
+    let idempotencyKey: string;
+    let idempotencyKeyReplayed = false;
+    if (explicitKey !== undefined) {
+      idempotencyKey = explicitKey;
+    } else if (store !== undefined) {
+      const reservation = await store.reserve(rest);
+      idempotencyKey = reservation.idempotencyKey;
+      idempotencyKeyReplayed = reservation.replayed;
+    } else {
+      idempotencyKey = randomUUID();
+    }
 
     // Minted HERE when the caller left it out, so the quote is as young as it can
     // be. Doing this per leg is the entire reason the field is optional; see it.
@@ -534,49 +650,77 @@ export class PredictAgentClient {
     // resolves to that execution instead of opening a second one.
     const mintedHere = referenceQuoteId === undefined;
     let created: CreateExecutionResponseBody | undefined;
-    for (let attempt = 1; created === undefined; attempt += 1) {
-      const quoteId =
-        referenceQuoteId ??
-        (
-          await this.getQuote(
+    try {
+      for (let attempt = 1; created === undefined; attempt += 1) {
+        const quoteId =
+          referenceQuoteId ??
+          (
+            await this.getQuote(
+              {
+                marketId: rest.marketId,
+                outcomeId: rest.outcomeId,
+                side: rest.side,
+                size: rest.size,
+              },
+              options.signal,
+            )
+          ).quoteId;
+        try {
+          created = await this.createExecution(
+            { ...rest, referenceQuoteId: quoteId },
             {
-              marketId: rest.marketId,
-              outcomeId: rest.outcomeId,
-              side: rest.side,
-              size: rest.size,
+              idempotencyKey,
+              ...(options.signal !== undefined ? { signal: options.signal } : {}),
             },
-            options.signal,
-          )
-        ).quoteId;
-      try {
-        created = await this.createExecution(
-          { ...rest, referenceQuoteId: quoteId },
-          {
-            idempotencyKey,
-            ...(options.signal !== undefined ? { signal: options.signal } : {}),
-          },
-        );
-      } catch (error: unknown) {
-        // An unknown outcome must not leave with the key still inside this frame.
-        // The caller may never have chosen one — the SDK generates it here — and
-        // without it there is no safe way to ask what happened, only a second
-        // order.
-        // Both shapes of ambiguity, not just the one the server answered. A
-        // reset socket says even less than RECONCILIATION_REQUIRED does — the
-        // request may or may not have arrived — and losing the key there is the
-        // same defect with a worse cause. `isAmbiguousOutcome` already counted
-        // transport errors; the `instanceof` beside it quietly took them back.
-        if (error instanceof PredictAgentApiError && isAmbiguousOutcome(error)) {
-          throw new PredictAgentUnresolvedWrite(error, idempotencyKey);
+          );
+        } catch (error: unknown) {
+          // An unknown outcome must not leave with the key still inside this frame.
+          // The caller may never have chosen one — the SDK generates it here — and
+          // without it there is no safe way to ask what happened, only a second
+          // order.
+          // Both shapes of ambiguity, not just the one the server answered. A
+          // reset socket says even less than RECONCILIATION_REQUIRED does — the
+          // request may or may not have arrived — and losing the key there is the
+          // same defect with a worse cause. `isAmbiguousOutcome` already counted
+          // transport errors; the `instanceof` beside it quietly took them back.
+          if (error instanceof PredictAgentApiError && isAmbiguousOutcome(error)) {
+            throw new PredictAgentUnresolvedWrite(error, idempotencyKey);
+          }
+          if (error instanceof PredictAgentTransportError) {
+            throw new PredictAgentUnresolvedTransport(error, idempotencyKey);
+          }
+          // Bounded: a market whose quotes expire faster than we can use them is a
+          // condition to report, not one to spin on.
+          if (!mintedHere || !isStaleQuote(error) || attempt >= QUOTE_REFRESH_ATTEMPTS) throw error;
         }
-        if (error instanceof PredictAgentTransportError) {
-          throw new PredictAgentUnresolvedTransport(error, idempotencyKey);
-        }
-        // Bounded: a market whose quotes expire faster than we can use them is a
-        // condition to report, not one to spin on.
-        if (!mintedHere || !isStaleQuote(error) || attempt >= QUOTE_REFRESH_ATTEMPTS) throw error;
       }
+    } catch (error: unknown) {
+      // An UNRESOLVED outcome stays PENDING, and this check is the load-bearing
+      // half of it. `PredictAgentUnresolvedWrite` extends `PredictAgentApiError`
+      // and is re-thrown from inside the loop, so it arrives here looking exactly
+      // like a refusal — and settling it would take an order that may be live off
+      // the only list anybody reconciles from. Both shapes, by identity.
+      //
+      // Everything else genuinely opened nothing: it is a refusal, or a wait that
+      // was abandoned before a create was ever answered. Those are SETTLED rather
+      // than forgotten, so the key stays on file and a caller retrying this exact
+      // intent replays it instead of minting a second one against a server that
+      // may yet have seen the first.
+      const unresolved =
+        error instanceof PredictAgentUnresolvedWrite ||
+        error instanceof PredictAgentUnresolvedTransport;
+      if (store !== undefined && !unresolved) {
+        await store.settle(
+          idempotencyKey,
+          error instanceof PredictAgentApiError ? `REFUSED_${error.code}` : 'NOT_SENT',
+        );
+      }
+      throw error;
     }
+    // The execution exists. Recording its id is what makes a crash from here on
+    // recoverable by READING rather than by guessing: a key alone says an order
+    // might exist, an id says what to read back.
+    await store?.attach(idempotencyKey, created.executionId);
 
     // Past this line the execution EXISTS. A caller's deadline expiring from here
     // on is not "nothing happened" — it is "this process stopped being able to
@@ -602,6 +746,12 @@ export class PredictAgentClient {
           ? await this.waitForExecution(created.executionId, options)
           : toExecutionOutcome(submitted, false);
 
+      // Settled only on a TERMINAL read. Returning at SUBMITTED means this
+      // caller stopped watching, not that the order finished — clearing the
+      // record there would drop it off the reconciliation list while it is
+      // still moving.
+      if (outcome.terminal) await store?.settle(idempotencyKey, outcome.status);
+
       return {
         ...outcome,
       // The submit's digest is kept as a fallback: a later read may not carry one
@@ -609,6 +759,7 @@ export class PredictAgentClient {
         transactionDigest: outcome.transactionDigest ?? submitted.transactionDigest,
         enforcedWorstPrice: created.enforcedWorstPrice,
         idempotencyKey,
+        idempotencyKeyReplayed,
       };
     } catch (error: unknown) {
       // Past this line the execution EXISTS, so an unknown outcome is the same
@@ -630,7 +781,10 @@ export class PredictAgentClient {
         remainingAllowance: undefined,
         enforcedWorstPrice: created.enforcedWorstPrice,
         idempotencyKey,
+        idempotencyKeyReplayed,
       };
+      // The store record stays PENDING on purpose. This is the one state a
+      // restart must act on, and it now carries the execution id to act with.
     }
   }
 
@@ -700,7 +854,16 @@ export class PredictAgentClient {
   ): Promise<ExecuteMarketOrderResult> {
     // Minted once, outside the loop. This is the whole "never submits twice after
     // reconnect or timeout ambiguity" guarantee — every attempt carries it.
-    const idempotencyKey = intent.idempotencyKey ?? randomUUID();
+    //
+    // Left UNDEFINED when an intent store is configured and the caller named no
+    // key, so `executeMarketOrder` reserves it from the store instead. That is
+    // strictly the stronger version of the same guarantee: a key minted here
+    // dies with the process, and a price wait — an hour by default — is the
+    // longest-lived thing in this client and therefore the likeliest to outlive
+    // one.
+    const store = options.intentStore ?? this.intentStore;
+    const idempotencyKey =
+      intent.idempotencyKey ?? (store === undefined ? randomUUID() : undefined);
     const interval = options.pollIntervalMs ?? DEFAULT_POLL_MS;
     const deadline = Date.now() + (options.waitTimeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS);
     const quoteRequest: CreateQuoteRequestBody = {
@@ -741,7 +904,7 @@ export class PredictAgentClient {
                 size: intent.size,
                 referenceQuoteId: quote.quoteId,
                 maxSlippageBps: intent.maxSlippageBps,
-                idempotencyKey,
+                ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
                 ...(intent.positionId !== undefined ? { positionId: intent.positionId } : {}),
                 ...(intent.worstAcceptablePrice !== undefined
                   ? { worstAcceptablePrice: intent.worstAcceptablePrice }
@@ -1014,6 +1177,28 @@ export class PredictAgentClient {
   }
 
   /** One market by its on-chain id. A closed market resolves; an unknown one 404s. */
+  /**
+   * Free text plus an optional round, to one market or to a PRICED shortlist.
+   *
+   * `searchMarkets` refuses to choose between markets, and it is right to. This
+   * adds the discriminator that refusal cannot be resolved without when the
+   * candidates are rounds of one recurring series: they share a title and an
+   * alias set and differ only by `closesAt`, so no better phrasing narrows them.
+   * Supplying the expiry is the caller naming the round, not this SDK guessing
+   * an identity — and given no expiry, an ambiguous answer passes through
+   * untouched.
+   *
+   * Candidates come back with their top of book already spread, so a choice a
+   * person does have to make can be put to them once, with prices, instead of
+   * twice.
+   */
+  async resolveMarket(
+    query: ResolveMarketQuery,
+    signal?: AbortSignal,
+  ): Promise<MarketResolution> {
+    return await resolveMarket(this, query, signal);
+  }
+
   async getMarket(marketId: string, signal?: AbortSignal): Promise<GetMarketResponseBody> {
     return await this.transport.request<GetMarketResponseBody>({
       method: 'GET',

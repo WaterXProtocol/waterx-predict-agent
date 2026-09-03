@@ -49,6 +49,45 @@ export {
   type PredictAgentClientOptions,
 } from './client.ts';
 export {
+  type AgentDiagnosis,
+  diagnose,
+  type DiagnosableClient,
+  type DiagnoseOptions,
+  type WriteGate,
+  type WriteGateStatus,
+} from './diagnosis.ts';
+export {
+  canonicalJson,
+  createFileIntentStore,
+  createMemoryIntentStore,
+  type FileIntentStoreOptions,
+  INTENT_DIGEST_EXCLUDED_FIELDS,
+  intentDigest,
+  type IntentRecord,
+  type IntentRecordStatus,
+  type IntentReservation,
+  type IntentStore,
+  normalizeIntent,
+} from './intent-store.ts';
+export {
+  type MarketCandidate,
+  type MarketNarrowing,
+  type MarketResolution,
+  type MarketSearcher,
+  resolveMarket,
+  type ResolveMarketQuery,
+} from './market-resolution.ts';
+export {
+  describeQuoteCost,
+  type DescribeQuoteCostOptions,
+  describeSpread,
+  type FeeBasis,
+  type PriceSpread,
+  type QuoteCost,
+  type QuoteFeeFacts,
+  type SizeConfidence,
+} from './quote-cost.ts';
+export {
   type ExecutionFeeFacts,
   type ExecutionOutcome,
   isTerminalExecutionStatus,
@@ -92,10 +131,14 @@ export {
   type DescribeOnboardingOptions,
   describeOnboarding,
   type OnboardingActor,
+  type OnboardingClient,
+  type OnboardingHandle,
   type OnboardingState,
   type OnboardingStatus,
   PREDICT_AGENT_AUTHORIZE_PATH,
   PREDICT_AGENT_CONSOLE_ENDPOINTS,
+  startOnboarding,
+  type StartOnboardingOptions,
   waitForAuthorization,
   type WaitForAuthorizationOptions,
 } from './onboarding.ts';

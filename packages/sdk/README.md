@@ -23,7 +23,7 @@ the moment it installs — no repository to find, no documentation site to fetch
 node_modules/@waterx/predict-agent-sdk/AGENT_INSTRUCTIONS.md
 ```
 
-Thirty rules with symbolic ids, and a command table whose `SDK` column
+Thirty-two rules with symbolic ids, and a command table whose `SDK` column
 names the method on this client for each one — or says which surface you would
 need instead, because several commands are composed by the `waterx-predict` CLI
 and the durable `strategy.*` family is driven by a local Runner process.
@@ -47,24 +47,52 @@ question matters:
 npx @waterx/predict-agent-sdk
 ```
 
-```ts
-import { describeInstallation } from '@waterx/predict-agent-sdk';
-
-// `supplied` for anything you pass to the constructor rather than the
-// environment — otherwise a correctly configured caller reads MISSING.
-const report = describeInstallation({ supplied: { deployment: true, signer: true } });
-report.missing;    // nothing supplies these, and nothing will until someone does
-report.unchecked;  // needs an authenticated read; NOT the same as missing
-report.nextStep;   // who acts next, and what they do
-```
-
 Six things stand between a fresh install and an order, and they come from two
 different people. Three are yours — which network, an agent wallet, and a signer
-for it. Neither a hostname nor an account id is among them, by design. The other three — an authorized account, an
-on-chain delegation and a risk profile — are the account owner's, they are
-granted in one signature at the console, and nothing in this package can
-provision them for you (ADR-0003). `waterx-predict onboard` prints the link that
-starts that, and polls until the grants land.
+for it. Neither a hostname nor an account id is among them, by design. The other
+three — an authorized account, an on-chain delegation and a risk profile — are
+the account owner's, they are granted in one signature at the console, and
+nothing in this package can provision them for you (ADR-0003).
+
+**Once you have a client, ask it instead.** The offline report cannot settle the
+owner's three, so it reports them `UNCHECKED`; `diagnose()` settles all six in
+one authenticated call, and answers the question the offline one cannot:
+
+```ts
+const report = await client.diagnose({ label: 'momentum-bot' });
+
+report.writes.permitted;   // true / false / undefined — undefined ONLY if the chain read failed
+report.writes.gatedBy;     // 'ON_CHAIN_DELEGATION'
+report.ready;              // may this agent place an order right now
+report.limits;             // the mandate it would run under
+report.authorizationUrl;   // present whenever the owner still has to act
+report.nextStep;           // who acts next, and what they do
+```
+
+**What gates a write, since this is the thing most easily got wrong.** A write
+made through this library reaches the API directly, and the API admits or
+refuses it on the account owner's **on-chain delegation** and their risk profile
+— `DELEGATION_REVOKED`, `DELEGATION_PERMISSION_DENIED`, `RISK_LIMIT_EXCEEDED`.
+
+The `waterx-predict` CLI's execution policy is a different gate: `interactive`,
+its per-intent approval token and its `POLICY_DENIED` refusal are enforced
+inside that CLI's own process, over that process's own signer. `POLICY_DENIED`
+is not in `PredictAgentErrorCode` and never reaches this wire. **So a
+`waterx-predict` binary that is absent from PATH says nothing about whether this
+agent may trade** — it says the composed commands are out of reach. Read
+`writes.permitted` rather than inferring an answer from what is installed.
+
+### Recipes: the scripts, already written
+
+```
+node_modules/@waterx/predict-agent-sdk/recipes/
+```
+
+`diagnose` · `onboard` · `markets` · `order` · `positions` · `reconcile`.
+Runnable, `--json` on every one, and each is the whole of one job — including
+the durable idempotency store, so nothing about a write has to be composed at
+the terminal. Copy them into your project to edit them; see
+[`recipes/README.md`](recipes/README.md).
 
 ### Loading this as a skill
 
@@ -81,11 +109,13 @@ For a host that reads a single project file, append it to `AGENTS.md`. For an
 MCP client, none of this is needed — the adapter returns the full instructions
 at `initialize`.
 
-What the skill will **not** do is finish a bet by itself, and it says so. Under
-the default `interactive` policy the approval for a write is issued at the
-command core by an operator, per order; a tool call cannot supply one and is
-refused `POLICY_DENIED`. The completed task is a previewed order and the exact
-line a person runs to approve it.
+How far the skill takes it depends on the surface, and it says which. Through
+the CLI or a tool adapter, the default `interactive` policy issues the approval
+at the command core per order, a tool call cannot supply one, and the write is
+refused `POLICY_DENIED` — there, the completed task is a previewed order and the
+exact line a person runs to approve it. Holding only this library, that policy is
+not running: the gate is the owner's on-chain delegation, `client.diagnose()`
+reads whether it permits an order, and a permitted one is yours to place.
 
 ## Install
 
@@ -97,7 +127,7 @@ pnpm add @waterx/predict-agent-sdk
 
 ```ts
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
-import { PredictAgentClient, PREDICT_AGENT_ENDPOINTS } from '@waterx/predict-agent-sdk';
+import { PredictAgentClient, createFileIntentStore } from '@waterx/predict-agent-sdk';
 
 // A Sui Keypair satisfies AgentSigner structurally — no adapter needed.
 // Where the key comes from is YOUR decision, and it is the load-bearing one on
@@ -105,7 +135,13 @@ import { PredictAgentClient, PREDICT_AGENT_ENDPOINTS } from '@waterx/predict-age
 const signer = Ed25519Keypair.fromSecretKey(await loadAgentSecretKey());
 
 // Name the network. The host comes from the SDK — never type one.
-const client = new PredictAgentClient({ deployment: 'testnet', signer });
+// The intent store is what makes an idempotency key survive a restart; see
+// "One intent, one key, across restarts" below for why you want one.
+const client = new PredictAgentClient({
+  deployment: 'testnet',
+  signer,
+  intentStore: createFileIntentStore('.waterx/intents.json'),
+});
 await client.authenticate();
 
 // Quotes live ~3 seconds and are never extended — fetch immediately before ordering.
@@ -152,30 +188,30 @@ irreducibly human:
 | Risk profile (the mandate) | the owner | Yes, in the same signing session |
 
 So the flow is: build a link that names this agent, hand it to the owner, poll
-until the grants land.
+until the grants land. All three in one call:
 
 ```ts
-import {
-  PREDICT_AGENT_CONSOLE_ENDPOINTS,
-  buildAuthorizationUrl,
-  waitForAuthorization,
-} from '@waterx/predict-agent-sdk';
-
 await client.authenticate();
 
-console.log(buildAuthorizationUrl({
-  consoleBaseUrl: PREDICT_AGENT_CONSOLE_ENDPOINTS.testnet,
-  agentWallet: signer.toSuiAddress(),
-  label: 'momentum-bot',
-}));
+const onboarding = await client.startOnboarding({ label: 'momentum-bot' });
+console.log(onboarding.url);          // hand this to the owner
 
-const ready = await waitForAuthorization(client, {
+const ready = await onboarding.wait({
   onChange: (state) => console.log(state.status, state.nextStep.action),
 });
 if (ready.status === 'READY') {
   // ready.account.accountId — nobody copied it out of a browser.
 }
 ```
+
+**Do the waiting.** Printing the link and stopping there turns one signature
+into a conversation: the owner signs in another window, comes back to a dead
+terminal, and has to tell the agent they are done before anything moves. The
+poll costs a line and removes that entirely.
+
+`buildAuthorizationUrl` and `waitForAuthorization` remain exported for a caller
+assembling the flow differently — `startOnboarding` is the two of them plus the
+console lookup, which is the combination almost everybody wants.
 
 The link carries the agent's address and nothing else: no token, no secret, no
 pre-authorization. Everything it can do, the owner does with their own wallet in
@@ -193,6 +229,117 @@ are chosen so nobody is sent to do the wrong thing:
 
 A timeout is not a failure here either: the owner may sign a minute later, so the
 result carries `timedOut` and the last state, and you resume by calling again.
+
+## Naming a recurring market
+
+`searchMarkets` resolves free text server-side and refuses to pick when more
+than one market matches. For most markets that refusal is answerable by asking a
+better question. For a recurring series it is not: twelve rounds of "BTC 5m Up
+or Down" share a title and an alias set and differ **only** by when they close,
+so every search answers `AMBIGUOUS` with twelve candidates and no phrasing
+narrows them.
+
+The expiry is the discriminator, and `resolveMarket` takes it:
+
+```ts
+const resolved = await client.resolveMarket({
+  search: 'BTC 5m Up or Down',
+  closesAt: '2026-09-02T08:15:00Z',   // the round you mean
+  tradeable: true,
+});
+
+resolved.status;      // 'RESOLVED' — resolved.market.marketId is the id
+resolved.narrowedBy;  // 'SERVER' if the catalog narrowed it, 'CLIENT' if this did
+```
+
+Supplying an expiry is you naming the round, not this SDK guessing an identity —
+**given no expiry, an ambiguous answer passes straight through and nothing is
+picked.** What comes back then is the candidates with their top of book already
+spread, so a choice a person does have to make is one question with the prices
+in it rather than an id list followed by a second question about what any of them
+cost.
+
+One limitation is reported rather than hidden. `matchCount` counts the whole
+catalog and `markets` is one page of it, so when the page could not hold every
+match a local narrowing cannot prove uniqueness: the result stays `AMBIGUOUS`
+with `pageTruncated: true`, and the fix is a larger `limit`.
+
+## What an order actually costs
+
+`maxSlippageBps` bounds movement away from the quote. It does **not** protect
+against the spread you cross to reach it, and on short-dated rounds the spread
+is the dominant cost — a book at `0.4825 / 0.5275` is about 890 bps wide, so a
+buy inside a 100 bps slippage bound still marks roughly nine percent underwater
+the instant it fills. Entry takes the ask; the mark takes the bid.
+
+```ts
+const quote = await client.getQuote({ marketId, outcomeId: 'YES', side: 'BUY', size });
+const { market } = await client.getMarket(marketId);
+
+const cost = describeQuoteCost(quote, {
+  outcome: market.outcomes.find((o) => o.outcomeId === 'YES'),
+});
+
+cost.spread?.spreadBps;             // 892
+cost.immediateMarkToMarketBps;      // 853 — what this buy is down on arrival
+cost.sizeConfidence;                // 'TOP_OF_BOOK_ONLY' — price protected, QUANTITY not
+cost.fee;                           // { available: false, basis: 'EMBEDDED_IN_PRICE' }
+cost.concerns;                      // the same facts as sentences, worst first
+```
+
+`sizeConfidence` is the second half. A `TOP_OF_BOOK_ONLY` quote at
+`liquidityTier: 'C'` has null `expectedFillSize` and `availableSize` — the price
+is protected and the fill quantity is not vouched for at all, so a large order
+may not fill at any price. At five units that does not matter; at the per-order
+ceiling an owner signed, it does. Pass `requestedSize` and a priced depth that
+does not cover it reports `PARTIAL` rather than looking like success.
+
+Every basis-point figure rounds **up**: these are costs, and a cost that rounds
+down is a cost a threshold lets through.
+
+## One intent, one key, across restarts
+
+`executeMarketOrder` has always minted an idempotency key and reused it for
+every retry of the create. That key lives in a local variable, so it covers
+retries and not restarts — and a caller who crashed between the create and the
+terminal read was left with no way to ask what happened, only a way to send a
+second order under a fresh key.
+
+Give the client a store and the key is reserved against the intent's own digest:
+
+```ts
+import { createFileIntentStore } from '@waterx/predict-agent-sdk';
+
+const client = new PredictAgentClient({
+  deployment: 'testnet',
+  signer,
+  intentStore: createFileIntentStore('.waterx/intents.json'),
+});
+
+// After a restart: what did this project start and never see land?
+const store = createFileIntentStore('.waterx/intents.json');
+for (const record of await store.pending()) {
+  if (record.executionId === undefined) continue;   // retry the SAME intent; the key replays
+  const execution = await client.getExecution(record.executionId);
+  // Reconcile by READING. Never resend under a fresh key.
+}
+```
+
+The digest covers the whole intent **minus** `idempotencyKey` and
+`referenceQuoteId` — a quote lives three seconds, so including it would mint a
+new key on every retry. Everything else discriminates, including fields this
+contract has not grown yet: an allowlist would silently drop a new field and let
+two different orders collide on one key, which is the failure you cannot see.
+
+**The one consequence worth knowing.** Reservation is content-addressed, so a
+deliberate second identical order — same account, market, outcome, side, size
+and bound — replays the first key and is deduped by the server. Distinguish it
+with `clientOrderId`, which the digest counts.
+
+The store is not a lock. It serializes its own reads and writes and rewrites the
+file atomically, so one process cannot lose its own record; two processes
+sharing one file can still interleave a read-modify-write. One store per
+process, one file per project.
 
 ## The things that will bite you
 
@@ -350,6 +497,8 @@ for (const entry of results) {
 | Method | Notes |
 | --- | --- |
 | `authenticate()` | Signs the server's challenge, opens the session |
+| `diagnose(options?)` | All six requirements, whether a write is permitted, the mandate, and the authorization link. Opens a session if none is held |
+| `startOnboarding(options?)` | The owner's link, the current state, and the `wait()` that polls for the signature |
 | `getQuote(request)` | ~3 s lifetime, never extended |
 | `executeMarketOrder(intent, options?)` | create → sign → submit; optional terminal wait |
 | `executeMany(intents, options?)` | Independent legs, bounded concurrency |
@@ -362,6 +511,8 @@ for (const entry of results) {
 | `getAllowance(accountId)` | API allowance, real balance, and the binding minimum |
 | `getEffectiveLimits(accountId)` | The mandate: limits, window usage, delegation, blockers |
 | `searchMarkets(query)` | Free text → one market id, **resolved server-side** |
+| `resolveMarket(query)` | `searchMarkets` plus the expiry discriminator, and candidates priced |
+| `agentWallet` | The address this client authenticates as. Not the key |
 
 `getAllowance` reports `apiAllowance` and `accountSpendableBalance` separately
 because a direct-chain spend moves one without the other. Size against
@@ -383,6 +534,23 @@ the one that biases `winRate` downward and by the most, because a resolved marke
 is claimed from the FE and its payout never passes through this API. There is no
 time window; every figure is lifetime-to-date, because the exclusions have no
 recorded instant to window on.
+
+`diagnose()` is the one call to make first, and the one to make again whenever
+something stops working. It merges the offline `describeInstallation()` with an
+authenticated `listAuthorizedAccounts()`, so the three requirements the offline
+report can only report `UNCHECKED` come back settled, and `writes.permitted`
+answers "may this agent trade" as a read fact rather than an inference from what
+is on PATH. It reads the mandate in the same call, because that is the next
+question every caller asks. It is also the one method here that opens a session
+on its own when none is held — a diagnosis that refused to authenticate would
+answer the question with an error about not having authenticated — and
+`authenticatedHere` says whether it did.
+
+Free functions for a caller that has not built a client, or has built a
+different one: `diagnose(client, options)`, `startOnboarding(client, options)`,
+`resolveMarket(client, query)`, `describeQuoteCost(quote, options)`,
+`describeSpread(outcome)`, `createFileIntentStore(path)`,
+`createMemoryIntentStore()`, `intentDigest(intent)`.
 
 `searchMarkets` sends the text and returns the server's `resolution` unchanged.
 `marketId` is non-null only when exactly one market matched, and `matchCount` is

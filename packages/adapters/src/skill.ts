@@ -57,7 +57,7 @@ const DESCRIPTION =
 
 const INTRO: readonly string[] = [
   'This runtime trades a real prediction-market account. Orders are market orders and nothing recalls one, so the sequence below is not a suggested order of work — each step exists because the step after it is unsafe without it.',
-  'You are not expected to finish alone. Under the default `interactive` policy the approval for a write is issued at the command core by an operator, and no tool call can supply one. Getting a user to a previewed order they can approve IS the completed task.',
+  'How far you can take it depends on the surface you hold, so establish that first. Through the CLI or a tool adapter the default `interactive` policy issues the approval at the command core and no tool call can supply one — there, a previewed order the user can approve IS the completed task. Holding only the library, that policy is not running: a write is gated by the account owner\'s on-chain delegation, `await client.diagnose()` reads whether it permits one, and a permitted order is yours to place.',
 ];
 
 const STEPS: readonly AgentSkillStep[] = [
@@ -76,14 +76,16 @@ const STEPS: readonly AgentSkillStep[] = [
     body: [
       'Run `npx @waterx/predict-agent-sdk` (or call `describeInstallation()`). It needs no configuration, no network and no signer, and it reports which surfaces this machine has and which requirements are still outstanding.',
       'Report `missing` and `unchecked` as the different things they are. `missing` is a fact. `unchecked` means nothing looked — telling a user their delegation is absent on that basis sends an account owner to re-sign a grant they may already have made.',
+      'Then settle the three it could not: `await client.diagnose()` returns all six, whether a write would be admitted (`writes.permitted`), the mandate it would run under, and the authorization link already built if an owner still has to act.',
     ],
   },
   {
     id: 'GET_AUTHORIZED',
     title: 'Hand the owner one link, and wait',
     body: [
-      'An agent may only trade on an account an owner has granted it, and the grant is one signature in the owner\'s own wallet. Run `waterx-predict onboard --label <name>`, or build the link with `buildAuthorizationUrl()` and poll `waitForAuthorization()`.',
-      'The link carries the agent address and nothing else, so it is safe to paste into a chat. Do not offer to do this step for the owner, do not ask for their key, and do not proceed on the assumption that they will.',
+      'An agent may only trade on an account an owner has granted it, and the grant is one signature in the owner\'s own wallet. Run `waterx-predict onboard --label <name>`, or `await client.startOnboarding({ label })` — which hands back the link AND the `wait()` that polls for the signature.',
+      'Wait for it. Printing the link and stopping makes the person come back to a dead terminal and announce they are done; `handle.wait({ onChange })` shows progress instead, and a wait that runs out cancels nothing — call it again.',
+      'The link carries the agent address and nothing else, so it is safe to paste into a chat. Say so when you hand it over. Do not offer to do this step for the owner, do not ask for their key, and do not proceed on the assumption that they will.',
     ],
   },
   {
@@ -91,6 +93,7 @@ const STEPS: readonly AgentSkillStep[] = [
     title: 'Let the server name the market',
     body: [
       'Turn the user\'s words into an id with `market.search` / `searchMarkets()`. When it does not resolve to exactly one market, that is an answer: show the candidates and ask. Never assemble, complete or remember an id.',
+      'The rounds of a recurring series ("BTC 5m Up or Down", twelve times) differ only by when they close, so no phrasing resolves them. `resolveMarket({ search, closesAt })` takes the expiry as the discriminator; without one it returns the candidates WITH prices, so the choice is one question rather than two.',
       'Prices on the catalog are indicative. A tradeable price comes from `market.quote`, it lives seconds, and the order fetches its own.',
     ],
   },
@@ -107,7 +110,7 @@ const STEPS: readonly AgentSkillStep[] = [
     title: 'Preview the order, then hand the approval to a person',
     body: [
       '`order preview` resolves, prices and policy-checks the order without placing it, and publishes the approval token for that exact intent. Show the user what it would do — market, side, size, worst price, the bound — and give them the `waterx-predict order execute --approve <token> --input …` line to run.',
-      'Through a tool adapter the write itself will be refused with `POLICY_DENIED`. That is the design, not a fault to route around; relay the refusal and the approval it expected.',
+      'Through a tool adapter the write itself will be refused with `POLICY_DENIED`. That is the design, not a fault to route around; relay the refusal and the approval it expected. It is also specific to that surface — `POLICY_DENIED` is not an API error code, and a library caller whose delegation permits the order is not refused by it.',
     ],
   },
   {
@@ -116,6 +119,7 @@ const STEPS: readonly AgentSkillStep[] = [
     body: [
       'A timeout is neither success nor failure. Recover by reading — `order reconcile`, `order get`, or `strategy list` after a create — never by resubmitting under a fresh key.',
       'Quote the authoritative fill and the remaining allowance from a terminal result. Where a value is absent, say it is absent.',
+      'Give the client an intent store (`createFileIntentStore`) and this is answerable after a crash rather than only within one process: the key is on disk against the intent, the execution id beside it, and the pending list is exactly what still needs reading back.',
     ],
   },
 ];
@@ -132,6 +136,10 @@ const STOPS: readonly AgentSkillStop[] = [
   {
     rule: 'APPROVAL_IS_PER_INTENT_AND_OPERATOR_HELD',
     text: 'You cannot approve your own order, and the token authorises one intent rather than a session.',
+  },
+  {
+    rule: 'WHAT_GATES_A_WRITE_IS_THE_SURFACE_YOU_HOLD',
+    text: 'The CLI\'s execution policy is not the API\'s delegation. A missing `waterx-predict` binary is not evidence that this agent may not trade.',
   },
   {
     rule: 'AMBIGUOUS_IS_NOT_FAILED',

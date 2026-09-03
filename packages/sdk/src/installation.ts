@@ -62,12 +62,53 @@ export interface SurfaceAvailability {
   readonly detail: string;
 }
 
+/**
+ * What decides whether a write from THIS surface is admitted.
+ *
+ * It exists because the absence of the CLI was being read as evidence about
+ * trading, and it is not. A caller holding only the library writes through
+ * `executeMarketOrder`, straight to the API, and the API admits or refuses that
+ * on the account owner's ON-CHAIN DELEGATION and their risk profile —
+ * `DELEGATION_REVOKED`, `DELEGATION_PERMISSION_DENIED`, `RISK_LIMIT_EXCEEDED`.
+ *
+ * The `interactive` execution policy, its per-intent approval token and its
+ * `POLICY_DENIED` refusal belong to the `waterx-predict` command core. They are
+ * enforced in that process, over its own signer, and `POLICY_DENIED` is not a
+ * code this API returns. Reporting them as a barrier a library caller faces
+ * produced the failure this field was added after: an agent warning its user
+ * that an order would probably be refused, placing it successfully, and then
+ * having to take the warning back.
+ *
+ * `checkedHere` is always false. This report issues no request, so it can state
+ * the RULE and not the answer; `diagnose()` settles it in one authenticated
+ * call.
+ */
+export interface WriteGateStatement {
+  readonly gatedBy: 'ON_CHAIN_DELEGATION';
+  readonly checkedHere: false;
+  readonly settleWith: string;
+  readonly detail: string;
+}
+
 export interface InstallationReport {
   /** Undefined when this module was bundled and no manifest sits above it. */
   readonly package: InstallationPackage | undefined;
   /** The shipped rules, if they are on disk. Read them before the first order. */
   readonly instructionsPath: string | undefined;
+  /**
+   * The shipped runnable recipes, if they are on disk.
+   *
+   * They exist because the alternative was observed: a caller holding only the
+   * library writes a throwaway script for every read — load the key, build the
+   * client, authenticate, then the one line that was the actual question — and
+   * writes the same four-line preamble into each of them. Shipping the scripts
+   * means a caller copies a known-correct one instead of composing a new one at
+   * the moment it matters least to be inventing anything.
+   */
+  readonly recipesPath: string | undefined;
   readonly surfaces: readonly SurfaceAvailability[];
+  /** What gates a write from the library, stated rather than inferred. */
+  readonly writes: WriteGateStatement;
   readonly requirements: readonly ResolvedRequirement[];
   /** Nothing supplies these, and nothing will until someone does. */
   readonly missing: readonly ResolvedRequirement[];
@@ -187,6 +228,8 @@ export function describeInstallation(
     located === undefined ? undefined : join(located.root, 'AGENT_INSTRUCTIONS.md');
   const instructionsPath =
     instructions !== undefined && existsSync(instructions) ? instructions : undefined;
+  const recipes = located === undefined ? undefined : join(located.root, 'recipes');
+  const recipesPath = recipes !== undefined && existsSync(recipes) ? recipes : undefined;
 
   const requirements: ResolvedRequirement[] = AGENT_REQUIREMENTS.map((requirement) => {
     if (requirement.ownerAuthenticated) {
@@ -231,7 +274,8 @@ export function describeInstallation(
     {
       id: 'sdk',
       package: '@waterx/predict-agent-sdk',
-      provides: 'Reads, quotes, protected market orders and the onboarding poll, as method calls.',
+      provides:
+        'Reads, quotes, protected market orders, the onboarding link and its poll, and `diagnose()` — as method calls. A write from here reaches the API directly and is admitted on the owner\'s on-chain delegation.',
       present: true,
       detail: 'You are running it.',
     },
@@ -239,12 +283,12 @@ export function describeInstallation(
       id: 'cli',
       package: '@waterx/predict-agent-cli',
       provides:
-        'The command surface: discovery, `doctor`, `onboard`, `order preview`, and the approval a write needs under the default policy.',
+        'The command surface: discovery, `doctor`, `onboard`, `order preview`, and the composed commands the library has no single call for. It also enforces its OWN execution policy over its OWN signer — a guardrail on that process, not a condition the API imposes on anyone else.',
       present: cli,
       detail: surfaceDetail(
         cli,
-        '`waterx-predict` is not on PATH. Composed commands and the approval flow are out of reach from here; report that rather than assembling an order yourself.',
-        '`waterx-predict` is on PATH.',
+        '`waterx-predict` is not on PATH, so the composed commands are out of reach — report which package supplies one you need rather than assembling it yourself. This says NOTHING about whether this agent may trade: a library write is gated by the owner\'s on-chain delegation, and `diagnose()` reads it.',
+        '`waterx-predict` is on PATH, so its execution policy applies to what IT signs. A write made through the library does not pass through it.',
       ),
     },
     {
@@ -262,13 +306,23 @@ export function describeInstallation(
     },
   ];
 
+  const writes: WriteGateStatement = {
+    gatedBy: 'ON_CHAIN_DELEGATION',
+    checkedHere: false,
+    settleWith: 'await client.diagnose()',
+    detail:
+      "A write from this library is admitted or refused by the account owner's on-chain delegation and their risk profile — DELEGATION_REVOKED, DELEGATION_PERMISSION_DENIED, RISK_LIMIT_EXCEEDED. The `waterx-predict` execution policy and its POLICY_DENIED refusal are enforced inside that CLI's own process and do not apply here; POLICY_DENIED is not a code this API returns. Whether the CLI is on PATH is therefore not evidence either way.",
+  };
+
   const missing = requirements.filter((requirement) => requirement.state === 'MISSING');
   const unchecked = requirements.filter((requirement) => requirement.state === 'UNCHECKED');
 
   return {
     package: located,
     instructionsPath,
+    recipesPath,
     surfaces,
+    writes,
     requirements,
     missing,
     unchecked,

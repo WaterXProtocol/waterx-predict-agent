@@ -14,6 +14,7 @@ import {
   PredictAgentUnresolvedTransport,
   PredictAgentUnresolvedWrite,
 } from '../src/errors.ts';
+import { createMemoryIntentStore } from '../src/intent-store.ts';
 import type { AgentSigner } from '../src/signer.ts';
 
 const AGENT = '0xagent';
@@ -818,5 +819,188 @@ describe('what a long-lived embedder can reach', () => {
     // No socket was ever connected here — nothing subscribed — so there is
     // nothing to disconnect, and closing must still not throw.
     expect(disconnects).toBe(0);
+  });
+});
+
+/**
+ * The intent store, wired.
+ *
+ * The store itself is tested next door; what matters here is the wiring, and the
+ * wiring is where the money is. A key reserved but never attached to an
+ * execution leaves a restart with nothing to read back, and a key settled on a
+ * SUBMITTED return drops a live order off the reconciliation list.
+ */
+describe('executeMarketOrder with an intent store', () => {
+  const unpriced = {
+    accountId: '0xacct',
+    marketId: '0xmarket',
+    outcomeId: 'YES' as const,
+    side: 'BUY' as const,
+    size: { buyAmount: '5' },
+    maxSlippageBps: 100,
+    referenceQuoteId: 'q-ref',
+  };
+
+  const withStore = (
+    responses: (() => Response)[],
+    store: import('../src/intent-store.ts').IntentStore,
+  ): { client: PredictAgentClient; calls: Call[] } => {
+    const { fetch, calls } = stubFetch(responses);
+    const client = new PredictAgentClient({
+      baseUrl: 'https://api.test/',
+      fetch,
+      signer,
+      token: 'tok',
+      intentStore: store,
+      retry: { maxAttempts: 3, baseDelayMs: 0 },
+    });
+    return { client, calls };
+  };
+
+  it('reserves the key from the store and sends it as the header', async () => {
+    const store = createMemoryIntentStore();
+    const { client, calls } = withStore([json(201, CREATED), json(202, SUBMITTED)], store);
+
+    const result = await client.executeMarketOrder(unpriced);
+
+    expect(calls[0]?.headers['Idempotency-Key']).toBe(result.idempotencyKey);
+    expect((await store.find(unpriced))?.idempotencyKey).toBe(result.idempotencyKey);
+    expect(result.idempotencyKeyReplayed).toBe(false);
+  });
+
+  it('replays the key across a NEW client over the same store', async () => {
+    // Which is what a restart looks like from the store's side. Without this the
+    // second attempt is a second order.
+    const store = createMemoryIntentStore();
+    const first = withStore([json(201, CREATED), json(202, SUBMITTED)], store);
+    const before = await first.client.executeMarketOrder(unpriced);
+
+    const second = withStore([json(201, CREATED), json(202, SUBMITTED)], store);
+    const after = await second.client.executeMarketOrder(unpriced);
+
+    expect(after.idempotencyKey).toBe(before.idempotencyKey);
+    expect(after.idempotencyKeyReplayed).toBe(true);
+  });
+
+  it('records the execution id as soon as the create returns it', async () => {
+    // A key says an order might exist. An id says what to read back.
+    const store = createMemoryIntentStore();
+    const { client } = withStore([json(201, CREATED), json(202, SUBMITTED)], store);
+
+    await client.executeMarketOrder(unpriced);
+
+    const [record] = await store.pending();
+    expect(record?.executionId).toBe('exec-1');
+  });
+
+  it('leaves the record PENDING when it returns at SUBMITTED', async () => {
+    // Returning at SUBMITTED means this caller stopped watching, not that the
+    // order finished. Clearing it here drops a live order off the list.
+    const store = createMemoryIntentStore();
+    const { client } = withStore([json(201, CREATED), json(202, SUBMITTED)], store);
+
+    await client.executeMarketOrder(unpriced);
+
+    expect(await store.pending()).toHaveLength(1);
+  });
+
+  it('settles the record on a terminal read', async () => {
+    const store = createMemoryIntentStore();
+    const { client } = withStore(
+      [
+        json(201, CREATED),
+        json(202, SUBMITTED),
+        json(200, { executionId: 'exec-1', status: 'FILLED', transactionDigest: 'd' }),
+      ],
+      store,
+    );
+
+    await client.executeMarketOrder(unpriced, { waitFor: 'TERMINAL', pollIntervalMs: 0 });
+
+    expect(await store.pending()).toEqual([]);
+    expect((await store.find(unpriced))?.outcome).toBe('FILLED');
+  });
+
+  it('keeps the record PENDING when the outcome is unresolved', async () => {
+    // The one state a restart must act on. Settling it here is how an order that
+    // may exist becomes an order nobody goes looking for.
+    const store = createMemoryIntentStore();
+    const { client } = withStore(
+      [json(201, CREATED), json(202, SUBMITTED), apiError(504, 'EXECUTION_TIMEOUT', false)],
+      store,
+    );
+
+    const result = await client.executeMarketOrder(unpriced, {
+      waitFor: 'TERMINAL',
+      pollIntervalMs: 0,
+      timeoutMs: 0,
+    });
+
+    expect(result.timedOut).toBe(true);
+    const [record] = await store.pending();
+    expect(record?.executionId).toBe('exec-1');
+  });
+
+  it('takes a definite refusal off the pending list, but keeps the key', async () => {
+    // Nothing exists under it, so it is not something to reconcile. The key stays
+    // on file so a retry of this exact intent replays it rather than minting a
+    // second one against a server that may yet have seen the first.
+    const store = createMemoryIntentStore();
+    const { client } = withStore([apiError(409, 'INSUFFICIENT_ALLOWANCE', false)], store);
+
+    await expect(client.executeMarketOrder(unpriced)).rejects.toThrow(PredictAgentApiError);
+
+    expect(await store.pending()).toEqual([]);
+    const record = await store.find(unpriced);
+    expect(record?.status).toBe('SETTLED');
+    expect(record?.outcome).toBe('REFUSED_INSUFFICIENT_ALLOWANCE');
+  });
+
+  it('leaves an unresolved CREATE pending, with the key it threw', async () => {
+    const store = createMemoryIntentStore();
+    const { client } = withStore([apiError(409, 'RECONCILIATION_REQUIRED', false)], store);
+
+    const error = await client.executeMarketOrder(unpriced).catch((thrown: unknown) => thrown);
+
+    expect(isUnresolvedWrite(error)).toBe(true);
+    const [record] = await store.pending();
+    expect(record?.idempotencyKey).toBe((error as PredictAgentUnresolvedWrite).idempotencyKey);
+    // Never attached, because the create never came back with one. That is the
+    // case `reconcile` reports as unresolvable-from-here.
+    expect(record?.executionId).toBeUndefined();
+  });
+
+  it('honours a key the caller supplied and files nothing under a digest', async () => {
+    // A caller passing its own key has its own scheme for what "the same intent"
+    // means. Filing it here would make two schemes disagree on one file.
+    const store = createMemoryIntentStore();
+    const { client, calls } = withStore([json(201, CREATED), json(202, SUBMITTED)], store);
+
+    const result = await client.executeMarketOrder({ ...unpriced, idempotencyKey: 'mine-1' });
+
+    expect(result.idempotencyKey).toBe('mine-1');
+    expect(calls[0]?.headers['Idempotency-Key']).toBe('mine-1');
+    expect(await store.find(unpriced)).toBeUndefined();
+  });
+
+  it('gives a per-call store precedence over the client\'s', async () => {
+    const clientStore = createMemoryIntentStore();
+    const callStore = createMemoryIntentStore();
+    const { client } = withStore([json(201, CREATED), json(202, SUBMITTED)], clientStore);
+
+    await client.executeMarketOrder(unpriced, { intentStore: callStore });
+
+    expect(await callStore.pending()).toHaveLength(1);
+    expect(await clientStore.pending()).toHaveLength(0);
+  });
+
+  it('mints a per-call key when no store is configured, exactly as before', async () => {
+    const { client } = makeClient([json(201, CREATED), json(202, SUBMITTED)]);
+
+    const first = await client.executeMarketOrder(unpriced);
+    const second = await client.executeMarketOrder(unpriced);
+
+    expect(second.idempotencyKey).not.toBe(first.idempotencyKey);
+    expect(first.idempotencyKeyReplayed).toBe(false);
   });
 });

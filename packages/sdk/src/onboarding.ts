@@ -17,7 +17,11 @@
  * to the owner, and poll until the grants show up. The agent never signs anything
  * on the owner's behalf and never learns an id it was not granted.
  */
-import type { ListAgentAccountsResponseBody, PredictAgentAccountSummary } from './contract.ts';
+import type {
+  ListAgentAccountsResponseBody,
+  PredictAgentAccountSummary,
+  PredictAgentDeployment,
+} from './contract.ts';
 import { sleep } from './sleep.ts';
 
 /**
@@ -255,4 +259,101 @@ export async function waitForAuthorization(
     if (Date.now() >= deadline) return { ...state, timedOut: true };
     await sleep(Math.max(0, Math.min(interval, deadline - Date.now())), options.signal);
   }
+}
+
+/* ── Starting the flow, and staying on it ─────────────────────────────────── */
+
+/**
+ * What `startOnboarding` needs: the poll, plus enough to build the link.
+ *
+ * Structural, like every other client shape in this package — nothing here
+ * imports the client, so the onboarding module stays reachable from a caller
+ * that has not constructed one.
+ */
+export interface OnboardingClient extends AuthorizationPoller {
+  /** The address the owner is authorizing. */
+  readonly agentWallet: string;
+  /** The named deployment, when one was named. Undefined for a private host. */
+  readonly deployment: PredictAgentDeployment | undefined;
+}
+
+export interface StartOnboardingOptions extends DescribeOnboardingOptions {
+  /** A human label so an owner can tell two agents apart in their list. */
+  label?: string;
+  /**
+   * The console to send the owner to.
+   *
+   * Defaults to the one paired with this client's deployment. A private
+   * deployment has no pairing, and this must then be supplied: a link to the
+   * wrong console is worse than being told to go and find the right one.
+   */
+  consoleBaseUrl?: string;
+  signal?: AbortSignal;
+}
+
+export interface OnboardingHandle {
+  /** The link to hand the owner. Safe to paste anywhere; it carries no secret. */
+  readonly url: string;
+  /** The state as of now, before anybody has been asked to do anything. */
+  readonly state: OnboardingState;
+  /** True when the owner has already signed and there is nothing to wait for. */
+  readonly ready: boolean;
+  /**
+   * Block until the grants land, printing progress through `onChange`.
+   *
+   * This is the half that was routinely skipped, and skipping it is what turns a
+   * signature into a conversation: the agent prints a link, stops, and the
+   * person has to come back and say they are done. Running out of time is not a
+   * failure and cancels nothing — the result carries `timedOut` and the last
+   * state, so a caller resumes by calling again.
+   */
+  wait(options?: WaitForAuthorizationOptions): Promise<AuthorizationWaitResult>;
+}
+
+/**
+ * Build the link, read the state, and hand back the poll — in one call.
+ *
+ * The three steps were already here and were already exported. What was missing
+ * was that they belonged together: a caller had to reach for
+ * `PREDICT_AGENT_CONSOLE_ENDPOINTS`, then `buildAuthorizationUrl`, then
+ * `describeOnboarding`, then `waitForAuthorization`, and a caller who assembled
+ * the first three and stopped had built an onboarding that ends in a dead
+ * terminal. Handing back a `wait()` alongside the URL is what makes the poll
+ * the obvious next thing rather than a fourth import.
+ */
+export async function startOnboarding(
+  client: OnboardingClient,
+  options: StartOnboardingOptions = {},
+): Promise<OnboardingHandle> {
+  const consoleBaseUrl =
+    options.consoleBaseUrl ??
+    (client.deployment === undefined
+      ? undefined
+      : PREDICT_AGENT_CONSOLE_ENDPOINTS[client.deployment]);
+  if (consoleBaseUrl === undefined) {
+    throw new TypeError(
+      'This client names no deployment, so there is no console paired with it. Pass `consoleBaseUrl` for the deployment you are on — guessing one would send an owner somewhere else to sign.',
+    );
+  }
+
+  const describeOptions =
+    options.accountId === undefined ? {} : { accountId: options.accountId };
+  const state = describeOnboarding(
+    await client.listAuthorizedAccounts(options.signal),
+    describeOptions,
+  );
+  const url = buildAuthorizationUrl({
+    consoleBaseUrl,
+    agentWallet: client.agentWallet,
+    ...(options.label !== undefined ? { label: options.label } : {}),
+    ...(options.accountId !== undefined ? { accountId: options.accountId } : {}),
+  });
+
+  return {
+    url,
+    state,
+    ready: state.status === 'READY',
+    wait: async (waitOptions: WaitForAuthorizationOptions = {}) =>
+      await waitForAuthorization(client, { ...describeOptions, ...waitOptions }),
+  };
 }

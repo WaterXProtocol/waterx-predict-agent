@@ -350,6 +350,90 @@ describe('the SDK discovery entry point', () => {
   });
 });
 
+describe('the shipped recipes', () => {
+  /**
+   * Why they exist, and therefore what they are not allowed to become.
+   *
+   * A caller holding only the library was writing a throwaway script per
+   * question — eight of them in one observed session, every one repeating the
+   * same four-line preamble, and the one that placed an order also inventing a
+   * durable idempotency store on the spot. Shipping the scripts removes that.
+   *
+   * It also creates the risk `NO_SECOND_SURFACE` names: a set of executable
+   * scripts inside the published package is one careless commit away from being
+   * a second trading surface with none of the client's retry, signing or
+   * idempotency behind it. So they are held to a rule a test can check — every
+   * recipe reaches the API through the package's public entry point and through
+   * nothing else.
+   */
+  const RECIPE_DIR = `${ROOT}packages/sdk/recipes`;
+  const RECIPES = readdirSync(RECIPE_DIR).filter((name) => name.endsWith('.mjs'));
+
+  it('ships inside the tarball, and the report can find them', () => {
+    // A recipe that exists only in this repository is a recipe for people who
+    // already cloned it — the same failure the shipped instructions exist to
+    // avoid.
+    expect(manifest('sdk').files, 'sdk').toContain('recipes');
+    expect(RECIPES.length).toBeGreaterThan(0);
+    expect(read('packages/sdk/recipes/README.md')).toContain('not a second trading surface');
+  });
+
+  it('covers every step the observed session had to hand-write a script for', () => {
+    for (const expected of [
+      'diagnose.mjs',
+      'onboard.mjs',
+      'markets.mjs',
+      'order.mjs',
+      'positions.mjs',
+      // The one the hand-rolled version could not have: it needs the execution
+      // id recorded beside the key, which only a store that owns both can do.
+      'reconcile.mjs',
+    ]) {
+      expect(RECIPES, expected).toContain(expected);
+    }
+  });
+
+  it('cannot become a second way to trade', () => {
+    for (const name of RECIPES) {
+      const source = readFileSync(`${RECIPE_DIR}/${name}`, 'utf8');
+      // No transport of its own, and no route assembled by hand. Everything that
+      // reaches the network goes through the client.
+      expect(source, `${name} calls fetch`).not.toMatch(/fetch\s*\(/u);
+      expect(source, `${name} builds a route`).not.toMatch(/agent-api\/v1/u);
+      expect(source, `${name} imports a transport`).not.toMatch(
+        /from '(?:node:)?(?:http|https|net|child_process)'/u,
+      );
+      // And no reaching past the entry point into the package's internals, which
+      // is how a recipe would end up depending on something `exports` does not
+      // even admit.
+      expect(source, `${name} reaches into dist`).not.toMatch(
+        /@waterx\/predict-agent-sdk\/(?:dist|src)/u,
+      );
+    }
+  });
+
+  it('keeps the one non-SDK dependency in one file', () => {
+    // `@mysten/sui` is the CALLER's dependency, not this package's — the signer
+    // is structural precisely so a KMS holder never installs it. Confining the
+    // import to the shared preamble is what makes that a one-file change rather
+    // than a six-file one.
+    for (const name of RECIPES) {
+      const source = readFileSync(`${RECIPE_DIR}/${name}`, 'utf8');
+      if (name === '_client.mjs') continue;
+      expect(source, `${name} loads a keypair itself`).not.toMatch(/@mysten\/sui/u);
+    }
+    expect(readFileSync(`${RECIPE_DIR}/_client.mjs`, 'utf8')).toMatch(/@mysten\/sui/u);
+  });
+
+  it('does not add a runtime dependency to the published package', () => {
+    // The recipes ship; their import of `@mysten/sui` must not turn into a
+    // dependency every consumer installs whether they use them or not.
+    expect(Object.keys((manifest('sdk').dependencies ?? {}) as Record<string, unknown>)).toEqual([
+      'socket.io-client',
+    ]);
+  });
+});
+
 describe('the release tooling package', () => {
   it('is private permanently, not pending a release', () => {
     // Every other unpublished package here is waiting on backlog 3.6. This one
