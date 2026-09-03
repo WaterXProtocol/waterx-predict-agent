@@ -5,10 +5,10 @@
  * The server declines to pick between markets, and that refusal is correct. What
  * is asserted here is the line this module holds beside it: it narrows ONLY by a
  * discriminator the caller supplied, it never claims uniqueness off a page that
- * could not hold every match, and it says whether the narrowing happened at the
- * server or here.
+ * could not hold every match, and it never puts a filter onto the wire that the
+ * vendored contract does not define.
  */
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import type {
   ListMarketsQuery,
@@ -16,7 +16,6 @@ import type {
   PredictAgentMarket,
   PredictMarketResolution,
 } from '../src/contract.ts';
-import { PredictAgentApiError } from '../src/errors.ts';
 import { resolveMarket, type MarketSearcher } from '../src/market-resolution.ts';
 
 function market(closesAt: string, overrides: Partial<PredictAgentMarket> = {}): PredictAgentMarket {
@@ -43,32 +42,28 @@ const ROUNDS = Array.from({ length: 12 }, (_unused, index) =>
   market(new Date(Date.parse('2026-09-02T08:05:00.000Z') + index * 5 * 60_000).toISOString()),
 );
 
+/**
+ * A catalog that answers a search, and records what it was asked.
+ *
+ * `queries` is what several assertions below are really about: the contract
+ * defines no time filter, so nothing here may ever see one.
+ */
 function searcher(
   markets: PredictAgentMarket[],
   resolution: Partial<PredictMarketResolution> = {},
-  options: { honoursWindow?: boolean } = {},
 ): MarketSearcher & { queries: (ListMarketsQuery & { search: string })[] } {
   const queries: (ListMarketsQuery & { search: string })[] = [];
   return {
     queries,
     searchMarkets: async (query) => {
       queries.push(query);
-      const narrowed =
-        options.honoursWindow === true
-          ? markets.filter((entry) => {
-              const at = Date.parse(entry.closesAt ?? '');
-              if (query.closesAfter !== undefined && !(at > Date.parse(query.closesAfter))) return false;
-              if (query.closesBefore !== undefined && !(at <= Date.parse(query.closesBefore))) return false;
-              return true;
-            })
-          : markets;
       const body: ListMarketsResponseBody & { resolution: PredictMarketResolution } = {
-        markets: narrowed,
+        markets,
         resolution: {
-          status: narrowed.length === 1 ? 'RESOLVED' : narrowed.length === 0 ? 'NOT_FOUND' : 'AMBIGUOUS',
+          status: markets.length === 1 ? 'RESOLVED' : markets.length === 0 ? 'NOT_FOUND' : 'AMBIGUOUS',
           normalizedQuery: query.search.toLowerCase(),
-          marketId: narrowed.length === 1 ? (narrowed[0]?.marketId ?? null) : null,
-          matchCount: narrowed.length,
+          marketId: markets.length === 1 ? (markets[0]?.marketId ?? null) : null,
+          matchCount: markets.length,
           ...resolution,
         },
       };
@@ -118,8 +113,8 @@ describe('without a discriminator', () => {
 });
 
 describe('with an expiry the caller supplied', () => {
-  it('resolves through a server that honours the window', async () => {
-    const client = searcher(ROUNDS, {}, { honoursWindow: true });
+  it('resolves the round, and narrows here rather than on the wire', async () => {
+    const client = searcher(ROUNDS);
 
     const result = await resolveMarket(client, {
       search: 'BTC 5m Up or Down',
@@ -128,66 +123,37 @@ describe('with an expiry the caller supplied', () => {
 
     expect(result.status).toBe('RESOLVED');
     expect(result.market?.closesAt).toBe('2026-09-02T08:15:00.000Z');
-    expect(result.narrowedBy).toBe('SERVER');
-    // Sent as a half-open window so two adjacent rounds cannot both match it.
-    expect(client.queries[0]?.closesBefore).toBe('2026-09-02T08:15:00.000Z');
-    expect(client.queries[0]?.closesAfter).toBe('2026-09-02T08:14:59.999Z');
+    expect(result.narrowedBy).toBe('CLIENT');
   });
 
-  it('resolves against a server that ignores the window, and says it did so locally', async () => {
-    // A server that narrows on neither and answers as it did before. Reporting
-    // that as a server-side narrowing would hide the one limitation a local one
-    // carries.
-    const result = await resolveMarket(searcher(ROUNDS), {
+  it('never puts a filter the contract does not define onto the query', async () => {
+    // `contract.ts` is a vendored copy of the backend contract, and AGENTS.md
+    // forbids inventing a wire field in the SDK. It is not only a rule: the
+    // deployed API validates strictly, so an undeclared filter is REFUSED
+    // `INVALID_REQUEST` rather than ignored — an earlier version of this sent
+    // them and 400'd against the real server on the first local run.
+    const client = searcher(ROUNDS);
+
+    await resolveMarket(client, {
       search: 'BTC 5m Up or Down',
       closesAt: '2026-09-02T08:15:00.000Z',
+      limit: 50,
     });
-
-    expect(result.status).toBe('RESOLVED');
-    expect(result.narrowedBy).toBe('CLIENT');
-    expect(result.market?.closesAt).toBe('2026-09-02T08:15:00.000Z');
-  });
-
-  it('resolves against a server that REFUSES the window, which is what the API does today', async () => {
-    // The deployed API validates its query strictly: an unknown filter is a 400,
-    // not something it shrugs off. A client that only handled the shrug would
-    // simply fail here, which is what the first local run of this did.
-    const client = strict(ROUNDS);
-
-    const result = await resolveMarket(client, {
+    await resolveMarket(client, {
       search: 'BTC 5m Up or Down',
-      closesAt: '2026-09-02T08:15:00.000Z',
+      closesAfter: '2026-09-02T08:00:00.000Z',
+      closesBefore: '2026-09-02T09:00:00.000Z',
     });
 
-    expect(result.status).toBe('RESOLVED');
-    expect(result.narrowedBy).toBe('CLIENT');
     expect(client.queries).toHaveLength(2);
-    expect(client.queries[0]?.closesBefore).toBeDefined();
-    expect(client.queries[1]?.closesBefore).toBeUndefined();
-  });
-
-  it('probes a refusing server once per client, not once per call', async () => {
-    const client = strict(ROUNDS);
-    const query = { search: 'BTC 5m Up or Down', closesAt: '2026-09-02T08:15:00.000Z' };
-
-    await resolveMarket(client, query);
-    await resolveMarket(client, query);
-
-    // Two calls, three requests: the probe, its fallback, then straight to the
-    // bare query.
-    expect(client.queries).toHaveLength(3);
-    expect(client.queries[2]?.closesBefore).toBeUndefined();
-  });
-
-  it('surfaces an INVALID_REQUEST that was NOT about the window', async () => {
-    // The fallback is a retry, not a rescue. A refusal with another cause fails
-    // the second call the same way, and the caller sees the real error instead
-    // of a page this narrowed behind their back.
-    const client = strict(ROUNDS, { always: true });
-
-    await expect(
-      resolveMarket(client, { search: 'x', closesAt: '2026-09-02T08:15:00.000Z' }),
-    ).rejects.toThrow(PredictAgentApiError);
+    for (const query of client.queries) {
+      const keys = Object.keys(query);
+      expect(keys).not.toContain('closesAfter');
+      expect(keys).not.toContain('closesBefore');
+      expect(keys).not.toContain('closesAt');
+    }
+    // One request per call — there is nothing to probe for.
+    expect(client.queries[0]).toEqual({ search: 'BTC 5m Up or Down', limit: 50 });
   });
 
   it('refuses to claim uniqueness off a page that could not hold every match', async () => {
@@ -225,36 +191,6 @@ describe('with an expiry the caller supplied', () => {
     expect(result.candidates.map((entry) => entry.marketId)).toEqual(['0x20260902081500000']);
   });
 });
-
-/**
- * A server that REFUSES an unknown filter rather than ignoring one — which is
- * what the deployed API actually does.
- *
- * `always` keeps refusing even without the window, standing in for an
- * INVALID_REQUEST whose cause was something else entirely.
- */
-function strict(
-  markets: PredictAgentMarket[],
-  options: { always?: boolean } = {},
-): MarketSearcher & { queries: (ListMarketsQuery & { search: string })[] } {
-  const inner = searcher(markets);
-  return {
-    queries: inner.queries,
-    searchMarkets: async (query, signal) => {
-      const carriesWindow =
-        query.closesAfter !== undefined || query.closesBefore !== undefined;
-      if (carriesWindow || options.always === true) {
-        inner.queries.push(query);
-        throw new PredictAgentApiError(400, {
-          code: 'INVALID_REQUEST',
-          message: 'property closesAfter should not exist, property closesBefore should not exist',
-          retryable: false,
-        });
-      }
-      return await inner.searchMarkets(query, signal);
-    },
-  };
-}
 
 describe('refusals', () => {
   it('will not take two ways of naming the round at once', async () => {

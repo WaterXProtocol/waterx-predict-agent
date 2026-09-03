@@ -73,6 +73,7 @@ import {
 import {
   type ExecutionOutcome,
   isTerminalExecutionStatus,
+  needsAgentSignature,
   toExecutionOutcome,
 } from './execution-facts.ts';
 import {
@@ -650,13 +651,20 @@ export class PredictAgentClient {
       // sends — the behaviour before this guard existed.
       const known = reservation.record;
       if (known.executionId !== undefined && known.enforcedWorstPrice !== undefined) {
-        return await this.resolveRecordedExecution(
+        const resolved = await this.resolveRecordedExecution(
           known.executionId,
           known.enforcedWorstPrice,
           idempotencyKey,
           store,
           options,
         );
+        // `undefined` means the execution is still waiting on THIS agent's
+        // signature, which a read can report but cannot fix. Fall through and
+        // go down the ordinary create/sign/submit path: the create replays the
+        // same key, the server hands back this same execution with bytes to
+        // sign, and the order finally leaves. Returning the read instead would
+        // leave it stopped until `signatureExpiresAt` with nobody told.
+        if (resolved !== undefined) return resolved;
       }
     } else {
       idempotencyKey = randomUUID();
@@ -832,11 +840,19 @@ export class PredictAgentClient {
     idempotencyKey: string,
     store: IntentStore,
     options: ExecuteMarketOrderOptions,
-  ): Promise<ExecuteMarketOrderResult> {
+  ): Promise<ExecuteMarketOrderResult | undefined> {
+    // Read ONCE, before anything else, because the answer decides whether
+    // reading was even the right move. A crash between the create and the
+    // submit leaves an execution nothing will advance without this agent's
+    // signature, and `waitFor: 'TERMINAL'` would sit on it until the deadline
+    // and then report a timeout on an order that was never sent.
+    const read = await this.getExecution(executionId, options.signal);
+    if (needsAgentSignature(read.status)) return undefined;
+
     const outcome =
-      options.waitFor === 'TERMINAL'
+      options.waitFor === 'TERMINAL' && !isTerminalExecutionStatus(read.status)
         ? await this.waitForExecution(executionId, options)
-        : toExecutionOutcome(await this.getExecution(executionId, options.signal), false);
+        : toExecutionOutcome(read, isTerminalExecutionStatus(read.status));
     // A record that was PENDING and has since finished leaves the pending list
     // here, which is the only place that can notice.
     if (outcome.terminal) await store.settle(idempotencyKey, outcome.status);

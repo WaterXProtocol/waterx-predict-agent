@@ -85,7 +85,7 @@ const STEPS: readonly AgentSkillStep[] = [
     body: [
       'An agent may only trade on an account an owner has granted it, and the grant is one signature in the owner\'s own wallet. Run `waterx-predict onboard --label <name>`, or `await client.startOnboarding({ label })` — which hands back the link AND the `wait()` that polls for the signature.',
       'Wait for it. Printing the link and stopping makes the person come back to a dead terminal and announce they are done; `handle.wait({ onChange })` shows progress instead, and a wait that runs out cancels nothing — call it again.',
-      'The link carries the agent address and nothing else, so it is safe to paste into a chat. Say so when you hand it over. Do not offer to do this step for the owner, do not ask for their key, and do not proceed on the assumption that they will.',
+      'The link grants nothing — no key, no token, no pre-authorization — and say so when you hand it over. It is not contentless: it names the agent wallet and any label or account id you put in it. Do not offer to do this step for the owner, do not ask for their key, and do not proceed on the assumption that they will.',
     ],
   },
   {

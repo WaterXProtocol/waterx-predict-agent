@@ -875,11 +875,17 @@ describe('executeMarketOrder with an intent store', () => {
     const first = withStore([json(201, CREATED), json(202, SUBMITTED)], store);
     const before = await first.client.executeMarketOrder(unpriced);
 
-    const second = withStore([json(201, CREATED), json(202, SUBMITTED)], store);
+    // The second client finds the recorded execution already past the point
+    // where a signature is needed, so it resolves it by reading.
+    const second = withStore(
+      [json(200, { executionId: 'exec-1', status: 'PENDING_FILL' })],
+      store,
+    );
     const after = await second.client.executeMarketOrder(unpriced);
 
     expect(after.idempotencyKey).toBe(before.idempotencyKey);
     expect(after.idempotencyKeyReplayed).toBe(true);
+    expect(second.calls.every((call) => call.method === 'GET')).toBe(true);
   });
 
   it('records the execution id as soon as the create returns it', async () => {
@@ -1073,5 +1079,121 @@ describe('executeMarketOrder with an intent store', () => {
 
     expect(second.idempotencyKey).not.toBe(first.idempotencyKey);
     expect(first.idempotencyKeyReplayed).toBe(false);
+  });
+});
+
+/**
+ * A crash between the create and the submit.
+ *
+ * The nastiest state this store can leave behind, and the one the read-back
+ * guard made worse before it was taught to recognise it: the execution EXISTS,
+ * the ledger has its id, and it is waiting for a signature only this agent can
+ * produce. Reading it back reports `AWAITING_SIGNATURE` accurately and forever.
+ * A caller that stopped there would hold an order that is never sent, never
+ * filled, and never reported as failed — it just expires.
+ */
+describe('an execution left waiting for this agent to sign', () => {
+  const unpriced = {
+    accountId: '0xacct',
+    marketId: '0xmarket',
+    outcomeId: 'YES' as const,
+    side: 'BUY' as const,
+    size: { buyAmount: '5' },
+    maxSlippageBps: 100,
+    referenceQuoteId: 'q-ref',
+  };
+
+  /** A store pre-seeded exactly as a crash after the create would leave it. */
+  const crashedAfterCreate = async (): Promise<
+    import('../src/intent-store.ts').IntentStore
+  > => {
+    const store = createMemoryIntentStore();
+    const { idempotencyKey } = await store.reserve(unpriced);
+    await store.attach(idempotencyKey, 'exec-1', '0.505');
+    return store;
+  };
+
+  const withStore = (
+    responses: (() => Response)[],
+    store: import('../src/intent-store.ts').IntentStore,
+  ): { client: PredictAgentClient; calls: Call[]; signed: () => number } => {
+    let signed = 0;
+    const counting: AgentSigner = {
+      ...signer,
+      signTransaction: async (bytes) => {
+        signed += 1;
+        return await signer.signTransaction(bytes);
+      },
+    };
+    const { fetch, calls } = stubFetch(responses);
+    const client = new PredictAgentClient({
+      baseUrl: 'https://api.test/',
+      fetch,
+      signer: counting,
+      token: 'tok',
+      intentStore: store,
+      retry: { maxAttempts: 3, baseDelayMs: 0 },
+    });
+    return { client, calls, signed: () => signed };
+  };
+
+  it('signs and submits it rather than reporting the state it is stuck in', async () => {
+    const store = await crashedAfterCreate();
+    const { client, calls, signed } = withStore(
+      [
+        // The read that discovers it is stuck.
+        json(200, { executionId: 'exec-1', status: 'AWAITING_SIGNATURE' }),
+        // Then the ordinary path: create replays the key and the server hands
+        // back this same execution with bytes to sign.
+        json(201, CREATED),
+        json(202, SUBMITTED),
+      ],
+      store,
+    );
+
+    const result = await client.executeMarketOrder(unpriced);
+
+    expect(signed()).toBe(1);
+    expect(result.executionId).toBe('exec-1');
+    expect(result.status).toBe('SUBMITTED');
+    expect(calls.map((call) => call.method)).toEqual(['GET', 'POST', 'POST']);
+  });
+
+  it('does not sit on it until a TERMINAL wait times out', async () => {
+    // The variant that hides the bug: waiting on a status nothing will advance
+    // reports `timedOut` on an order that was never sent.
+    const store = await crashedAfterCreate();
+    const { client, signed } = withStore(
+      [
+        json(200, { executionId: 'exec-1', status: 'AWAITING_SIGNATURE' }),
+        json(201, CREATED),
+        json(202, SUBMITTED),
+        json(200, { executionId: 'exec-1', status: 'FILLED', transactionDigest: 'd' }),
+      ],
+      store,
+    );
+
+    const result = await client.executeMarketOrder(unpriced, {
+      waitFor: 'TERMINAL',
+      pollIntervalMs: 0,
+    });
+
+    expect(signed()).toBe(1);
+    expect(result.status).toBe('FILLED');
+    expect(result.timedOut).toBe(false);
+  });
+
+  it('reads back — and does NOT re-sign — one that is already submitted', async () => {
+    const store = await crashedAfterCreate();
+    const { client, calls, signed } = withStore(
+      [json(200, { executionId: 'exec-1', status: 'PENDING_FILL' })],
+      store,
+    );
+
+    const result = await client.executeMarketOrder(unpriced);
+
+    expect(signed()).toBe(0);
+    expect(result.status).toBe('PENDING_FILL');
+    expect(calls).toHaveLength(1);
   });
 });

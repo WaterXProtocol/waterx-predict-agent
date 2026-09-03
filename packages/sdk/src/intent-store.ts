@@ -36,17 +36,36 @@
  * visible, refusable at the risk profile, and reviewable. Neither direction is
  * free; this one is the one you can see happening.
  *
- * WHAT THIS STORE IS NOT. It is not a lock. `createFileIntentStore` serializes
- * its own reads and writes and rewrites the file atomically, so one agent
- * process cannot lose its own record; two processes sharing one file can still
- * interleave a read-modify-write, and the residual window is stated rather than
- * papered over with a lockfile whose stale-lock recovery would be a worse
- * failure than the race it prevents. One store per process, one file per
- * project, which is how an agent runtime actually runs.
+ * CONCURRENCY, WHICH IS NOT OPTIONAL HERE. An atomic rename stops a torn file;
+ * it does nothing about two processes reading the same ledger, each finding no
+ * record, and each minting a key for the same order. That is not a hypothetical
+ * — the shipped recipes are shell scripts, and running one twice at once is a
+ * thing people do. So `createFileIntentStore` holds an exclusive lock across the
+ * whole read-modify-write: an `O_EXCL` file beside the ledger, in-process work
+ * already serialized behind it, and the two together make one reservation per
+ * intent across processes as well as within one.
+ *
+ * A lock also has to be recoverable, because a process killed mid-section would
+ * otherwise wedge every later one. One held past `staleAfterMs` is broken and
+ * taken — the section it guards is a file read and a file write, so the timeout
+ * is orders of magnitude longer than the work, and stealing after it is safer
+ * than the unbounded wait it replaces. The lock names the pid and the instant
+ * that took it, so a person looking at a wedged directory can see who.
  */
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdirSync, readFileSync, renameSync, writeFileSync, unlinkSync } from 'node:fs';
+import {
+  closeSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, join } from 'node:path';
+
+import { sleep } from './sleep.ts';
 
 /**
  * Fields that never make two intents different.
@@ -222,8 +241,20 @@ abstract class BaseIntentStore implements IntentStore {
   protected abstract load(): Map<string, IntentRecord>;
   protected abstract save(records: Map<string, IntentRecord>): void;
 
+  /**
+   * Run one read-modify-write with whatever exclusion this storage needs.
+   *
+   * The in-memory store needs none — the map is not shared with anyone. The file
+   * store takes a cross-process lock. Both still run behind the same queue, so
+   * this only ever has to think about OTHER processes.
+   */
+  protected async exclusive<T>(operation: () => T): Promise<T> {
+    return await Promise.resolve(operation());
+  }
+
   private async serialize<T>(operation: () => T): Promise<T> {
-    const run = this.queue.then(operation, operation);
+    const guarded = async (): Promise<T> => await this.exclusive(operation);
+    const run = this.queue.then(guarded, guarded);
     // The chain must survive a rejection, or one failed write deadlocks every
     // later one. The caller still sees the rejection; the chain does not.
     this.queue = run.then(
@@ -347,6 +378,16 @@ export function createMemoryIntentStore(): IntentStore {
 export interface FileIntentStoreOptions {
   /** File mode for the ledger. Default `0o600`. */
   readonly mode?: number;
+  /**
+   * How long a held lock stays believable. Default 10 s.
+   *
+   * The section it guards is a file read and a file write. Anything still
+   * holding it after this either died or is paused indefinitely, and both are
+   * better resolved by taking the lock than by waiting forever.
+   */
+  readonly staleAfterMs?: number;
+  /** How long to wait for the lock before giving up. Default 5 s. */
+  readonly lockTimeoutMs?: number;
 }
 
 /**
@@ -362,6 +403,9 @@ export interface FileIntentStoreOptions {
  */
 class FileIntentStore extends BaseIntentStore {
   private readonly mode: number;
+  private readonly staleAfterMs: number;
+  private readonly lockTimeoutMs: number;
+  private readonly lockPath: string;
 
   constructor(
     private readonly path: string,
@@ -369,6 +413,72 @@ class FileIntentStore extends BaseIntentStore {
   ) {
     super();
     this.mode = options.mode ?? 0o600;
+    this.staleAfterMs = options.staleAfterMs ?? 10_000;
+    this.lockTimeoutMs = options.lockTimeoutMs ?? 5_000;
+    this.lockPath = `${path}.lock`;
+  }
+
+  /**
+   * The whole read-modify-write, under an exclusive lock.
+   *
+   * `wx` is `O_CREAT | O_EXCL`: it succeeds for exactly one caller and fails
+   * `EEXIST` for every other, which is the only primitive here that works across
+   * processes. Released in a `finally`, so a throw inside the section does not
+   * wedge the next one.
+   */
+  protected override async exclusive<T>(operation: () => T): Promise<T> {
+    const handle = await this.acquire();
+    try {
+      return operation();
+    } finally {
+      try {
+        closeSync(handle);
+      } catch {
+        // Already closed by something taking a stale lock. Not this caller's
+        // problem, and not worth masking the section's own result with.
+      }
+      try {
+        unlinkSync(this.lockPath);
+      } catch {
+        // Already gone, for the same reason.
+      }
+    }
+  }
+
+  private async acquire(): Promise<number> {
+    mkdirSync(dirname(this.path), { recursive: true });
+    const deadline = Date.now() + this.lockTimeoutMs;
+    for (;;) {
+      try {
+        const handle = openSync(this.lockPath, 'wx', 0o600);
+        writeFileSync(handle, `${JSON.stringify({ pid: process.pid, at: new Date().toISOString() })}\n`);
+        return handle;
+      } catch (error: unknown) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      }
+      // Held. Broken, or simply someone else's for the next millisecond?
+      let heldSince: number;
+      try {
+        heldSince = statSync(this.lockPath).mtimeMs;
+      } catch {
+        // It went away between the open and the stat. Take it now.
+        continue;
+      }
+      if (Date.now() - heldSince > this.staleAfterMs) {
+        try {
+          unlinkSync(this.lockPath);
+        } catch {
+          // Somebody else broke it first, which is the same outcome.
+        }
+        continue;
+      }
+      if (Date.now() >= deadline) {
+        throw new Error(
+          `Could not take the intent ledger lock at ${this.lockPath} within ${String(this.lockTimeoutMs)}ms. Another process is holding it. This refuses rather than proceeding unlocked, because proceeding is how one intent becomes two orders — check for another run, or remove the file if nothing holds it.`,
+        );
+      }
+      await sleep(20);
+    }
   }
 
   protected load(): Map<string, IntentRecord> {

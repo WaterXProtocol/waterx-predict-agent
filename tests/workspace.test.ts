@@ -403,13 +403,62 @@ describe('the shipped recipes', () => {
       expect(source, `${name} imports a transport`).not.toMatch(
         /from '(?:node:)?(?:http|https|net|child_process)'/u,
       );
-      // And no reaching past the entry point into the package's internals, which
-      // is how a recipe would end up depending on something `exports` does not
-      // even admit.
-      expect(source, `${name} reaches into dist`).not.toMatch(
-        /@waterx\/predict-agent-sdk\/(?:dist|src)/u,
-      );
+      // And no reaching past the entry point into the package's internals,
+      // which is how a recipe ends up depending on something `exports` does not
+      // even admit. By SPECIFIER, not by package name: these files sit inside
+      // the package, so `../dist/src/client.js` reaches the same module without
+      // the name appearing anywhere — the check that only looked for the name
+      // would have waved it through.
+      for (const specifier of source.matchAll(
+        /(?:^|\s)(?:import|export)[^;]*?from\s*'([^']+)'|\bimport\s*\(\s*'([^']+)'/gu,
+      )) {
+        const target = specifier[1] ?? specifier[2] ?? '';
+        const internal =
+          /(?:^|\/)(?:dist|src)\//u.test(target) ||
+          /@waterx\/predict-agent-sdk\/./u.test(target);
+        expect(internal, `${name} imports ${target}`).toBe(false);
+      }
     }
+  });
+
+  it('parses its own arguments nowhere, so nothing can quietly drop an option', () => {
+    // A recipe that filters `process.argv` itself accepts `--dry-run`, drops it,
+    // and places a real order. One strict parser, in one file, is what makes
+    // "unknown option" a refusal rather than a shrug — so no other recipe is
+    // allowed to look at argv at all.
+    for (const name of RECIPES) {
+      if (name === '_client.mjs') continue;
+      const source = readFileSync(`${RECIPE_DIR}/${name}`, 'utf8');
+      expect(source, `${name} reads argv itself`).not.toMatch(/process\.argv/u);
+      expect(source, `${name} does not use the strict parser`).toMatch(/\bparseArgv\(/u);
+    }
+    expect(readFileSync(`${RECIPE_DIR}/_client.mjs`, 'utf8')).toMatch(/Unknown option/u);
+  });
+
+  it('reports a handled failure on stdout, not only to a human', () => {
+    // `--json` exists so something can consume these. A recipe that exits 3 with
+    // an empty stdout makes "this failed" indistinguishable from "this produced
+    // nothing", and only one of those is safe to retry.
+    for (const name of RECIPES) {
+      if (name === '_client.mjs') continue;
+      const source = readFileSync(`${RECIPE_DIR}/${name}`, 'utf8');
+      const exits = /process\.exit\(\s*[1-9]|process\.exitCode\s*=\s*[1-9]/u.test(source);
+      if (!exits) continue;
+      expect(source, `${name} exits non-zero without emitting`).toMatch(/\bemitError\(/u);
+    }
+  });
+
+  it('refuses a key file anyone else can read, reach or replace', () => {
+    // This is the one path that loads a raw private key off disk, which the
+    // structural signer exists so a caller need not do. `lstat`, so a symlink is
+    // seen rather than followed; mode, so a world-readable key is refused rather
+    // than warned about; owner, so a key another account controls is not read.
+    const source = readFileSync(`${RECIPE_DIR}/_client.mjs`, 'utf8');
+    expect(source).toMatch(/lstatSync/u);
+    expect(source, 'does not follow the link it should refuse').not.toMatch(/\bstatSync\(/u);
+    expect(source).toMatch(/isSymbolicLink/u);
+    expect(source).toMatch(/0o077/u);
+    expect(source).toMatch(/getuid/u);
   });
 
   it('keeps the one non-SDK dependency in one file', () => {

@@ -12,15 +12,12 @@
  *
  *   node recipes/onboard.mjs [--label "my bot"] [--timeout 600]
  */
-import { connect, emit, out } from './_client.mjs';
+import { connect, emit, emitError, out, parseArgv } from './_client.mjs';
 
-const arg = (flag, fallback) => {
-  const at = process.argv.indexOf(flag);
-  return at === -1 ? fallback : (process.argv[at + 1] ?? fallback);
-};
+const { options } = parseArgv({ '--label': 'value', '--timeout': 'value' });
 
 const client = await connect();
-const handle = await client.startOnboarding({ label: arg('--label', 'agent') });
+const handle = await client.startOnboarding({ label: options['--label'] ?? 'agent' });
 
 if (handle.ready) {
   out(`Already authorized — account ${handle.state.account?.accountId ?? '(unnamed)'}.`);
@@ -36,25 +33,26 @@ out('');
 out(`Waiting. Current state: ${handle.state.status}`);
 
 const result = await handle.wait({
-  timeoutMs: Number(arg('--timeout', '600')) * 1_000,
+  timeoutMs: Number(options['--timeout'] ?? '600') * 1_000,
   onChange: (state) => {
     out(`  → ${state.status}${state.account === undefined ? '' : ` (${state.account.accountId})`}`);
   },
 });
 
-emit(result);
-
 if (result.timedOut) {
   out('');
   out('The wait expired. That is not a refusal and nothing was cancelled — the owner');
   out('may still be signing. Run this again to pick the wait back up.');
+  emitError('WAIT_EXPIRED', result);
   process.exitCode = 4;
 } else if (result.status === 'READY') {
+  emit(result);
   out('');
   out(`Authorized. Trading on account ${result.account?.accountId ?? '(unnamed)'}.`);
   out('Run `node recipes/diagnose.mjs` to see the mandate the owner set.');
 } else {
   out('');
   out(`Stopped at ${result.status} — ${result.nextStep.actor}: ${result.nextStep.action}`);
+  emitError('NOT_AUTHORIZED', result);
   process.exitCode = 3;
 }

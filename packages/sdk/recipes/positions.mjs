@@ -9,13 +9,16 @@
  * of crossing, not a move against you — `markets.mjs` prints the spread that
  * caused it.
  */
-import { connect, emit, out } from './_client.mjs';
+import { connect, emit, emitError, out, parseArgv } from './_client.mjs';
+
+parseArgv();
 
 const client = await connect();
 const diagnosis = await client.diagnose({ includeLimits: true });
 
 if (!diagnosis.ready) {
   out(`Not trading yet: ${diagnosis.writes.status}. Run \`node recipes/diagnose.mjs\`.`);
+  emitError('NOT_READY', { writes: diagnosis.writes.status });
   process.exit(3);
 }
 

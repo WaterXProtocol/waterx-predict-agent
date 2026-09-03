@@ -183,11 +183,17 @@ export interface AuthorizationUrlOptions {
 /**
  * The link an owner opens to authorize this agent.
  *
- * It carries the agent's address and nothing else that matters: no token, no
- * secret, no pre-authorization. Everything it can do, the owner does with their
- * own wallet in their own session — so the link is safe to paste into a chat, and
- * an attacker who intercepts it gains the ability to ask someone to authorize an
+ * It GRANTS nothing. No token, no secret, no pre-authorization: everything it
+ * can do, the owner does with their own wallet in their own session, so an
+ * attacker who intercepts it gains the ability to ask someone to authorize an
  * address they can already see.
+ *
+ * It is not contentless, though, and "safe to paste anywhere" would overstate
+ * it. The URL carries the agent wallet, and — when the caller supplies them —
+ * a `label` of the caller's own choosing and an `accountId`. The label is
+ * whatever text was passed, and an account id identifies an account. Treat both
+ * the way you would treat them in any other message; what is safe here is that
+ * the link confers no authority, not that it says nothing.
  */
 export function buildAuthorizationUrl(options: AuthorizationUrlOptions): string {
   const url = new URL(PREDICT_AGENT_AUTHORIZE_PATH, `${options.consoleBaseUrl.replace(/\/+$/, '')}/`);
@@ -292,7 +298,10 @@ export interface StartOnboardingOptions extends DescribeOnboardingOptions {
 }
 
 export interface OnboardingHandle {
-  /** The link to hand the owner. Safe to paste anywhere; it carries no secret. */
+  /**
+   * The link to hand the owner. It confers no authority and carries no secret,
+   * but it does name the agent wallet and any `label` or `accountId` given.
+   */
   readonly url: string;
   /** The state as of now, before anybody has been asked to do anything. */
   readonly state: OnboardingState;

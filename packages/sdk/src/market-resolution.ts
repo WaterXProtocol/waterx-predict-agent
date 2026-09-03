@@ -21,35 +21,34 @@
  * not answer. Given no such discriminator, an ambiguous answer passes through
  * exactly as `searchMarkets` returns it, and this module picks nothing.
  *
- * SERVER FIRST, THEN LOCALLY, AND IT SAYS WHICH. The window is sent as
- * `closesAfter` / `closesBefore` so a server that understands them does the
- * narrowing over the whole catalog.
+ * THE WINDOW IS APPLIED HERE, NOT SENT. It is tempting to add `closesAfter` /
+ * `closesBefore` to the market query and let the catalog narrow itself, and an
+ * earlier version of this did exactly that. Two things say not to.
  *
- * A server that does not understand them REFUSES THE REQUEST. That is worth
- * stating plainly because the obvious assumption is the other one: the deployed
- * API validates its query strictly and answers `INVALID_REQUEST: property
- * closesAfter should not exist`, so a client that sent the window and hoped for
- * the best would 400 instead of falling back. It is asked again without the
- * window, and the same predicate is applied here.
+ * The rule: `contract.ts` is a vendored copy of the backend contract, and
+ * `AGENTS.md` forbids inventing a speculative wire field in the SDK. A filter
+ * the backend has not defined is not the SDK's to declare, however useful.
  *
- * The refusal is detected by its CODE and not by its message. If an
- * `INVALID_REQUEST` was really about something else — a malformed `category`,
- * say — the retry without the window fails the same way and that error reaches
- * the caller, so a false match costs one round trip and never a wrong answer.
- * The answer is remembered per client, so it costs that round trip once rather
- * than once per call.
+ * The behaviour: the deployed API validates its query strictly, so a request
+ * carrying an undeclared filter is refused `INVALID_REQUEST: property
+ * closesAfter should not exist` rather than answered without the narrowing.
+ * A field added on this side alone would typecheck and then 400 — for
+ * `resolveMarket`, and for every caller who found it on `getMarkets`.
  *
- * Server-side and local narrowing are not equivalent and the result says which
- * happened (`narrowedBy`), because a local one carries a limitation the other
- * does not:
+ * So the window is a client-side concept on `ResolveMarketQuery`, it never
+ * reaches the wire, and `narrowedBy` says `CLIENT` whenever it applied. If the
+ * backend later defines these, the contract gains them in that change and this
+ * can send them; until then there is nothing here that lies about what the API
+ * accepts.
  *
- * A LOCAL NARROWING CANNOT CLAIM UNIQUENESS OFF A TRUNCATED PAGE. `matchCount`
- * counts the whole filtered catalog; `markets` is one page of it. If the page
- * holds fewer rows than the count, the row that would have contradicted a
- * "unique" answer may simply not be on it. So uniqueness is claimed only when
- * the page provably holds every match, and otherwise the result stays ambiguous
- * and says to raise the limit. Answering `RESOLVED` from a truncated page is
- * how an agent trades the 08:15 round believing it is the only one.
+ * WHICH MAKES ONE LIMITATION LOAD-BEARING. `matchCount` counts the whole
+ * filtered catalog; `markets` is one page of it. Narrowing a page cannot prove
+ * uniqueness when the page could not hold every match — the row that would have
+ * contradicted a "unique" answer may simply not be on it. So uniqueness is
+ * claimed only when the page provably holds every match, and otherwise the
+ * result stays ambiguous and says to raise the limit. Answering `RESOLVED` from
+ * a truncated page is how an agent trades the 08:15 round believing it is the
+ * only one.
  */
 import type {
   Iso8601,
@@ -59,19 +58,7 @@ import type {
   PredictMarketResolution,
   PredictMarketResolutionStatus,
 } from './contract.ts';
-import { isPredictAgentApiError } from './errors.ts';
 import { describeSpread, type PriceSpread } from './quote-cost.ts';
-
-/**
- * Clients already found to reject the `closesAt` window, so the compatibility
- * probe runs once each rather than once per call.
- *
- * Weak, because this is a fact about a server reached through a particular
- * client and must not keep that client alive. It is never un-set: a deployment
- * does not lose a filter it once accepted, and a client outlives no upgrade
- * that would matter.
- */
-const windowUnsupported = new WeakMap<object, true>();
 
 /** The slice of the client this needs. Narrow, so it is testable without one. */
 export interface MarketSearcher {
@@ -87,16 +74,32 @@ export interface ResolveMarketQuery extends Omit<ListMarketsQuery, 'search'> {
   /**
    * The exact round, when the caller knows it.
    *
-   * Shorthand for a window of one instant: `closesAfter` one millisecond before
-   * and `closesBefore` at it. Passing this with either bound is a `TypeError`
-   * rather than a silent precedence rule — two ways of saying when, disagreeing,
-   * is how an order lands on the wrong round.
+   * Shorthand for a window of one instant. Passing this with either bound is a
+   * `TypeError` rather than a silent precedence rule — two ways of saying when,
+   * disagreeing, is how an order lands on the wrong round.
    */
   closesAt?: Iso8601;
+  /**
+   * The round's close time, as a half-open window: `closesAfter` EXCLUSIVE,
+   * `closesBefore` INCLUSIVE, so adjacent rounds cannot both match a boundary.
+   *
+   * Applied to the page this fetched, never sent — see the header. A market with
+   * a null `closesAt` is excluded by either bound: it cannot satisfy a claim
+   * about when it closes.
+   */
+  closesAfter?: Iso8601;
+  closesBefore?: Iso8601;
 }
 
-/** Where a narrowing happened, if one did. */
-export type MarketNarrowing = 'NONE' | 'SERVER' | 'CLIENT';
+/**
+ * Where a narrowing happened, if one did.
+ *
+ * No `SERVER` today: the catalog defines no time filter, so a window is always
+ * applied here. The distinction is kept because it is the thing a caller has to
+ * know when a page is truncated, and because it becomes reachable the day the
+ * backend defines one.
+ */
+export type MarketNarrowing = 'NONE' | 'CLIENT';
 
 export interface MarketCandidate {
   readonly market: PredictAgentMarket;
@@ -239,54 +242,16 @@ export async function resolveMarket(
   const before = closesAt ?? closesBefore;
   const windowed = after !== undefined || before !== undefined;
 
-  const sendWindow = windowed && !windowUnsupported.has(client);
-  const bare = { ...rest };
-  const withWindow = {
-    ...rest,
-    ...(after !== undefined ? { closesAfter: after } : {}),
-    ...(before !== undefined ? { closesBefore: before } : {}),
-  };
-
-  let response;
-  let refused = false;
-  if (sendWindow) {
-    try {
-      response = await client.searchMarkets(withWindow, signal);
-    } catch (error: unknown) {
-      // Only INVALID_REQUEST, and only ever once per client. Anything else is
-      // this caller's problem to see.
-      if (!isPredictAgentApiError(error) || error.code !== 'INVALID_REQUEST') throw error;
-      windowUnsupported.set(client, true);
-      refused = true;
-      // If the refusal was not about the window, this throws the same way and
-      // the caller gets the real error rather than a silently narrowed page.
-      response = await client.searchMarkets(bare, signal);
-    }
-  } else {
-    response = await client.searchMarkets(bare, signal);
-  }
-
+  // The query goes to the wire exactly as the contract defines it. The window
+  // is applied to what comes back.
+  const response = await client.searchMarkets(rest, signal);
   const { resolution } = response;
   const returned = response.markets;
 
-  // Did the server honour the window? Only if it was sent, not refused, and
-  // nothing it returned falls outside — which is also true when the window
-  // excluded nothing, and that is fine: there is no narrowing to attribute
-  // either way.
-  const serverNarrowed =
-    windowed &&
-    sendWindow &&
-    !refused &&
-    returned.every((market) => withinWindow(market.closesAt, after, before));
-  const kept = serverNarrowed
-    ? returned
-    : returned.filter((market) => withinWindow(market.closesAt, after, before));
-
-  const narrowedBy: MarketNarrowing = !windowed
-    ? 'NONE'
-    : serverNarrowed
-      ? 'SERVER'
-      : 'CLIENT';
+  const kept = windowed
+    ? returned.filter((market) => withinWindow(market.closesAt, after, before))
+    : returned;
+  const narrowedBy: MarketNarrowing = windowed ? 'CLIENT' : 'NONE';
 
   // The page held every match only if it carried at least as many rows as the
   // server counted. See the header: uniqueness off a truncated page is a claim
@@ -307,7 +272,7 @@ export async function resolveMarket(
     status = 'RESOLVED';
   } else if (candidates.length === 0) {
     status = 'NOT_FOUND';
-  } else if (candidates.length === 1 && (narrowedBy !== 'CLIENT' || !pageTruncated)) {
+  } else if (candidates.length === 1 && !(narrowedBy === 'CLIENT' && pageTruncated)) {
     status = 'RESOLVED';
   } else {
     status = 'AMBIGUOUS';

@@ -31,6 +31,34 @@ export function isTerminalExecutionStatus(
 }
 
 /**
+ * Statuses at which nothing progresses until THIS agent signs and submits.
+ *
+ * The backend sponsors gas and builds the transaction; it cannot sign for the
+ * agent, so an execution sits here until the agent's own signature arrives. If
+ * the process holding that intent went away between the create and the submit,
+ * the execution is not "in flight" — it is stopped, waiting for something only
+ * this caller can supply, and it stays stopped until `signatureExpiresAt`.
+ */
+const AWAITING_AGENT: ReadonlySet<PredictExecutionStatus> = new Set([
+  'RECEIVED',
+  'RISK_RESERVED',
+  'AWAITING_SIGNATURE',
+]);
+
+/**
+ * Whether this execution is still waiting on the agent's signature.
+ *
+ * Load-bearing for recovery. Reading an execution back is the right way to
+ * resolve one that has already been submitted, and the WRONG way to resolve one
+ * that has not: a read reports `AWAITING_SIGNATURE` accurately and forever, and
+ * a caller that stops there has an order that will never be sent and never be
+ * reported as failed. Signing and submitting is the recovery; reading is not.
+ */
+export function needsAgentSignature(status: PredictExecutionStatus): boolean {
+  return AWAITING_AGENT.has(status);
+}
+
+/**
  * Whether a fee figure exists, and why when it does not.
  *
  * A discriminated union rather than `actualFee: string | null`, because the two

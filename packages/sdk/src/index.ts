@@ -91,6 +91,7 @@ export {
   type ExecutionFeeFacts,
   type ExecutionOutcome,
   isTerminalExecutionStatus,
+  needsAgentSignature,
   toExecutionOutcome,
   toFeeFacts,
 } from './execution-facts.ts';

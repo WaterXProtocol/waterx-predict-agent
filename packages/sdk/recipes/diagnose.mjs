@@ -10,15 +10,13 @@
  *
  *   node recipes/diagnose.mjs [--json] [--label "my bot"]
  */
-import { connect, emit, out } from './_client.mjs';
+import { connect, emit, emitError, out, parseArgv } from './_client.mjs';
 
-const labelAt = process.argv.indexOf('--label');
-const label = labelAt === -1 ? 'agent' : (process.argv[labelAt + 1] ?? 'agent');
+const { options } = parseArgv({ '--label': 'value' });
+const label = options['--label'] ?? 'agent';
 
 const client = await connect({ authenticate: false });
 const report = await client.diagnose({ label });
-
-emit(report);
 
 out(`agent wallet : ${client.agentWallet}`);
 out(`deployment   : ${client.deployment ?? '(private)'}  ->  ${client.baseUrl}`);
@@ -50,8 +48,8 @@ if (unresolved.length > 0) {
 
 if (report.authorizationUrl !== undefined) {
   out('');
-  out('Hand this to the account owner. It carries the agent address and nothing');
-  out('else — no key, no token — so it is safe to paste anywhere:');
+  out('Hand this to the account owner. It grants nothing — no key, no token, no');
+  out('pre-authorization — but it does name the agent wallet and the label above:');
   out('');
   out(`  ${report.authorizationUrl}`);
   out('');
@@ -62,4 +60,9 @@ if (report.authorizationUrl !== undefined) {
 out('');
 out(`next — ${report.nextStep.actor}: ${report.nextStep.action || 'nothing; this agent may trade.'}`);
 
-process.exitCode = report.ready ? 0 : 3;
+if (report.ready) {
+  emit(report);
+} else {
+  emitError('NOT_READY', report);
+  process.exitCode = 3;
+}

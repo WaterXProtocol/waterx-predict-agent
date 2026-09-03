@@ -29,7 +29,7 @@ and no policy. `tests/workspace.test.ts` fails if that stops being true.
 | `diagnose.mjs` | May this agent trade right now, and if not, who does what? Run it first, and run it again whenever something stops working. |
 | `onboard.mjs` | Prints the owner's authorization link **and waits for the signature**, instead of stopping and asking someone to come back and say they are done. |
 | `markets.mjs` | Free text — plus, when you have it, `--closes-at` — to one market, or to a shortlist with the prices already attached. |
-| `order.mjs` | One protected market order, with the spread and the size confidence stated *before* it goes, and the key kept on disk. |
+| `order.mjs` | One protected market order, with the spread and the size confidence stated *before* it goes, and the key kept on disk. `--dry-run` stops after the disclosure. |
 | `positions.mjs` | What is held, and what is left to spend. |
 | `reconcile.mjs` | What did this project start writing and never see land? Reads it back. Never resends. |
 
@@ -50,9 +50,21 @@ run, not a framework:
 cp -r node_modules/@waterx/predict-agent-sdk/recipes ./waterx-recipes
 ```
 
-Every script takes `--json` and writes one JSON document to stdout with the
-human lines on stderr, so a caller parsing stdout never has to strip prose out
-of it.
+Every script takes `--json` and writes **exactly one** JSON document to stdout,
+with the human lines on stderr — so a caller parsing stdout never has to strip
+prose out of it, and never has to tell "this failed" apart from "this produced
+nothing". Success is `{ "ok": true, … }`; every handled failure is
+`{ "ok": false, "error": { "code", … } }`, on the same stream.
+
+**An option these do not recognise is refused, not ignored.** A misspelled
+`--dryrun` exits 2 having read nothing and sent nothing. A script that moves
+money and silently drops a flag is a trade nobody asked for.
+
+**The key file is checked before it is read.** A symlink, a non-regular file, a
+file another account owns, or one any mode bit outside the owner's can reach is
+refused with the `chmod` to fix it. The SDK's signer is structural precisely so
+a caller can keep the key in a KMS and never do this at all — `_client.mjs` is
+the only file to change.
 
 ## The one dependency they add
 

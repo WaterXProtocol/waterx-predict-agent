@@ -15,7 +15,9 @@
  */
 import { createFileIntentStore, isTerminalExecutionStatus } from '@waterx/predict-agent-sdk';
 
-import { connect, emit, out, INTENT_LEDGER } from './_client.mjs';
+import { connect, emit, out, parseArgv, INTENT_LEDGER } from './_client.mjs';
+
+parseArgv();
 
 const store = createFileIntentStore(INTENT_LEDGER);
 const pending = await store.pending();

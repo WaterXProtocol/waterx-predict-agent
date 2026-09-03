@@ -164,7 +164,7 @@ Only the account owner can sign the delegation, in their own wallet, and no tool
 
 Printing the link and stopping turns one signature into a conversation: the person signs, comes back to a dead terminal, and has to announce that they are done before anything moves. Wait for it instead. Running out of time is not a failure and cancels nothing — the result carries `timedOut` and the last state, and you resume by calling again.
 
-The link carries the agent address and nothing else — no key, no token, no pre-authorization — so it is safe to paste anywhere. Say that when you hand it over; a person asked to open a link about their money deserves to be told what is in it.
+The link GRANTS nothing — no key, no token, no pre-authorization — so intercepting it buys an attacker the ability to ask someone to authorize an address they can already see. Say that when you hand it over; a person asked to open a link about their money deserves to be told what is in it. Do not go further and call it contentless: it names the agent wallet, and it carries whatever `label` and `accountId` you put in it, so an account id in a link is an account id in a message.
 
 ### Under a read-only policy, refuse the write and say so
 

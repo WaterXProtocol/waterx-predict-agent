@@ -169,7 +169,8 @@ if (result.terminal && result.status === 'FILLED') {
   console.log(result.fill?.filledShares, result.remainingAllowance);
 } else if (result.timedOut) {
   // Still live on chain. Reconcile later by id — never resubmit.
-  await saveForReconciliation(result.executionId, result.idempotencyKey);
+  // With an intent store the record is already on disk, holding both;
+  // `store.pending()` is the list to work through after a restart.
 }
 ```
 
@@ -213,9 +214,14 @@ poll costs a line and removes that entirely.
 assembling the flow differently — `startOnboarding` is the two of them plus the
 console lookup, which is the combination almost everybody wants.
 
-The link carries the agent's address and nothing else: no token, no secret, no
-pre-authorization. Everything it can do, the owner does with their own wallet in
-their own session, so it is safe to paste into a chat.
+The link **grants** nothing: no token, no secret, no pre-authorization.
+Everything it can do, the owner does with their own wallet in their own session,
+so intercepting it buys an attacker the ability to ask someone to authorize an
+address they can already see.
+
+It is not contentless, and "safe to paste anywhere" would overstate it: the URL
+names the agent wallet, plus whatever `label` and `accountId` you passed. An
+account id in a link is an account id in a message — treat it accordingly.
 
 `describeOnboarding` is the same decision without the polling, and its statuses
 are chosen so nobody is sent to do the wrong thing:
@@ -249,8 +255,14 @@ const resolved = await client.resolveMarket({
 });
 
 resolved.status;      // 'RESOLVED' — resolved.market.marketId is the id
-resolved.narrowedBy;  // 'SERVER' if the catalog narrowed it, 'CLIENT' if this did
+resolved.narrowedBy;  // 'CLIENT' — see below
 ```
+
+**The window is applied here, not sent.** `contract.ts` is a vendored copy of
+the backend contract and the catalog defines no time filter, so this SDK does
+not declare one: a field added on this side alone would typecheck and then 400,
+because the API validates its query strictly and refuses an undeclared filter
+rather than ignoring it. `narrowedBy` says `CLIENT` accordingly.
 
 Supplying an expiry is you naming the round, not this SDK guessing an identity —
 **given no expiry, an ambiguous answer passes straight through and nothing is
@@ -259,10 +271,11 @@ spread, so a choice a person does have to make is one question with the prices
 in it rather than an id list followed by a second question about what any of them
 cost.
 
-One limitation is reported rather than hidden. `matchCount` counts the whole
-catalog and `markets` is one page of it, so when the page could not hold every
-match a local narrowing cannot prove uniqueness: the result stays `AMBIGUOUS`
-with `pageTruncated: true`, and the fix is a larger `limit`.
+Which makes one limitation load-bearing rather than theoretical. `matchCount`
+counts the whole catalog and `markets` is one page of it, so a local narrowing
+cannot prove uniqueness when the page could not hold every match — the row that
+would have contradicted it may simply not be on the page. The result stays
+`AMBIGUOUS` with `pageTruncated: true`, and the fix is a larger `limit`.
 
 ## What an order actually costs
 
@@ -396,16 +409,27 @@ than one is, this SDK asks rather than choosing whose money trades.
 **Money is a decimal string, never a number.** A JS `number` cannot hold 6-dp
 money exactly. `'50'`, not `50`.
 
-**Idempotency.** One key is generated per `executeMarketOrder` call and reused
-across every internal retry, so a timeout mid-create resolves to the original
-execution instead of placing a second order. That guarantee dies with the process:
-to survive a restart, generate and persist the key yourself.
+**Idempotency.** One key per `executeMarketOrder` call, reused across every
+internal retry, so a timeout mid-create resolves to the original execution
+instead of placing a second order. That guarantee used to die with the process,
+and the advice used to be "mint and persist a key yourself" — which pushed the
+hardest part, deciding which fields make two orders *the same* order, onto every
+caller separately.
+
+Give the client a store instead. The key is reserved against the intent's own
+digest before the create and settled on the terminal read:
 
 ```ts
-const idempotencyKey = crypto.randomUUID();
-await savePendingIntent(idempotencyKey, intent); // your durable store
-await client.executeMarketOrder({ ...intent, idempotencyKey });
+const client = new PredictAgentClient({
+  deployment: 'testnet',
+  signer,
+  intentStore: createFileIntentStore('.waterx/intents.json'),
+});
 ```
+
+See [One intent, one key, across restarts](#one-intent-one-key-across-restarts).
+Passing `idempotencyKey` explicitly still works and still wins, for a caller with
+its own scheme.
 
 **A timeout is not a failure, and it does not throw.** A `waitFor: 'TERMINAL'`
 wait that runs out of time **returns** with `timedOut: true` and the last observed

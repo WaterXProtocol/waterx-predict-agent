@@ -12,7 +12,7 @@
  * is the same refusal `market search` makes about an ambiguous market, one level
  * up: choosing between two authorized accounts is choosing whose money is traded.
  *
- * The link is safe to paste anywhere. It names the agent wallet and carries no
+ * The link confers no authority: it names the agent wallet and carries no
  * token, no secret and no pre-authorization; everything it can do, the owner does
  * with their own wallet in their own session.
  */

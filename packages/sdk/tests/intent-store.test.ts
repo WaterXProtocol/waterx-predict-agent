@@ -7,9 +7,17 @@
  * bug that shows up in a log — it is a duplicate order, or an order silently
  * deduped away while the caller believes it traded.
  */
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -251,5 +259,97 @@ describe('the file store', () => {
 
   it('reads an empty file location as an empty ledger, not as an error', async () => {
     await expect(createFileIntentStore(ledger).pending()).resolves.toEqual([]);
+  });
+});
+
+/**
+ * The lock, which is the part an atomic rename does not cover.
+ *
+ * A torn file and a lost update are different failures. Rewriting atomically
+ * fixes the first; only exclusion fixes the second, and the second is the one
+ * that ends with two orders — two runs read a ledger with no record, each mints
+ * a key, each writes over the other.
+ *
+ * Two independent store objects stand in for two processes throughout. That is
+ * not a shortcut: the lock is an `O_EXCL` file, and a file does not know or care
+ * which process opened it. What makes each store a separate party is that they
+ * share no queue and no map — exactly what two processes share.
+ */
+describe('the ledger lock', () => {
+  const lockPath = (): string => `${ledger}.lock`;
+
+  const holdForeignLock = (ageMs = 0): void => {
+    mkdirSync(dirname(ledger), { recursive: true });
+    writeFileSync(lockPath(), JSON.stringify({ pid: 999999, at: 'earlier' }));
+    if (ageMs > 0) {
+      const when = new Date(Date.now() - ageMs);
+      utimesSync(lockPath(), when, when);
+    }
+  };
+
+  it('gives one key to two stores racing for the same intent', async () => {
+    const a = createFileIntentStore(ledger);
+    const b = createFileIntentStore(ledger);
+
+    const [first, second] = await Promise.all([a.reserve(INTENT), b.reserve(INTENT)]);
+
+    expect(second.idempotencyKey).toBe(first.idempotencyKey);
+    expect([first.replayed, second.replayed].filter(Boolean)).toHaveLength(1);
+  });
+
+  it('loses no reservation when two stores write different intents at once', async () => {
+    // The lost-update failure in its purest form: both read an empty ledger,
+    // both write, and whichever lands second erases the other's key.
+    const stores = Array.from({ length: 6 }, () => createFileIntentStore(ledger));
+
+    await Promise.all(
+      stores.map(async (store, index) =>
+        await store.reserve({ ...INTENT, clientOrderId: `order-${String(index)}` }),
+      ),
+    );
+
+    expect(await createFileIntentStore(ledger).pending()).toHaveLength(6);
+  });
+
+  it('releases the lock even when the section throws', async () => {
+    mkdirSync(dirname(ledger), { recursive: true });
+    writeFileSync(ledger, '{ not json');
+    const store = createFileIntentStore(ledger);
+
+    await expect(store.reserve(INTENT)).rejects.toThrow(/not readable JSON/u);
+
+    expect(existsSync(lockPath())).toBe(false);
+  });
+
+  it('refuses rather than proceeding unlocked when the lock is held', async () => {
+    // The important half of the assertion is the second one. Timing out and
+    // then writing anyway would be worse than not locking at all: it would look
+    // safe and behave exactly as it does today.
+    holdForeignLock();
+    const store = createFileIntentStore(ledger, { lockTimeoutMs: 60, staleAfterMs: 60_000 });
+
+    await expect(store.reserve(INTENT)).rejects.toThrow(/Another process is holding it/u);
+    expect(existsSync(ledger)).toBe(false);
+  });
+
+  it('takes a lock nobody has released in far longer than the work takes', async () => {
+    // A process killed mid-section must not wedge every later one. The section
+    // is a file read and a file write; anything holding it for ten seconds is
+    // gone.
+    holdForeignLock(30_000);
+    const store = createFileIntentStore(ledger, { lockTimeoutMs: 200, staleAfterMs: 10_000 });
+
+    const reserved = await store.reserve(INTENT);
+
+    expect(reserved.idempotencyKey).toBeTypeOf('string');
+    expect(existsSync(lockPath())).toBe(false);
+  });
+
+  it('leaves no lock behind on the ordinary path', async () => {
+    const store = createFileIntentStore(ledger);
+    const reserved = await store.reserve(INTENT);
+    await store.settle(reserved.idempotencyKey, 'FILLED');
+
+    expect(existsSync(lockPath())).toBe(false);
   });
 });

@@ -14,27 +14,23 @@
  *   node recipes/markets.mjs "BTC 5m Up or Down" --closes-at 2026-09-02T08:15:00Z
  *   node recipes/markets.mjs "Fed September" --json
  */
-import { connect, emit, out } from './_client.mjs';
+import { connect, emit, emitError, out, parseArgv } from './_client.mjs';
 
-const arg = (flag) => {
-  const at = process.argv.indexOf(flag);
-  return at === -1 ? undefined : process.argv[at + 1];
-};
-const search = process.argv.slice(2).filter((value) => !value.startsWith('--'))[0];
+const { positionals, options } = parseArgv({ '--closes-at': 'value', '--limit': 'value' });
+const [search] = positionals;
 if (search === undefined) {
   out('usage: node recipes/markets.mjs "<market name>" [--closes-at <iso>] [--limit 50] [--json]');
+  emitError('USAGE');
   process.exit(2);
 }
 
 const client = await connect();
 const resolution = await client.resolveMarket({
   search,
-  limit: Number(arg('--limit') ?? 50),
+  limit: Number(options['--limit'] ?? 50),
   tradeable: true,
-  ...(arg('--closes-at') === undefined ? {} : { closesAt: arg('--closes-at') }),
+  ...(options['--closes-at'] === undefined ? {} : { closesAt: options['--closes-at'] }),
 });
-
-emit(resolution);
 
 out(`query        : ${search}`);
 out(`normalized   : ${resolution.normalizedQuery}`);
@@ -68,4 +64,11 @@ if (resolution.status === 'RESOLVED') {
   out('one. Raise --limit and ask again before narrowing.');
 }
 
-process.exitCode = resolution.status === 'RESOLVED' ? 0 : 3;
+if (resolution.status === 'RESOLVED') {
+  emit(resolution);
+} else {
+  // Still the whole resolution — an AMBIGUOUS answer with its priced candidates
+  // is exactly what a caller needs in order to ask the next question.
+  emitError(resolution.status, resolution);
+  process.exitCode = 3;
+}

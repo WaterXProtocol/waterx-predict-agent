@@ -1001,34 +1001,6 @@ export interface ListMarketsQuery {
   /** ISO-8601. Only markets whose definition changed after this instant. */
   updatedAfter?: Iso8601;
   /**
-   * ISO-8601 window on `closesAt` — the round clock, not the update clock.
-   *
-   * These exist because a recurring series is the one thing `search` cannot
-   * resolve on its own. Twelve rounds of "BTC 5m Up or Down" carry the same
-   * title and the same aliases and differ ONLY by when they close, so every
-   * search for one of them answers `AMBIGUOUS` with twelve candidates and no
-   * filter that could have narrowed it. The expiry is the discriminator, and
-   * until it was expressible the caller had to fetch the candidates and pick
-   * one out of band — which is the same identity guess the search endpoint
-   * exists to refuse, performed one layer up.
-   *
-   * Half-open, so adjacent rounds cannot both match a boundary instant:
-   * `closesAfter` is EXCLUSIVE and `closesBefore` is INCLUSIVE.
-   *
-   * A market with a null `closesAt` has no scheduled end and is excluded by
-   * either bound — it cannot satisfy a claim about when it closes.
-   *
-   * NOT YET ACCEPTED BY THE DEPLOYED API. Its query validation is strict, so a
-   * request carrying either is refused `INVALID_REQUEST: property closesAfter
-   * should not exist` rather than answered without the narrowing. They are
-   * declared here because the contract is where a proposed filter belongs and
-   * because `resolveMarket()` already handles both worlds: it sends them, falls
-   * back to asking without them, applies the same predicate locally, and reports
-   * which happened. Sending them from anywhere else will 400 today.
-   */
-  closesAfter?: Iso8601;
-  closesBefore?: Iso8601;
-  /**
    * Free text, resolved SERVER-SIDE against `aliases`.
    *
    * Matching is deterministic and purely lexical: the text is normalized, split
