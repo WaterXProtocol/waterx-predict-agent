@@ -849,10 +849,15 @@ export class PredictAgentClient {
     const read = await this.getExecution(executionId, options.signal);
     if (needsAgentSignature(read.status)) return undefined;
 
+    // `false` is the timedOut flag, and it is false on every branch here: this
+    // path READ the execution rather than waiting for it, so nothing ran out of
+    // time. Passing the terminality here instead — which an earlier version did
+    // — labelled every FILLED replay `terminal: true, timedOut: true`, a pair
+    // that says the order both finished and was not observed to finish.
     const outcome =
       options.waitFor === 'TERMINAL' && !isTerminalExecutionStatus(read.status)
         ? await this.waitForExecution(executionId, options)
-        : toExecutionOutcome(read, isTerminalExecutionStatus(read.status));
+        : toExecutionOutcome(read, false);
     // A record that was PENDING and has since finished leaves the pending list
     // here, which is the only place that can notice.
     if (outcome.terminal) await store.settle(idempotencyKey, outcome.status);

@@ -13,14 +13,24 @@
  * sent. Fail closed is not a style preference here; it is the difference
  * between a typo and a trade.
  *
- * WHY THE KEY FILE IS CHECKED. This is the one recipe that loads a raw private
- * key off disk, which the signer interface exists so that a caller need not do.
- * A key anyone else on the machine can read is already compromised, and a key
- * reached through a symlink is a key somebody else chose for you. Both are
- * refused rather than warned about — the keystore signer holds the same line,
- * and a raw-key path that is laxer than the guarded one teaches the wrong habit.
+ * WHY THE KEY FILE IS CHECKED, AND CHECKED ON A DESCRIPTOR. This is the one
+ * recipe that loads a raw private key off disk, which the signer interface
+ * exists so that a caller need not do. A key anyone else on the machine can
+ * read is already compromised, and a key reached through a symlink is a key
+ * somebody else chose for you. Both are refused rather than warned about.
+ *
+ * Checking the PATH and then reading the PATH is a race, and not a tight one:
+ * an `await import()` sits between them, so the gap is however long a module
+ * takes to load. Whatever passed the check can be replaced before the read. So
+ * the file is opened ONCE with `O_NOFOLLOW` — a symlink fails the open itself
+ * rather than being followed — validated with `fstat` on that descriptor, and
+ * read from that same descriptor. Nothing re-resolves the name.
+ *
+ * What that does not cover is a symlinked DIRECTORY on the way to the file;
+ * closing that needs `openat` and a walk, which is more machinery than a
+ * recipe should carry. Keep the key in a directory you own.
  */
-import { lstatSync, readFileSync } from 'node:fs';
+import { closeSync, constants, fstatSync, openSync, readFileSync } from 'node:fs';
 
 import { PredictAgentClient, createFileIntentStore } from '@waterx/predict-agent-sdk';
 
@@ -36,49 +46,6 @@ export const INTENT_LEDGER = process.env.WATERX_PREDICT_INTENTS ?? '.waterx/inte
 export const out = (text) => {
   process.stderr.write(`${text}\n`);
 };
-
-/* ── Arguments ────────────────────────────────────────────────────────────── */
-
-/**
- * Parse `process.argv`, refusing anything not declared.
- *
- * `known` maps an option to `'boolean'` or `'value'`. Everything that does not
- * start with `-` is a positional, in order.
- */
-export function parseArgv(known = {}) {
-  const spec = { '--json': 'boolean', ...known };
-  const argv = process.argv.slice(2);
-  const positionals = [];
-  const options = {};
-
-  for (let index = 0; index < argv.length; index += 1) {
-    const arg = argv[index];
-    if (!arg.startsWith('-')) {
-      positionals.push(arg);
-      continue;
-    }
-    const kind = spec[arg];
-    if (kind === undefined) {
-      out(`Unknown option ${arg}.`);
-      out(`This recipe accepts: ${Object.keys(spec).join(' ')}`);
-      out('Refused rather than ignored — a dropped option on a script that places');
-      out('orders is a real trade nobody asked for.');
-      process.exit(2);
-    }
-    if (kind === 'boolean') {
-      options[arg] = true;
-      continue;
-    }
-    const value = argv[index + 1];
-    if (value === undefined || value.startsWith('-')) {
-      out(`${arg} needs a value.`);
-      process.exit(2);
-    }
-    options[arg] = value;
-    index += 1;
-  }
-  return { positionals, options };
-}
 
 /* ── Output ───────────────────────────────────────────────────────────────── */
 
@@ -117,11 +84,57 @@ export const emit = (value) => {
  *
  * A caller parsing stdout must not have to tell "this failed" apart from "this
  * produced nothing" — those are different facts and only one of them is safe to
- * retry. Every handled exit below goes through here.
+ * retry. EVERY handled exit goes through here, including the ones that happen
+ * before anything is read: a refused option is a failure a caller has to see.
  */
 export const emitError = (code, detail = {}) => {
   write({ ok: false, error: { code, ...detail } });
 };
+
+/* ── Arguments ────────────────────────────────────────────────────────────── */
+
+/**
+ * Parse `process.argv`, refusing anything not declared.
+ *
+ * `known` maps an option to `'boolean'` or `'value'`. Everything that does not
+ * start with `-` is a positional, in order.
+ */
+export function parseArgv(known = {}) {
+  const spec = { '--json': 'boolean', ...known };
+  const argv = process.argv.slice(2);
+  const positionals = [];
+  const options = {};
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (!arg.startsWith('-')) {
+      positionals.push(arg);
+      continue;
+    }
+    const kind = spec[arg];
+    if (kind === undefined) {
+      out(`Unknown option ${arg}.`);
+      out(`This recipe accepts: ${Object.keys(spec).join(' ')}`);
+      out('Refused rather than ignored — a dropped option on a script that places');
+      out('orders is a real trade nobody asked for.');
+      emitError('UNKNOWN_OPTION', { option: arg, accepts: Object.keys(spec) });
+      process.exit(2);
+    }
+    if (kind === 'boolean') {
+      options[arg] = true;
+      continue;
+    }
+    const value = argv[index + 1];
+    if (value === undefined || value.startsWith('-')) {
+      out(`${arg} needs a value.`);
+      emitError('MISSING_OPTION_VALUE', { option: arg });
+      process.exit(2);
+    }
+    options[arg] = value;
+    index += 1;
+  }
+  return { positionals, options };
+}
 
 /* ── The key ──────────────────────────────────────────────────────────────── */
 
@@ -132,55 +145,66 @@ const refuse = (reason, fix) => {
 };
 
 /**
- * Refuse a key file this process should not be reading.
+ * Open the key file once, validate THAT descriptor, and read from it.
  *
- * `lstat`, not `stat`, so a symlink is seen as a symlink rather than followed to
- * whatever it points at. Mode and ownership are meaningless on Windows, which
- * this runtime does not verify anyway (ADR-0002), so they are checked where they
- * mean something.
+ * One `open`, one `fstat`, one read — the name is never resolved twice, so
+ * there is no window in which what was checked stops being what is read.
+ * `O_NOFOLLOW` makes a symlink fail the open itself; on Windows the flag and the
+ * mode bits both mean nothing, and this runtime does not verify Windows anyway
+ * (ADR-0002), so those checks apply where they apply.
  */
-function checkKeyFile() {
-  let stats;
+function readKeySecret() {
+  const noFollow = process.platform === 'win32' ? 0 : (constants.O_NOFOLLOW ?? 0);
+  let handle;
   try {
-    stats = lstatSync(KEY_FILE);
+    handle = openSync(KEY_FILE, constants.O_RDONLY | noFollow);
   } catch (error) {
-    refuse(
-      'no such file',
-      `Point WATERX_PREDICT_KEY_FILE at the agent's key, or generate one. It must be the AGENT's wallet, never the account owner's.`,
-    );
+    if (error.code === 'ELOOP') {
+      refuse(
+        'is a symlink',
+        'Pass the real path. A key reached through a link is a key somebody else can redirect.',
+      );
+    }
+    if (error.code === 'ENOENT') {
+      refuse(
+        'no such file',
+        `Point WATERX_PREDICT_KEY_FILE at the agent's key, or generate one. It must be the AGENT's wallet, never the account owner's.`,
+      );
+    }
     throw error;
   }
 
-  if (stats.isSymbolicLink()) {
-    refuse(
-      'is a symlink',
-      'Pass the real path. A key reached through a link is a key somebody else can redirect.',
-    );
-  }
-  if (!stats.isFile()) {
-    refuse('is not a regular file', 'Pass the path of the key file itself.');
-  }
-  if (process.platform === 'win32') return;
-
-  const uid = process.getuid?.();
-  if (uid !== undefined && stats.uid !== uid) {
-    refuse(
-      `is owned by uid ${String(stats.uid)}, not by you (${String(uid)})`,
-      'Do not read a key another account controls; it can be replaced under you.',
-    );
-  }
-  // eslint-disable-next-line no-bitwise
-  const group_and_other = stats.mode & 0o077;
-  if (group_and_other !== 0) {
-    refuse(
-      `is readable by others (mode ${(stats.mode & 0o777).toString(8)})`,
-      `chmod 600 ${KEY_FILE}`,
-    );
+  try {
+    const stats = fstatSync(handle);
+    if (!stats.isFile()) {
+      refuse('is not a regular file', 'Pass the path of the key file itself.');
+    }
+    if (process.platform !== 'win32') {
+      const uid = process.getuid?.();
+      if (uid !== undefined && stats.uid !== uid) {
+        refuse(
+          `is owned by uid ${String(stats.uid)}, not by you (${String(uid)})`,
+          'Do not read a key another account controls; it can be replaced under you.',
+        );
+      }
+      if ((stats.mode & 0o077) !== 0) {
+        refuse(
+          `is readable by others (mode ${(stats.mode & 0o777).toString(8)})`,
+          `chmod 600 ${KEY_FILE}`,
+        );
+      }
+    }
+    // From the descriptor that was just checked, not from the name again.
+    return readFileSync(handle, 'utf8').trim();
+  } finally {
+    closeSync(handle);
   }
 }
 
 async function loadKeypair() {
-  checkKeyFile();
+  // Read FIRST, so the validated bytes are already in hand before the dynamic
+  // import below opens a window in which the path could change under us.
+  const secret = readKeySecret();
   let Ed25519Keypair;
   try {
     ({ Ed25519Keypair } = await import('@mysten/sui/keypairs/ed25519'));
@@ -192,7 +216,7 @@ async function loadKeypair() {
     failure.cause = error;
     throw failure;
   }
-  return Ed25519Keypair.fromSecretKey(readFileSync(KEY_FILE, 'utf8').trim());
+  return Ed25519Keypair.fromSecretKey(secret);
 }
 
 /**

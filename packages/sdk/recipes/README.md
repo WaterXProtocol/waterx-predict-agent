@@ -31,7 +31,7 @@ and no policy. `tests/workspace.test.ts` fails if that stops being true.
 | `markets.mjs` | Free text — plus, when you have it, `--closes-at` — to one market, or to a shortlist with the prices already attached. |
 | `order.mjs` | One protected market order, with the spread and the size confidence stated *before* it goes, and the key kept on disk. `--dry-run` stops after the disclosure. |
 | `positions.mjs` | What is held, and what is left to spend. |
-| `reconcile.mjs` | What did this project start writing and never see land? Reads it back. Never resends. |
+| `reconcile.mjs` | What did this project start writing and never see land? Reads it back, and tells the difference between an order that is *in flight* and one that is *stopped waiting for this agent to sign* — the second is not fixed by reading. |
 
 ## Running them
 
@@ -59,6 +59,16 @@ nothing". Success is `{ "ok": true, … }`; every handled failure is
 **An option these do not recognise is refused, not ignored.** A misspelled
 `--dryrun` exits 2 having read nothing and sent nothing. A script that moves
 money and silently drops a flag is a trade nobody asked for.
+
+**A stopped order and a live one are different things.** An execution left at
+`AWAITING_SIGNATURE` is not in flight — nothing but this agent's signature moves
+it, and a read reports that status accurately until it expires. `reconcile.mjs`
+says so and offers the line that resumes it: re-running the SAME intent replays
+the key, and the server returns that same execution with bytes to sign. It is
+not a second order, it is the first one finally sent. Where the intent carries
+something a command line cannot express, no line is offered — the reconstruction
+is digested against the record first, so a command that would be a *different*
+intent is never printed.
 
 **The key file is checked before it is read.** A symlink, a non-regular file, a
 file another account owns, or one any mode bit outside the owner's can reach is

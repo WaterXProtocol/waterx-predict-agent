@@ -409,14 +409,21 @@ describe('the shipped recipes', () => {
       // the package, so `../dist/src/client.js` reaches the same module without
       // the name appearing anywhere — the check that only looked for the name
       // would have waved it through.
-      for (const specifier of source.matchAll(
-        /(?:^|\s)(?:import|export)[^;]*?from\s*'([^']+)'|\bimport\s*\(\s*'([^']+)'/gu,
-      )) {
-        const target = specifier[1] ?? specifier[2] ?? '';
+      //
+      // Every specifier, not every import STATEMENT. Matching the statement
+      // means enumerating its forms — `from '…'`, a bare side-effect `import
+      // '…'`, `import('…')`, `require('…')`, and each of those again with
+      // double quotes — and the one form left out is the one that gets used.
+      // A module specifier is always a quoted string, so quoted strings that
+      // are shaped like a path are what this looks at.
+      for (const quoted of source.matchAll(/['"]([^'"\n]+)['"]/gu)) {
+        const target = quoted[1] ?? '';
+        const specifierShaped = /^(?:\.{1,2}\/|\/|@?[\w@./-]+\/)/u.test(target);
+        if (!specifierShaped) continue;
         const internal =
           /(?:^|\/)(?:dist|src)\//u.test(target) ||
           /@waterx\/predict-agent-sdk\/./u.test(target);
-        expect(internal, `${name} imports ${target}`).toBe(false);
+        expect(internal, `${name} references the internal path ${target}`).toBe(false);
       }
     }
   });
@@ -449,16 +456,44 @@ describe('the shipped recipes', () => {
   });
 
   it('refuses a key file anyone else can read, reach or replace', () => {
-    // This is the one path that loads a raw private key off disk, which the
-    // structural signer exists so a caller need not do. `lstat`, so a symlink is
-    // seen rather than followed; mode, so a world-readable key is refused rather
-    // than warned about; owner, so a key another account controls is not read.
+    // The one path that loads a raw private key off disk, which the structural
+    // signer exists so a caller need not do. Mode, so a world-readable key is
+    // refused rather than warned about; owner, so a key another account controls
+    // is not read.
     const source = readFileSync(`${RECIPE_DIR}/_client.mjs`, 'utf8');
-    expect(source).toMatch(/lstatSync/u);
-    expect(source, 'does not follow the link it should refuse').not.toMatch(/\bstatSync\(/u);
-    expect(source).toMatch(/isSymbolicLink/u);
+    expect(source).toMatch(/O_NOFOLLOW/u);
     expect(source).toMatch(/0o077/u);
     expect(source).toMatch(/getuid/u);
+  });
+
+  it('validates the descriptor it reads, not a name it resolves twice', () => {
+    // Checking the path and then reading the path is a race, and an `await
+    // import()` used to sit in the middle of it — so whatever passed the check
+    // had a whole module load in which to be replaced. One open, `fstat` on that
+    // descriptor, read from that descriptor.
+    const source = readFileSync(`${RECIPE_DIR}/_client.mjs`, 'utf8');
+    expect(source).toMatch(/fstatSync\(/u);
+    // A path-based stat is the shape of the race, whichever one it is.
+    expect(source, 'stats a path instead of a descriptor').not.toMatch(/\bl?statSync\(\s*KEY_FILE/u);
+    // And the read must not re-resolve the name either.
+    expect(source, 'reads the name again after checking it').not.toMatch(
+      /readFileSync\(\s*KEY_FILE/u,
+    );
+  });
+
+  it('proves any command it tells an operator to re-run is the SAME intent', () => {
+    // `reconcile` is the recipe that says "re-run this and it resumes rather
+    // than duplicating". That claim is only true if the line it prints
+    // reconstructs the recorded intent exactly, and `order.mjs` takes six things
+    // on a command line while an intent may carry more — a clientOrderId, a
+    // worstAcceptablePrice. Printing the command for one of those hands the
+    // operator a different digest, a different key, and a second order, under a
+    // sentence promising the opposite. So the reconstruction is digested against
+    // the record with the same function that decides key identity, and an intent
+    // the command line cannot express gets no command.
+    const source = readFileSync(`${RECIPE_DIR}/reconcile.mjs`, 'utf8');
+    expect(source).toMatch(/\bintentDigest\(/u);
+    expect(source).toMatch(/record\.digest/u);
   });
 
   it('keeps the one non-SDK dependency in one file', () => {

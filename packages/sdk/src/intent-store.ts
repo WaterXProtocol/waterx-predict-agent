@@ -46,11 +46,33 @@
  * intent across processes as well as within one.
  *
  * A lock also has to be recoverable, because a process killed mid-section would
- * otherwise wedge every later one. One held past `staleAfterMs` is broken and
- * taken — the section it guards is a file read and a file write, so the timeout
- * is orders of magnitude longer than the work, and stealing after it is safer
- * than the unbounded wait it replaces. The lock names the pid and the instant
- * that took it, so a person looking at a wedged directory can see who.
+ * otherwise wedge every later one. The recoverable case is decided by ASKING
+ * WHETHER THE HOLDER IS ALIVE, never by how long it has held on.
+ *
+ * An earlier version took a lock older than a timeout, reasoning that the
+ * section is a file read and a file write so anything holding it for ten
+ * seconds must be gone. That reasoning is probabilistic and the failure it
+ * admits is not: a paused holder resumes into a section somebody else now owns,
+ * both write, and — worse — the resumed holder's own `finally` deletes the NEW
+ * owner's lock, so the next caller walks in on top of a live section. A timeout
+ * cannot distinguish "dead" from "slow", and one of those must not be stolen
+ * from.
+ *
+ * So: `process.kill(pid, 0)` for liveness, which answers the actual question. A
+ * dead holder is removed and the lock taken. A LIVE holder is waited for and
+ * then REFUSED — never taken, however long it has held. A holder on a different
+ * host is unjudgeable from here and is also refused, because a pid on another
+ * machine says nothing about this one.
+ *
+ * Two things follow, and both are load-bearing. A release only ever removes a
+ * lock whose token is still ours, so no caller can delete another's. And the
+ * ledger write re-checks that token immediately before it commits, so a section
+ * that somehow lost its lock fails instead of writing.
+ *
+ * The residual case is pid reuse: a crashed holder whose pid now belongs to
+ * something unrelated reads as alive, and this refuses rather than steals. That
+ * is the safe direction — a refusal with the path in it is a person's problem
+ * for thirty seconds, and a wrong steal is a second order.
  */
 import { createHash, randomUUID } from 'node:crypto';
 import {
@@ -59,10 +81,10 @@ import {
   openSync,
   readFileSync,
   renameSync,
-  statSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
+import { hostname } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import { sleep } from './sleep.ts';
@@ -379,15 +401,20 @@ export interface FileIntentStoreOptions {
   /** File mode for the ledger. Default `0o600`. */
   readonly mode?: number;
   /**
-   * How long a held lock stays believable. Default 10 s.
+   * How long to wait for a LIVE holder before refusing. Default 5 s.
    *
-   * The section it guards is a file read and a file write. Anything still
-   * holding it after this either died or is paused indefinitely, and both are
-   * better resolved by taking the lock than by waiting forever.
+   * Note what this is not: a point at which the lock is taken. A live holder is
+   * never stolen from, whatever this is set to.
    */
-  readonly staleAfterMs?: number;
-  /** How long to wait for the lock before giving up. Default 5 s. */
   readonly lockTimeoutMs?: number;
+  /**
+   * Override the liveness check. Testing seam; there is no reason to pass one.
+   *
+   * Returning `true` for a holder that is gone turns automatic recovery into a
+   * refusal a person has to clear. Returning `false` for one that is alive is
+   * how two processes write at once.
+   */
+  readonly isHolderAlive?: (pid: number) => boolean;
 }
 
 /**
@@ -401,11 +428,37 @@ export interface FileIntentStoreOptions {
  *
  * A file that cannot be parsed is NOT silently replaced. See `load`.
  */
+/** The lock file's contents. Everything a later caller needs to judge it. */
+interface LockHolder {
+  readonly host: string;
+  readonly pid: number;
+  readonly token: string;
+  readonly at: string;
+}
+
+/**
+ * Is this pid a running process on this machine?
+ *
+ * Signal 0 performs the permission and existence checks without delivering
+ * anything. `EPERM` means it exists and belongs to somebody else — alive.
+ * `ESRCH` means no such process — gone.
+ */
+const defaultIsHolderAlive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error: unknown) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+};
+
 class FileIntentStore extends BaseIntentStore {
   private readonly mode: number;
-  private readonly staleAfterMs: number;
   private readonly lockTimeoutMs: number;
   private readonly lockPath: string;
+  private readonly isHolderAlive: (pid: number) => boolean;
+  /** The token of the lock this instance currently holds, if it holds one. */
+  private held: string | undefined;
 
   constructor(
     private readonly path: string,
@@ -413,8 +466,8 @@ class FileIntentStore extends BaseIntentStore {
   ) {
     super();
     this.mode = options.mode ?? 0o600;
-    this.staleAfterMs = options.staleAfterMs ?? 10_000;
     this.lockTimeoutMs = options.lockTimeoutMs ?? 5_000;
+    this.isHolderAlive = options.isHolderAlive ?? defaultIsHolderAlive;
     this.lockPath = `${path}.lock`;
   }
 
@@ -427,58 +480,95 @@ class FileIntentStore extends BaseIntentStore {
    * wedge the next one.
    */
   protected override async exclusive<T>(operation: () => T): Promise<T> {
-    const handle = await this.acquire();
+    const token = await this.acquire();
+    this.held = token;
     try {
       return operation();
     } finally {
-      try {
-        closeSync(handle);
-      } catch {
-        // Already closed by something taking a stale lock. Not this caller's
-        // problem, and not worth masking the section's own result with.
-      }
-      try {
-        unlinkSync(this.lockPath);
-      } catch {
-        // Already gone, for the same reason.
-      }
+      this.held = undefined;
+      this.release(token);
     }
   }
 
-  private async acquire(): Promise<number> {
+  private async acquire(): Promise<string> {
     mkdirSync(dirname(this.path), { recursive: true });
+    const token = randomUUID();
     const deadline = Date.now() + this.lockTimeoutMs;
     for (;;) {
       try {
         const handle = openSync(this.lockPath, 'wx', 0o600);
-        writeFileSync(handle, `${JSON.stringify({ pid: process.pid, at: new Date().toISOString() })}\n`);
-        return handle;
+        try {
+          const holder: LockHolder = {
+            host: hostname(),
+            pid: process.pid,
+            token,
+            at: new Date().toISOString(),
+          };
+          writeFileSync(handle, `${JSON.stringify(holder)}\n`);
+        } finally {
+          closeSync(handle);
+        }
+        return token;
       } catch (error: unknown) {
         if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
       }
-      // Held. Broken, or simply someone else's for the next millisecond?
-      let heldSince: number;
-      try {
-        heldSince = statSync(this.lockPath).mtimeMs;
-      } catch {
-        // It went away between the open and the stat. Take it now.
-        continue;
+
+      const holder = this.readHolder();
+      // Gone between the open and the read, or written by a version that did
+      // not record a holder. Either way there is nothing to judge; loop and let
+      // the exclusive open decide.
+      if (holder === undefined) {
+        if (Date.now() < deadline) {
+          await sleep(20);
+          continue;
+        }
+        throw this.refusal('its holder could not be read');
       }
-      if (Date.now() - heldSince > this.staleAfterMs) {
+
+      // A dead holder is the ONLY thing taken, and liveness is asked rather
+      // than inferred from a clock. A pid on another host cannot be asked.
+      if (holder.host === hostname() && !this.isHolderAlive(holder.pid)) {
         try {
           unlinkSync(this.lockPath);
         } catch {
-          // Somebody else broke it first, which is the same outcome.
+          // Somebody else cleared it first, which is the same outcome.
         }
         continue;
       }
+
       if (Date.now() >= deadline) {
-        throw new Error(
-          `Could not take the intent ledger lock at ${this.lockPath} within ${String(this.lockTimeoutMs)}ms. Another process is holding it. This refuses rather than proceeding unlocked, because proceeding is how one intent becomes two orders — check for another run, or remove the file if nothing holds it.`,
+        throw this.refusal(
+          `pid ${String(holder.pid)} on ${holder.host} has held it since ${holder.at}`,
         );
       }
       await sleep(20);
     }
+  }
+
+  /** Remove the lock ONLY while it is still ours. Never another caller's. */
+  private release(token: string): void {
+    if (this.readHolder()?.token !== token) return;
+    try {
+      unlinkSync(this.lockPath);
+    } catch {
+      // Already gone. Nothing to undo.
+    }
+  }
+
+  private readHolder(): LockHolder | undefined {
+    try {
+      const parsed = JSON.parse(readFileSync(this.lockPath, 'utf8')) as Partial<LockHolder>;
+      if (typeof parsed.token !== 'string' || typeof parsed.pid !== 'number') return undefined;
+      return { host: String(parsed.host), pid: parsed.pid, token: parsed.token, at: String(parsed.at) };
+    } catch {
+      return undefined;
+    }
+  }
+
+  private refusal(because: string): Error {
+    return new Error(
+      `Could not take the intent ledger lock at ${this.lockPath}: ${because}. This refuses rather than proceeding unlocked, and rather than taking a lock that may still be held — both are how one intent becomes two orders. Check for another run; if nothing is running, remove the file.`,
+    );
   }
 
   protected load(): Map<string, IntentRecord> {
@@ -514,6 +604,14 @@ class FileIntentStore extends BaseIntentStore {
   }
 
   protected save(records: Map<string, IntentRecord>): void {
+    // The fence. A section that somehow lost its lock must not commit — and
+    // "somehow" is not hypothetical, because the lock file is a file and a
+    // person or a script can remove it while this is running.
+    if (this.held !== undefined && this.readHolder()?.token !== this.held) {
+      throw new Error(
+        `The intent ledger lock at ${this.lockPath} is no longer held by this process; refusing to write. Nothing was changed. Something removed or replaced the lock mid-write — re-run, and check what else is touching ${this.path}.`,
+      );
+    }
     const document = {
       /** Bumped only if the on-disk shape changes meaning. */
       version: 1,

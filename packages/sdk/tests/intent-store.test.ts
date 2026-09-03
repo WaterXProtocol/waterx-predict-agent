@@ -19,7 +19,10 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
+import { hostname } from 'node:os';
+
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+
 
 import {
   canonicalJson,
@@ -278,13 +281,13 @@ describe('the file store', () => {
 describe('the ledger lock', () => {
   const lockPath = (): string => `${ledger}.lock`;
 
-  const holdForeignLock = (ageMs = 0): void => {
+  /** A lock file written by somebody else, on this host, with a given token. */
+  const holdForeignLock = (token = 'theirs', pid = 999_999): void => {
     mkdirSync(dirname(ledger), { recursive: true });
-    writeFileSync(lockPath(), JSON.stringify({ pid: 999999, at: 'earlier' }));
-    if (ageMs > 0) {
-      const when = new Date(Date.now() - ageMs);
-      utimesSync(lockPath(), when, when);
-    }
+    writeFileSync(
+      lockPath(),
+      JSON.stringify({ host: hostname(), pid, token, at: '2026-09-03T00:00:00.000Z' }),
+    );
   };
 
   it('gives one key to two stores racing for the same intent', async () => {
@@ -321,28 +324,94 @@ describe('the ledger lock', () => {
     expect(existsSync(lockPath())).toBe(false);
   });
 
-  it('refuses rather than proceeding unlocked when the lock is held', async () => {
-    // The important half of the assertion is the second one. Timing out and
-    // then writing anyway would be worse than not locking at all: it would look
-    // safe and behave exactly as it does today.
+  it('refuses rather than proceeding unlocked when a LIVE holder has it', async () => {
+    // The important half is the second assertion. Timing out and then writing
+    // anyway would be worse than not locking at all: it would look safe and
+    // behave exactly as no lock does.
     holdForeignLock();
-    const store = createFileIntentStore(ledger, { lockTimeoutMs: 60, staleAfterMs: 60_000 });
+    const store = createFileIntentStore(ledger, {
+      lockTimeoutMs: 60,
+      isHolderAlive: () => true,
+    });
 
-    await expect(store.reserve(INTENT)).rejects.toThrow(/Another process is holding it/u);
+    await expect(store.reserve(INTENT)).rejects.toThrow(/refuses rather than proceeding/u);
     expect(existsSync(ledger)).toBe(false);
   });
 
-  it('takes a lock nobody has released in far longer than the work takes', async () => {
-    // A process killed mid-section must not wedge every later one. The section
-    // is a file read and a file write; anything holding it for ten seconds is
-    // gone.
-    holdForeignLock(30_000);
-    const store = createFileIntentStore(ledger, { lockTimeoutMs: 200, staleAfterMs: 10_000 });
+  it('never takes a lock from a holder that is merely slow', async () => {
+    // The bug this replaced: a lock older than a timeout was taken on the
+    // reasoning that the section is short. A paused holder then resumes into a
+    // section somebody else owns. Age is not evidence of death.
+    holdForeignLock();
+    const ancient = new Date(Date.now() - 60 * 60 * 1_000);
+    utimesSync(lockPath(), ancient, ancient);
+    const store = createFileIntentStore(ledger, {
+      lockTimeoutMs: 60,
+      isHolderAlive: () => true,
+    });
+
+    await expect(store.reserve(INTENT)).rejects.toThrow(/refuses rather than proceeding/u);
+  });
+
+  it('takes a lock whose holder is gone, however recently it was taken', async () => {
+    // A process killed mid-section must not wedge every later one — and the
+    // question that settles it is whether the holder exists, not how long ago
+    // it started.
+    holdForeignLock();
+    const store = createFileIntentStore(ledger, {
+      lockTimeoutMs: 200,
+      isHolderAlive: () => false,
+    });
 
     const reserved = await store.reserve(INTENT);
 
     expect(reserved.idempotencyKey).toBeTypeOf('string');
     expect(existsSync(lockPath())).toBe(false);
+  });
+
+  it('refuses to judge a holder on another host rather than guessing', async () => {
+    // A pid on another machine says nothing about this one, so there is no
+    // liveness signal and the only safe answer is to wait and then refuse.
+    mkdirSync(dirname(ledger), { recursive: true });
+    writeFileSync(
+      lockPath(),
+      JSON.stringify({ host: 'some-other-box', pid: 1, token: 'theirs', at: 'earlier' }),
+    );
+    const store = createFileIntentStore(ledger, {
+      lockTimeoutMs: 60,
+      // Would say "dead" if it were ever asked. It must not be.
+      isHolderAlive: () => false,
+    });
+
+    await expect(store.reserve(INTENT)).rejects.toThrow(/some-other-box/u);
+  });
+
+  it('leaves a lock it refused exactly as it found it', async () => {
+    // The amplification in the version this replaced: a caller that gave up, or
+    // one that resumed after being stolen from, removed a lock that was no
+    // longer its own — letting a third walk in on top of a live section. A
+    // release only ever removes a lock whose token still matches.
+    holdForeignLock('someone-elses', 4242);
+    const store = createFileIntentStore(ledger, {
+      lockTimeoutMs: 60,
+      isHolderAlive: () => true,
+    });
+
+    await expect(store.reserve(INTENT)).rejects.toThrow(/refuses rather than proceeding/u);
+
+    const holder = JSON.parse(readFileSync(lockPath(), 'utf8')) as { token: string; pid: number };
+    expect(holder.token).toBe('someone-elses');
+    expect(holder.pid).toBe(4242);
+  });
+
+  it('names the holder in the refusal, so a person can go and look', async () => {
+    holdForeignLock('someone-elses', 4242);
+    const store = createFileIntentStore(ledger, {
+      lockTimeoutMs: 60,
+      isHolderAlive: () => true,
+    });
+
+    await expect(store.reserve(INTENT)).rejects.toThrow(/pid 4242/u);
   });
 
   it('leaves no lock behind on the ordinary path', async () => {

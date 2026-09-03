@@ -111,8 +111,6 @@ try {
     { waitFor: 'TERMINAL', timeoutMs: 90_000 },
   );
 
-  emit({ result, cost });
-
   out(`executionId : ${result.executionId}`);
   out(`status      : ${result.status}  (terminal: ${result.terminal}, timedOut: ${result.timedOut})`);
   out(`key         : ${result.idempotencyKey}${result.idempotencyKeyReplayed ? '  (REPLAYED — this intent had been attempted before)' : ''}`);
@@ -122,11 +120,17 @@ try {
   if (!result.fee.available) {
     out(`fee         : none reportable — ${result.fee.reason}. Do not compute one.`);
   }
+  // Classified BEFORE anything reaches stdout. Emitting the result first and
+  // the failure afterwards left a caller holding `{ ok: true }` next to exit 4
+  // — the suppressor kept stdout parseable and the document still said the
+  // wrong thing.
   if (result.timedOut) {
     out('');
     out('The wait expired. The order is LIVE, not failed. Run `node recipes/reconcile.mjs`.');
-    emitError('WAIT_EXPIRED', { executionId: result.executionId, idempotencyKey: result.idempotencyKey });
+    emitError('WAIT_EXPIRED', { result, cost });
     process.exitCode = 4;
+  } else {
+    emit({ result, cost });
   }
 } catch (error) {
   if (isUnresolvedWrite(error)) {

@@ -1034,6 +1034,36 @@ describe('executeMarketOrder with an intent store', () => {
     expect(second.calls[0]?.method).toBe('GET');
   });
 
+  it('does not label a replayed terminal result as timed out', async () => {
+    // `terminal: true, timedOut: true` is a contradiction — it says the order
+    // both finished and was not observed to finish — and a caller branching on
+    // `timedOut` would send a settled order to reconciliation forever.
+    const store = createMemoryIntentStore();
+    const first = withStore(
+      [
+        json(201, CREATED),
+        json(202, SUBMITTED),
+        json(200, { executionId: 'exec-1', status: 'FILLED', transactionDigest: 'd' }),
+      ],
+      store,
+    );
+    await first.client.executeMarketOrder(unpriced, { waitFor: 'TERMINAL', pollIntervalMs: 0 });
+
+    for (const waitFor of ['SUBMITTED', 'TERMINAL'] as const) {
+      const replay = withStore(
+        [json(200, { executionId: 'exec-1', status: 'FILLED', transactionDigest: 'd' })],
+        store,
+      );
+      const result = await replay.client.executeMarketOrder(unpriced, {
+        waitFor,
+        pollIntervalMs: 0,
+      });
+
+      expect(result.terminal, waitFor).toBe(true);
+      expect(result.timedOut, waitFor).toBe(false);
+    }
+  });
+
   it('reads back a PENDING intent too, which is the documented recovery', async () => {
     const store = createMemoryIntentStore();
     const first = withStore([json(201, CREATED), json(202, SUBMITTED)], store);
