@@ -369,6 +369,17 @@ describe('the shipped recipes', () => {
   const RECIPE_DIR = `${ROOT}packages/sdk/recipes`;
   const RECIPES = readdirSync(RECIPE_DIR).filter((name) => name.endsWith('.mjs'));
 
+  /**
+   * Source with block comments removed.
+   *
+   * These files explain themselves at length, and the explanations quote code —
+   * `await import()`, paths, specifiers. Scanning prose for code finds code in
+   * prose. Only block comments are stripped, because that is where the prose
+   * is; a line comment that trips one of these guards is a sentence to reword.
+   */
+  const code = (name: string): string =>
+    readFileSync(`${RECIPE_DIR}/${name}`, 'utf8').replace(/\/\*[\s\S]*?\*\//gu, '');
+
   it('ships inside the tarball, and the report can find them', () => {
     // A recipe that exists only in this repository is a recipe for people who
     // already cloned it — the same failure the shipped instructions exist to
@@ -395,7 +406,7 @@ describe('the shipped recipes', () => {
 
   it('cannot become a second way to trade', () => {
     for (const name of RECIPES) {
-      const source = readFileSync(`${RECIPE_DIR}/${name}`, 'utf8');
+      const source = code(name);
       // No transport of its own, and no route assembled by hand. Everything that
       // reaches the network goes through the client.
       expect(source, `${name} calls fetch`).not.toMatch(/fetch\s*\(/u);
@@ -416,7 +427,7 @@ describe('the shipped recipes', () => {
       // double quotes — and the one form left out is the one that gets used.
       // A module specifier is always a quoted string, so quoted strings that
       // are shaped like a path are what this looks at.
-      for (const quoted of source.matchAll(/['"]([^'"\n]+)['"]/gu)) {
+      for (const quoted of source.matchAll(/['"`]([^'"`\n]+)['"`]/gu)) {
         const target = quoted[1] ?? '';
         const specifierShaped = /^(?:\.{1,2}\/|\/|@?[\w@./-]+\/)/u.test(target);
         if (!specifierShaped) continue;
@@ -425,6 +436,26 @@ describe('the shipped recipes', () => {
           /@waterx\/predict-agent-sdk\/./u.test(target);
         expect(internal, `${name} references the internal path ${target}`).toBe(false);
       }
+    }
+  });
+
+  it('names every module it loads as a plain literal', () => {
+    // The specifier scan above can only see specifiers it can read. A template
+    // literal, a concatenation or a variable defeats it — not by being clever,
+    // just by being a different token — so a computed specifier is refused
+    // outright rather than scanned for. Every import in a recipe names one
+    // module, visibly, at the character level.
+    for (const name of RECIPES) {
+      const source = code(name);
+      for (const call of source.matchAll(/\bimport\s*\(([^)]*)\)/gu)) {
+        const argument = (call[1] ?? '').trim();
+        expect(argument, `${name} computes a module specifier: import(${argument})`).toMatch(
+          /^'[^'\n]+'$/u,
+        );
+      }
+      expect(source, `${name} builds a specifier with require`).not.toMatch(
+        /\brequire\s*\(\s*[^'\s)]/u,
+      );
     }
   });
 

@@ -29,7 +29,7 @@ and no policy. `tests/workspace.test.ts` fails if that stops being true.
 | `diagnose.mjs` | May this agent trade right now, and if not, who does what? Run it first, and run it again whenever something stops working. |
 | `onboard.mjs` | Prints the owner's authorization link **and waits for the signature**, instead of stopping and asking someone to come back and say they are done. |
 | `markets.mjs` | Free text — plus, when you have it, `--closes-at` — to one market, or to a shortlist with the prices already attached. |
-| `order.mjs` | One protected market order, with the spread and the size confidence stated *before* it goes, and the key kept on disk. `--dry-run` stops after the disclosure. |
+| `order.mjs` | One protected market order, with the spread and the size confidence stated *before* it goes, and the key kept on disk. `--dry-run` stops after the disclosure; `--account <id>` pins the account. |
 | `positions.mjs` | What is held, and what is left to spend. |
 | `reconcile.mjs` | What did this project start writing and never see land? Reads it back, and tells the difference between an order that is *in flight* and one that is *stopped waiting for this agent to sign* — the second is not fixed by reading. |
 
@@ -59,6 +59,23 @@ nothing". Success is `{ "ok": true, … }`; every handled failure is
 **An option these do not recognise is refused, not ignored.** A misspelled
 `--dryrun` exits 2 having read nothing and sent nothing. A script that moves
 money and silently drops a flag is a trade nobody asked for.
+
+**Pin the account when you resume something.** An idempotency key covers the
+account, so `order.mjs` without `--account` — which trades whichever single
+account is authorized right now — turns the same arguments into a different
+intent the moment an owner authorizes a different one. `reconcile.mjs` always
+passes it.
+
+**The ledger is read strictly.** A record it cannot understand is a refusal
+naming the record and the field, not a skipped row: a record nobody can read may
+be the one naming an order that exists, and dropping it frees the next attempt
+to mint a new key.
+
+**Nothing removes a lock it did not create.** If a run is killed mid-write, the
+next one stops and tells you whether the holder is still running, so you know
+whether removing `.waterx/intents.json.lock` is safe. Automatic takeover is two
+steps — check, then remove — and two callers can both take it, which is how one
+intent becomes two orders.
 
 **A stopped order and a live one are different things.** An execution left at
 `AWAITING_SIGNATURE` is not in flight — nothing but this agent's signature moves
@@ -94,3 +111,4 @@ made, and it is the only file to change.
 | `4` | A wait expired. **Not a failure** — the order or the signature may still land. |
 | `5` | An unresolved write. The outcome is unknown; run `reconcile.mjs`. |
 | `6` | The server refused the order, and said why. |
+| `70` | An unexpected fault. Still a `{ "ok": false }` document — an unhandled failure is a thing that happened, and stdout says so. |

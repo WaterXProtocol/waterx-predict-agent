@@ -45,34 +45,36 @@
  * already serialized behind it, and the two together make one reservation per
  * intent across processes as well as within one.
  *
- * A lock also has to be recoverable, because a process killed mid-section would
- * otherwise wedge every later one. The recoverable case is decided by ASKING
- * WHETHER THE HOLDER IS ALIVE, never by how long it has held on.
+ * NOTHING TAKES A LOCK IT DID NOT CREATE. This is the whole of the exclusion
+ * argument, and it is short on purpose, because two earlier versions were not.
  *
- * An earlier version took a lock older than a timeout, reasoning that the
- * section is a file read and a file write so anything holding it for ten
- * seconds must be gone. That reasoning is probabilistic and the failure it
- * admits is not: a paused holder resumes into a section somebody else now owns,
- * both write, and — worse — the resumed holder's own `finally` deletes the NEW
- * owner's lock, so the next caller walks in on top of a live section. A timeout
- * cannot distinguish "dead" from "slow", and one of those must not be stolen
- * from.
+ * The first declared a holder dead after a timeout and removed it. The second
+ * kept the removal and asked `process.kill(pid, 0)` first, so only a provably
+ * dead holder was cleared. Both are unsound, and for the same structural reason
+ * rather than for a reason about how the deadness was decided: `unlink` then
+ * `open(O_EXCL)` is two steps. Two callers can read the same dead lock, the
+ * first can clear it and create its own, and the second — still acting on what
+ * it read a moment ago — deletes THAT one and creates a third. Now two sections
+ * are running and each believes it holds the lock. No amount of care about the
+ * liveness question fixes a takeover that is not atomic, and plain `fs` offers
+ * no compare-and-swap to make it atomic with.
  *
- * So: `process.kill(pid, 0)` for liveness, which answers the actual question. A
- * dead holder is removed and the lock taken. A LIVE holder is waited for and
- * then REFUSED — never taken, however long it has held. A holder on a different
- * host is unjudgeable from here and is also refused, because a pid on another
- * machine says nothing about this one.
+ * So there is no takeover. `open(O_EXCL)` succeeds for exactly one caller and
+ * that is the entire protocol; a lock that exists is respected, always, and a
+ * caller only ever removes the lock whose token is still its own.
  *
- * Two things follow, and both are load-bearing. A release only ever removes a
- * lock whose token is still ours, so no caller can delete another's. And the
- * ledger write re-checks that token immediately before it commits, so a section
- * that somehow lost its lock fails instead of writing.
+ * The cost is that a process killed mid-section leaves a file behind, and the
+ * next run stops until somebody removes it. That is a deliberate trade. This
+ * guards a ledger that decides whether a second order is placed, and a refusal
+ * naming the path is thirty seconds of a person's time; every automatic
+ * recovery available here buys those thirty seconds with a race. The liveness
+ * check survives as the thing that makes the refusal ACTIONABLE — it tells the
+ * operator whether the holder is still running, so they know whether removing
+ * the file is safe — but nothing acts on the answer.
  *
- * The residual case is pid reuse: a crashed holder whose pid now belongs to
- * something unrelated reads as alive, and this refuses rather than steals. That
- * is the safe direction — a refusal with the path in it is a person's problem
- * for thirty seconds, and a wrong steal is a second order.
+ * The write is fenced as well: the ledger rewrite re-checks the token before it
+ * commits, so a section whose lock was removed by a person mid-run fails
+ * instead of writing.
  */
 import { createHash, randomUUID } from 'node:crypto';
 import {
@@ -408,11 +410,11 @@ export interface FileIntentStoreOptions {
    */
   readonly lockTimeoutMs?: number;
   /**
-   * Override the liveness check. Testing seam; there is no reason to pass one.
+   * Override the liveness check used in the REFUSAL MESSAGE.
    *
-   * Returning `true` for a holder that is gone turns automatic recovery into a
-   * refusal a person has to clear. Returning `false` for one that is alive is
-   * how two processes write at once.
+   * Nothing acts on its answer — a lock is never removed on the strength of it —
+   * so a wrong answer here misinforms an operator and cannot let two sections
+   * run. Testing seam; there is no reason to pass one.
    */
   readonly isHolderAlive?: (pid: number) => boolean;
 }
@@ -513,34 +515,9 @@ class FileIntentStore extends BaseIntentStore {
         if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
       }
 
-      const holder = this.readHolder();
-      // Gone between the open and the read, or written by a version that did
-      // not record a holder. Either way there is nothing to judge; loop and let
-      // the exclusive open decide.
-      if (holder === undefined) {
-        if (Date.now() < deadline) {
-          await sleep(20);
-          continue;
-        }
-        throw this.refusal('its holder could not be read');
-      }
-
-      // A dead holder is the ONLY thing taken, and liveness is asked rather
-      // than inferred from a clock. A pid on another host cannot be asked.
-      if (holder.host === hostname() && !this.isHolderAlive(holder.pid)) {
-        try {
-          unlinkSync(this.lockPath);
-        } catch {
-          // Somebody else cleared it first, which is the same outcome.
-        }
-        continue;
-      }
-
-      if (Date.now() >= deadline) {
-        throw this.refusal(
-          `pid ${String(holder.pid)} on ${holder.host} has held it since ${holder.at}`,
-        );
-      }
+      // Held by somebody. Wait — and only wait. Removing it here is the
+      // takeover the header rules out.
+      if (Date.now() >= deadline) throw this.refusal(this.describeHolder());
       await sleep(20);
     }
   }
@@ -565,9 +542,30 @@ class FileIntentStore extends BaseIntentStore {
     }
   }
 
+  /**
+   * Who holds it, and whether they are still running.
+   *
+   * The liveness answer is REPORTED and never acted on: it is what turns "a
+   * lock file exists" into an instruction a person can follow without guessing
+   * whether deleting it is safe.
+   */
+  private describeHolder(): string {
+    const holder = this.readHolder();
+    if (holder === undefined) {
+      return 'its holder could not be read, so nothing can be said about whether it is still running';
+    }
+    const who = `pid ${String(holder.pid)} on ${holder.host}, held since ${holder.at}`;
+    if (holder.host !== hostname()) {
+      return `${who} — a pid on another host cannot be checked from here`;
+    }
+    return this.isHolderAlive(holder.pid)
+      ? `${who} — that process IS still running, so do not remove the lock`
+      : `${who} — that process is NOT running, so the lock is safe to remove`;
+  }
+
   private refusal(because: string): Error {
     return new Error(
-      `Could not take the intent ledger lock at ${this.lockPath}: ${because}. This refuses rather than proceeding unlocked, and rather than taking a lock that may still be held — both are how one intent becomes two orders. Check for another run; if nothing is running, remove the file.`,
+      `Could not take the intent ledger lock at ${this.lockPath}: ${because}. Nothing here removes a lock it did not create — a takeover is two steps and two callers can both take it, which is how one intent becomes two orders. If the holder is gone, remove ${this.lockPath} and re-run.`,
     );
   }
 
@@ -595,12 +593,43 @@ class FileIntentStore extends BaseIntentStore {
     const entries = (parsed as { intents?: unknown }).intents;
     if (entries !== null && typeof entries === 'object') {
       for (const [digest, value] of Object.entries(entries as Record<string, unknown>)) {
-        const record = value as IntentRecord;
-        if (typeof record?.idempotencyKey !== 'string') continue;
-        records.set(digest, { ...record, digest });
+        records.set(digest, this.validate(digest, value));
       }
     }
     return records;
+  }
+
+  /**
+   * A record, or an error naming it.
+   *
+   * Every field a reader will reach for is checked here, because the readers are
+   * the recovery paths and they run at the worst moment. A record with an
+   * `idempotencyKey` and no `intent` used to load fine and then take the
+   * reconciliation recipe down on a property access — an uncaught throw, an
+   * empty `--json` stdout, and an operator none the wiser about the order the
+   * record was there to tell them about.
+   *
+   * Malformed is FATAL rather than skipped, for the same reason an unparseable
+   * ledger is: a record this cannot read may be the one naming an execution
+   * that exists, and quietly dropping it frees the next attempt to mint a new
+   * key. A person has to look.
+   */
+  private validate(digest: string, value: unknown): IntentRecord {
+    const record = value as Partial<IntentRecord> | null;
+    const bad = (field: string): never => {
+      throw new Error(
+        `The intent ledger at ${this.path} has a record under ${digest} whose \`${field}\` is missing or the wrong type. This will not load a record it cannot read, and will not skip one either — a record it cannot read may be the one naming an order that exists, and dropping it frees the next attempt to mint a new key. Inspect the file, recover what it names, then move it aside.`,
+      );
+    };
+    if (record === null || typeof record !== 'object') bad('record');
+    if (typeof record?.idempotencyKey !== 'string') bad('idempotencyKey');
+    if (record?.intent === null || typeof record?.intent !== 'object') bad('intent');
+    if (record?.status !== 'PENDING' && record?.status !== 'SETTLED') bad('status');
+    if (typeof record?.createdAt !== 'string') bad('createdAt');
+    for (const field of ['executionId', 'enforcedWorstPrice', 'settledAt', 'outcome'] as const) {
+      if (record?.[field] !== undefined && typeof record[field] !== 'string') bad(field);
+    }
+    return { ...(record as IntentRecord), digest };
   }
 
   protected save(records: Map<string, IntentRecord>): void {

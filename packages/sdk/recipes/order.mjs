@@ -11,7 +11,13 @@
  * the part where inventing it wrong costs money.
  *
  *   node recipes/order.mjs <marketId> <YES|NO> <BUY|SELL> <amount> <maxSlippageBps> [positionId]
- *                          [--dry-run] [--json]
+ *                          [--account <id>] [--dry-run] [--json]
+ *
+ * `--account` PINS the account. Without it this trades whichever single account
+ * is authorized right now, which is the convenient default and the wrong one
+ * for a resumed intent: an idempotency key covers the account too, so if the
+ * owner has since authorized a different one, the same arguments become a
+ * different intent and a different key. `reconcile.mjs` always passes it.
  *
  * BUY sizes in wxUSD. SELL sizes in SHARES and needs the positionId. They are
  * not interchangeable and the API will not guess which you meant.
@@ -23,7 +29,7 @@ import { isPredictAgentApiError, isUnresolvedWrite, describeQuoteCost } from '@w
 
 import { connect, emit, emitError, out, parseArgv } from './_client.mjs';
 
-const { positionals, options } = parseArgv({ '--dry-run': 'boolean' });
+const { positionals, options } = parseArgv({ '--dry-run': 'boolean', '--account': 'value' });
 const [marketId, outcomeId, side, amount, bps, positionId] = positionals;
 const dryRun = options['--dry-run'] === true;
 
@@ -48,10 +54,20 @@ if (side === 'SELL' && positionId === undefined) {
 const size = side === 'BUY' ? { buyAmount: String(amount) } : { sellShares: String(amount) };
 
 const client = await connect();
-const diagnosis = await client.diagnose();
+// Narrowed when pinned, so `ready` means THAT account is ready rather than some
+// other one being the only candidate.
+const pinned = options['--account'];
+const diagnosis = await client.diagnose(pinned === undefined ? {} : { accountId: pinned });
 if (!diagnosis.ready) {
   out(`Not placing anything: ${diagnosis.writes.status} — ${diagnosis.writes.detail}`);
-  emitError('NOT_READY', { writes: diagnosis.writes, authorizationUrl: diagnosis.authorizationUrl });
+  if (pinned !== undefined) {
+    out(`(asked for account ${pinned}; it is not one this agent may trade on right now)`);
+  }
+  emitError('NOT_READY', {
+    writes: diagnosis.writes,
+    requestedAccount: pinned ?? null,
+    authorizationUrl: diagnosis.authorizationUrl,
+  });
   process.exit(3);
 }
 const accountId = diagnosis.onboarding.account.accountId;
@@ -60,7 +76,7 @@ const { market } = await client.getMarket(marketId);
 out(`market   : ${market.title}`);
 out(`           ${market.marketId}`);
 out(`status   : ${market.status} | tradeable: ${market.tradeable} | closes ${market.closesAt ?? '(no schedule)'}`);
-out(`account  : ${accountId}`);
+out(`account  : ${accountId}${pinned === undefined ? '  (whichever is authorized; pin it with --account)' : '  (pinned)'}`);
 out(`intent   : ${side} ${outcomeId} ${amount} ${side === 'BUY' ? 'wxUSD' : 'shares'} | maxSlippageBps ${bps}`);
 
 // A quote to price the disclosure. The ORDER mints its own, immediately before

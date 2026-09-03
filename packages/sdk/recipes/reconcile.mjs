@@ -41,17 +41,24 @@ parseArgv();
  * writes on their behalf while they are reading about why it has to.
  *
  * The reconstruction is CHECKED, and this is the whole point of the function.
- * `order.mjs` takes six things on its command line, and an intent may carry
- * more — a `clientOrderId`, a `worstAcceptablePrice`, a `strategyId`. Print the
- * command for one of those and the operator runs a DIFFERENT intent: different
- * digest, different key, a second order, while the line above tells them it is
- * the first one finally sent. So the reconstruction is digested against the
- * record, and a command that would not reproduce it is not offered at all.
+ * `order.mjs` takes six things positionally, and an intent may carry more — a
+ * `clientOrderId`, a `worstAcceptablePrice`, a `strategyId`. Print the command
+ * for one of those and the operator runs a DIFFERENT intent: different digest,
+ * different key, a second order, while the line above tells them it is the
+ * first one finally sent. So the reconstruction is digested against the record,
+ * and a command that would not reproduce it is not offered at all.
+ *
+ * `--account` is always passed, and it is not decoration. An idempotency key
+ * covers the account, and `order.mjs` without it trades whichever account
+ * happens to be the single authorized one at that moment. Verifying the digest
+ * against the RECORDED account and then printing a command that resolves a
+ * DIFFERENT one would be the same defect the digest check exists to catch,
+ * moved one field over.
  */
 const resumeCommand = (record) => {
-  const intent = record.intent;
+  const intent = record.intent ?? {};
   const amount = intent.size?.buyAmount ?? intent.size?.sellShares;
-  if (amount === undefined) return undefined;
+  if (amount === undefined || intent.accountId === undefined) return undefined;
 
   const rebuilt = {
     accountId: intent.accountId,
@@ -72,9 +79,10 @@ const resumeCommand = (record) => {
     amount,
     String(intent.maxSlippageBps),
     intent.positionId ?? '',
+    `--account ${intent.accountId}`,
   ]
-    .join(' ')
-    .trimEnd();
+    .filter((part) => part !== '')
+    .join(' ');
 };
 
 /** What to say when the command line cannot express this intent. */

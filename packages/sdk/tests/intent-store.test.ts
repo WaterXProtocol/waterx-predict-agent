@@ -260,6 +260,39 @@ describe('the file store', () => {
     expect(readFileSync(ledger, 'utf8')).toBe('{ this is not json');
   });
 
+  it('refuses a record it cannot read, rather than skipping it', async () => {
+    // Skipping is the dangerous half. A record this cannot read may be the one
+    // naming an order that exists, and dropping it frees the next attempt to
+    // mint a new key — while the reader that reaches for `intent.size` takes the
+    // recovery path down on a property access at the worst possible moment.
+    mkdirSync(dirname(ledger), { recursive: true });
+    writeFileSync(
+      ledger,
+      JSON.stringify({
+        version: 1,
+        intents: {
+          abc: { idempotencyKey: 'k', status: 'PENDING', createdAt: 'now' }, // no `intent`
+        },
+      }),
+    );
+
+    await expect(createFileIntentStore(ledger).pending()).rejects.toThrow(/`intent` is missing/u);
+  });
+
+  it('names the record and the field, so a person can go and fix it', async () => {
+    mkdirSync(dirname(ledger), { recursive: true });
+    writeFileSync(
+      ledger,
+      JSON.stringify({
+        version: 1,
+        intents: { deadbeef: { idempotencyKey: 'k', intent: {}, createdAt: 'now', status: 'MAYBE' } },
+      }),
+    );
+
+    await expect(createFileIntentStore(ledger).pending()).rejects.toThrow(/deadbeef/u);
+    await expect(createFileIntentStore(ledger).pending()).rejects.toThrow(/`status`/u);
+  });
+
   it('reads an empty file location as an empty ledger, not as an error', async () => {
     await expect(createFileIntentStore(ledger).pending()).resolves.toEqual([]);
   });
@@ -324,7 +357,7 @@ describe('the ledger lock', () => {
     expect(existsSync(lockPath())).toBe(false);
   });
 
-  it('refuses rather than proceeding unlocked when a LIVE holder has it', async () => {
+  it('refuses rather than proceeding unlocked when a holder has it', async () => {
     // The important half is the second assertion. Timing out and then writing
     // anyway would be worse than not locking at all: it would look safe and
     // behave exactly as no lock does.
@@ -334,14 +367,13 @@ describe('the ledger lock', () => {
       isHolderAlive: () => true,
     });
 
-    await expect(store.reserve(INTENT)).rejects.toThrow(/refuses rather than proceeding/u);
+    await expect(store.reserve(INTENT)).rejects.toThrow(/Nothing here removes a lock/u);
     expect(existsSync(ledger)).toBe(false);
   });
 
-  it('never takes a lock from a holder that is merely slow', async () => {
-    // The bug this replaced: a lock older than a timeout was taken on the
-    // reasoning that the section is short. A paused holder then resumes into a
-    // section somebody else owns. Age is not evidence of death.
+  it('never takes a lock from a holder that is merely old', async () => {
+    // The first version took a lock older than a timeout, reasoning that the
+    // section is short. Age is not evidence of anything.
     holdForeignLock();
     const ancient = new Date(Date.now() - 60 * 60 * 1_000);
     utimesSync(lockPath(), ancient, ancient);
@@ -350,28 +382,49 @@ describe('the ledger lock', () => {
       isHolderAlive: () => true,
     });
 
-    await expect(store.reserve(INTENT)).rejects.toThrow(/refuses rather than proceeding/u);
+    await expect(store.reserve(INTENT)).rejects.toThrow(/Nothing here removes a lock/u);
   });
 
-  it('takes a lock whose holder is gone, however recently it was taken', async () => {
-    // A process killed mid-section must not wedge every later one — and the
-    // question that settles it is whether the holder exists, not how long ago
-    // it started.
-    holdForeignLock();
+  it('does not remove a lock whose holder is provably dead, either', async () => {
+    // The version this replaced did, having checked liveness first — and that
+    // is still unsound, for a reason that is not about liveness at all. `unlink`
+    // then `open(O_EXCL)` is two steps: two callers read the same dead lock, the
+    // first clears it and creates its own, and the second deletes THAT one and
+    // creates a third. Both then run. No takeover, so no race.
+    holdForeignLock('theirs', 4242);
     const store = createFileIntentStore(ledger, {
-      lockTimeoutMs: 200,
+      lockTimeoutMs: 60,
       isHolderAlive: () => false,
     });
 
-    const reserved = await store.reserve(INTENT);
-
-    expect(reserved.idempotencyKey).toBeTypeOf('string');
-    expect(existsSync(lockPath())).toBe(false);
+    await expect(store.reserve(INTENT)).rejects.toThrow(/Nothing here removes a lock/u);
+    expect(existsSync(lockPath()), 'removed a lock it did not create').toBe(true);
+    expect(existsSync(ledger)).toBe(false);
   });
 
-  it('refuses to judge a holder on another host rather than guessing', async () => {
+  it('says the lock is safe to remove when the holder is gone', async () => {
+    holdForeignLock('theirs', 4242);
+    const store = createFileIntentStore(ledger, {
+      lockTimeoutMs: 60,
+      isHolderAlive: () => false,
+    });
+
+    await expect(store.reserve(INTENT)).rejects.toThrow(/is NOT running, so the lock is safe/u);
+  });
+
+  it('says the opposite when the holder is still running', async () => {
+    holdForeignLock('theirs', 4242);
+    const store = createFileIntentStore(ledger, {
+      lockTimeoutMs: 60,
+      isHolderAlive: () => true,
+    });
+
+    await expect(store.reserve(INTENT)).rejects.toThrow(/IS still running, so do not remove/u);
+  });
+
+  it('will not claim to know about a holder on another host', async () => {
     // A pid on another machine says nothing about this one, so there is no
-    // liveness signal and the only safe answer is to wait and then refuse.
+    // liveness answer to give — and none is invented.
     mkdirSync(dirname(ledger), { recursive: true });
     writeFileSync(
       lockPath(),
@@ -379,11 +432,11 @@ describe('the ledger lock', () => {
     );
     const store = createFileIntentStore(ledger, {
       lockTimeoutMs: 60,
-      // Would say "dead" if it were ever asked. It must not be.
+      // Would answer if it were ever asked. It must not be.
       isHolderAlive: () => false,
     });
 
-    await expect(store.reserve(INTENT)).rejects.toThrow(/some-other-box/u);
+    await expect(store.reserve(INTENT)).rejects.toThrow(/cannot be checked from here/u);
   });
 
   it('leaves a lock it refused exactly as it found it', async () => {
@@ -397,7 +450,7 @@ describe('the ledger lock', () => {
       isHolderAlive: () => true,
     });
 
-    await expect(store.reserve(INTENT)).rejects.toThrow(/refuses rather than proceeding/u);
+    await expect(store.reserve(INTENT)).rejects.toThrow(/Nothing here removes a lock/u);
 
     const holder = JSON.parse(readFileSync(lockPath(), 'utf8')) as { token: string; pid: number };
     expect(holder.token).toBe('someone-elses');

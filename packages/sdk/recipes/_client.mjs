@@ -91,6 +91,28 @@ export const emitError = (code, detail = {}) => {
   write({ ok: false, error: { code, ...detail } });
 };
 
+/**
+ * Anything that gets out of a recipe still leaves a document behind.
+ *
+ * The `--json` contract is that stdout says what happened, and an unexpected
+ * throw is a thing that happened. Without this, a malformed ledger or any other
+ * unhandled failure exits with stdout empty, which is exactly the "failed"
+ * versus "produced nothing" ambiguity the contract exists to remove — and the
+ * caller cannot tell whether it is safe to retry.
+ *
+ * 70 is `EX_SOFTWARE`: this is a fault, not one of the outcomes the exit codes
+ * in the README enumerate.
+ */
+const onFatal = (error) => {
+  const message = error instanceof Error ? error.message : String(error);
+  out(`Unexpected failure: ${message}`);
+  emitError('UNEXPECTED', { message });
+  process.exit(70);
+};
+
+process.on('uncaughtException', onFatal);
+process.on('unhandledRejection', onFatal);
+
 /* ── Arguments ────────────────────────────────────────────────────────────── */
 
 /**
