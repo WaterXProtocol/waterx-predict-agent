@@ -293,6 +293,82 @@ describe('the file store', () => {
     await expect(createFileIntentStore(ledger).pending()).rejects.toThrow(/`status`/u);
   });
 
+  it('refuses a record filed under a key its own intent does not hash to', async () => {
+    // The reproduction that mattered: put a real record under a wrong digest and
+    // `reserve` finds nothing for that intent, mints a SECOND key, and places a
+    // second order — while the first key, and possibly a live execution, sit
+    // under a name nothing looks up. The index is the content, so a record has
+    // to hash to where it is filed.
+    const store = createFileIntentStore(ledger);
+    const { idempotencyKey } = await store.reserve(INTENT);
+
+    const document = JSON.parse(readFileSync(ledger, 'utf8')) as {
+      intents: Record<string, unknown>;
+    };
+    const [rightDigest] = Object.keys(document.intents);
+    document.intents = { wrong0000: document.intents[String(rightDigest)] };
+    writeFileSync(ledger, JSON.stringify(document));
+
+    await expect(createFileIntentStore(ledger).reserve(INTENT)).rejects.toThrow(
+      /filed under wrong0000/u,
+    );
+    // And it says where the record belongs, because the intent inside it is fine.
+    await expect(createFileIntentStore(ledger).reserve(INTENT)).rejects.toThrow(
+      new RegExp(`belongs under ${String(rightDigest)}`, 'u'),
+    );
+    expect(idempotencyKey).toBeTypeOf('string');
+  });
+
+  it('refuses a file with no `intents`, rather than reading it as empty', async () => {
+    // "Absent means empty" mints a fresh key for every intent the file was
+    // holding one for. An empty ledger is a file that does not EXIST.
+    mkdirSync(dirname(ledger), { recursive: true });
+    writeFileSync(ledger, JSON.stringify({ version: 1 }));
+
+    await expect(createFileIntentStore(ledger).pending()).rejects.toThrow(/no `intents` object/u);
+  });
+
+  it('refuses a version it does not read', async () => {
+    mkdirSync(dirname(ledger), { recursive: true });
+    writeFileSync(ledger, JSON.stringify({ version: 2, intents: {} }));
+
+    await expect(createFileIntentStore(ledger).pending()).rejects.toThrow(/version 2/u);
+  });
+
+  it('refuses a root that is not an object', async () => {
+    mkdirSync(dirname(ledger), { recursive: true });
+    writeFileSync(ledger, JSON.stringify([]));
+
+    await expect(createFileIntentStore(ledger).pending()).rejects.toThrow(/root is not an object/u);
+  });
+
+  it('refuses an empty intent, which hashes nowhere near its key', async () => {
+    mkdirSync(dirname(ledger), { recursive: true });
+    writeFileSync(
+      ledger,
+      JSON.stringify({
+        version: 1,
+        intents: { abc: { idempotencyKey: 'k', intent: {}, status: 'PENDING', createdAt: 'now' } },
+      }),
+    );
+
+    await expect(createFileIntentStore(ledger).pending()).rejects.toThrow(/filed under abc/u);
+  });
+
+  it('round-trips a ledger it wrote itself', async () => {
+    // The checks above are only worth having if the normal path satisfies them,
+    // and the digest check is the one that would bite if `normalizeIntent` were
+    // not idempotent.
+    const store = createFileIntentStore(ledger);
+    const first = await store.reserve(INTENT);
+    await store.attach(first.idempotencyKey, 'exec-1', '0.5');
+
+    const reopened = await createFileIntentStore(ledger).reserve(INTENT);
+
+    expect(reopened.replayed).toBe(true);
+    expect(reopened.idempotencyKey).toBe(first.idempotencyKey);
+  });
+
   it('reads an empty file location as an empty ledger, not as an error', async () => {
     await expect(createFileIntentStore(ledger).pending()).resolves.toEqual([]);
   });

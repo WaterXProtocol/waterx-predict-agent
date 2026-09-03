@@ -66,10 +66,13 @@ account is authorized right now — turns the same arguments into a different
 intent the moment an owner authorizes a different one. `reconcile.mjs` always
 passes it.
 
-**The ledger is read strictly.** A record it cannot understand is a refusal
-naming the record and the field, not a skipped row: a record nobody can read may
-be the one naming an order that exists, and dropping it frees the next attempt
-to mint a new key.
+**The ledger is read strictly, and its index verifies itself.** Every record has
+to hash to the key it is filed under — that check is what stops a record from
+becoming invisible to the lookup that prevents a second order. A record under
+the wrong key, a file with no `intents`, a version this build does not read: all
+refusals naming what is wrong, never a skipped row and never "absent means
+empty". A record nobody can read may be the one naming an order that exists, and
+dropping it frees the next attempt to mint a new key.
 
 **Nothing removes a lock it did not create.** If a run is killed mid-write, the
 next one stops and tells you whether the holder is still running, so you know

@@ -102,6 +102,15 @@ export const INTENT_DIGEST_EXCLUDED_FIELDS: readonly string[] = [
   'referenceQuoteId',
 ];
 
+/**
+ * The on-disk shape. Bumped only when it changes meaning.
+ *
+ * A reader that meets a version it does not know REFUSES. Reading a newer
+ * ledger on old assumptions is how a record is misinterpreted rather than
+ * merely missed, and a misread record is a key minted twice.
+ */
+const LEDGER_VERSION = 1;
+
 /** Where a reserved key stands. `PENDING` is the state a restart has to resolve. */
 export type IntentRecordStatus = 'PENDING' | 'SETTLED';
 
@@ -589,12 +598,30 @@ class FileIntentStore extends BaseIntentStore {
         { cause: error },
       );
     }
+    const document = parsed as { version?: unknown; intents?: unknown } | null;
+    if (document === null || typeof document !== 'object' || Array.isArray(document)) {
+      throw this.unreadable('its root is not an object');
+    }
+    // A version this cannot read means the shape may have changed under every
+    // assumption below. Reading it anyway is how a record is misinterpreted
+    // rather than merely missed.
+    if (document.version !== LEDGER_VERSION) {
+      throw this.unreadable(
+        `it is version ${JSON.stringify(document.version)} and this build reads version ${String(LEDGER_VERSION)}`,
+      );
+    }
+    // NOT "absent means empty". An empty ledger is a file that does not exist;
+    // a file that exists without `intents` is a file this does not understand,
+    // and treating it as empty mints a fresh key for every intent it was
+    // holding one for.
+    const entries = document.intents;
+    if (entries === null || typeof entries !== 'object' || Array.isArray(entries)) {
+      throw this.unreadable('it has no `intents` object');
+    }
+
     const records = new Map<string, IntentRecord>();
-    const entries = (parsed as { intents?: unknown }).intents;
-    if (entries !== null && typeof entries === 'object') {
-      for (const [digest, value] of Object.entries(entries as Record<string, unknown>)) {
-        records.set(digest, this.validate(digest, value));
-      }
+    for (const [digest, value] of Object.entries(entries as Record<string, unknown>)) {
+      records.set(digest, this.validate(digest, value));
     }
     return records;
   }
@@ -614,6 +641,12 @@ class FileIntentStore extends BaseIntentStore {
    * that exists, and quietly dropping it frees the next attempt to mint a new
    * key. A person has to look.
    */
+  private unreadable(because: string): Error {
+    return new Error(
+      `The intent ledger at ${this.path} cannot be read: ${because}. This will not carry on over a ledger it does not understand — every record it fails to see is a key it will mint again, and a key minted twice is an order placed twice. Inspect the file, recover what it names, then move it aside.`,
+    );
+  }
+
   private validate(digest: string, value: unknown): IntentRecord {
     const record = value as Partial<IntentRecord> | null;
     const bad = (field: string): never => {
@@ -629,6 +662,20 @@ class FileIntentStore extends BaseIntentStore {
     for (const field of ['executionId', 'enforcedWorstPrice', 'settledAt', 'outcome'] as const) {
       if (record?.[field] !== undefined && typeof record[field] !== 'string') bad(field);
     }
+
+    // The key IS the content, so a record must hash to where it is filed. This
+    // is the check that makes the index self-verifying, and it is the one that
+    // matters most: a record under the wrong key is invisible to `reserve`,
+    // which finds nothing for that intent, mints a second key, and places a
+    // second order — while the first key, and possibly a live execution, sit
+    // under a name nothing will look up. Truncation, a hand edit, a merge of
+    // two ledgers, a partially rewritten field: all of them land here.
+    const computed = intentDigest(record?.intent as Record<string, unknown>);
+    if (computed !== digest) {
+      throw new Error(
+        `The intent ledger at ${this.path} has a record filed under ${digest} whose intent hashes to ${computed}. A record under the wrong key is invisible to the lookup that prevents a second order, so this refuses to load rather than mint a fresh key for an intent that already has one. Inspect the file — the intent it holds is intact, and it belongs under ${computed}.`,
+      );
+    }
     return { ...(record as IntentRecord), digest };
   }
 
@@ -642,8 +689,7 @@ class FileIntentStore extends BaseIntentStore {
       );
     }
     const document = {
-      /** Bumped only if the on-disk shape changes meaning. */
-      version: 1,
+      version: LEDGER_VERSION,
       intents: Object.fromEntries([...records].map(([digest, record]) => [digest, record])),
     };
     mkdirSync(dirname(this.path), { recursive: true });

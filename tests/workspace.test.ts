@@ -9,6 +9,8 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
+import ts from 'typescript';
+
 import {
   AGENT_TOOLS,
   createToolDispatcher,
@@ -370,13 +372,65 @@ describe('the shipped recipes', () => {
   const RECIPES = readdirSync(RECIPE_DIR).filter((name) => name.endsWith('.mjs'));
 
   /**
-   * Source with block comments removed.
+   * Every module specifier a recipe loads, PARSED rather than matched.
    *
-   * These files explain themselves at length, and the explanations quote code —
-   * `await import()`, paths, specifiers. Scanning prose for code finds code in
-   * prose. Only block comments are stripped, because that is where the prose
-   * is; a line comment that trips one of these guards is a sentence to reword.
+   * Scanning source text for quoted paths was wrong twice over. It read prose as
+   * code, because these files quote specifiers in their own comments. And it
+   * could not read code as code: `import('\\x2e\\x2e/dist/src/client.js')` is a
+   * perfectly ordinary module load whose raw text contains no `../`, so a
+   * regular expression over the source sees a string that is not
+   * specifier-shaped and skips it. A template literal defeats it differently, a
+   * concatenation differently again — there is always another spelling.
+   *
+   * So the compiler reads it. `text` on a parsed string literal is the specifier
+   * the runtime will resolve, escapes already applied, comments already gone.
+   *
+   * `computed` collects the loads whose specifier is not a plain literal at all.
+   * Those are refused rather than resolved: nothing static can follow a variable,
+   * and a recipe has no reason to build a module name.
    */
+  const specifiersOf = (name: string): { resolved: string[]; computed: string[] } => {
+    const source = ts.createSourceFile(
+      name,
+      readFileSync(`${RECIPE_DIR}/${name}`, 'utf8'),
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.JS,
+    );
+    const resolved: string[] = [];
+    const computed: string[] = [];
+
+    const take = (node: ts.Node | undefined, where: string): void => {
+      if (node === undefined) return;
+      if (ts.isStringLiteralLike(node)) {
+        // `.text` for a template with no substitutions too — which is still a
+        // literal the runtime resolves the same way.
+        if (ts.isNoSubstitutionTemplateLiteral(node) || ts.isStringLiteral(node)) {
+          resolved.push(node.text);
+          return;
+        }
+      }
+      computed.push(`${where}: ${node.getText(source)}`);
+    };
+
+    const walk = (node: ts.Node): void => {
+      if (ts.isImportDeclaration(node)) take(node.moduleSpecifier, 'import');
+      else if (ts.isExportDeclaration(node) && node.moduleSpecifier !== undefined) {
+        take(node.moduleSpecifier, 'export from');
+      } else if (ts.isCallExpression(node)) {
+        const isDynamicImport = node.expression.kind === ts.SyntaxKind.ImportKeyword;
+        const isRequire = ts.isIdentifier(node.expression) && node.expression.text === 'require';
+        if (isDynamicImport || isRequire) {
+          take(node.arguments[0], isRequire ? 'require' : 'import()');
+        }
+      }
+      ts.forEachChild(node, walk);
+    };
+    walk(source);
+    return { resolved, computed };
+  };
+
+  /** Source with block comments removed, for the checks that are about text. */
   const code = (name: string): string =>
     readFileSync(`${RECIPE_DIR}/${name}`, 'utf8').replace(/\/\*[\s\S]*?\*\//gu, '');
 
@@ -421,20 +475,13 @@ describe('the shipped recipes', () => {
       // the name appearing anywhere — the check that only looked for the name
       // would have waved it through.
       //
-      // Every specifier, not every import STATEMENT. Matching the statement
-      // means enumerating its forms — `from '…'`, a bare side-effect `import
-      // '…'`, `import('…')`, `require('…')`, and each of those again with
-      // double quotes — and the one form left out is the one that gets used.
-      // A module specifier is always a quoted string, so quoted strings that
-      // are shaped like a path are what this looks at.
-      for (const quoted of source.matchAll(/['"`]([^'"`\n]+)['"`]/gu)) {
-        const target = quoted[1] ?? '';
-        const specifierShaped = /^(?:\.{1,2}\/|\/|@?[\w@./-]+\/)/u.test(target);
-        if (!specifierShaped) continue;
+      // The specifiers come from the parser, so this sees what the runtime will
+      // resolve rather than what the file happens to spell.
+      for (const target of specifiersOf(name).resolved) {
         const internal =
           /(?:^|\/)(?:dist|src)\//u.test(target) ||
           /@waterx\/predict-agent-sdk\/./u.test(target);
-        expect(internal, `${name} references the internal path ${target}`).toBe(false);
+        expect(internal, `${name} imports the internal path ${target}`).toBe(false);
       }
     }
   });
@@ -446,16 +493,7 @@ describe('the shipped recipes', () => {
     // outright rather than scanned for. Every import in a recipe names one
     // module, visibly, at the character level.
     for (const name of RECIPES) {
-      const source = code(name);
-      for (const call of source.matchAll(/\bimport\s*\(([^)]*)\)/gu)) {
-        const argument = (call[1] ?? '').trim();
-        expect(argument, `${name} computes a module specifier: import(${argument})`).toMatch(
-          /^'[^'\n]+'$/u,
-        );
-      }
-      expect(source, `${name} builds a specifier with require`).not.toMatch(
-        /\brequire\s*\(\s*[^'\s)]/u,
-      );
+      expect(specifiersOf(name).computed, `${name} computes a module specifier`).toEqual([]);
     }
   });
 
