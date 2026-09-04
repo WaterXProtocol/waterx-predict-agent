@@ -41,12 +41,28 @@ function summarize(report: InstallationReport): void {
     line(`  ${report.instructionsPath}`);
   }
 
+  if (report.recipesPath !== undefined) {
+    line('');
+    line('Runnable recipes for the reads and the write, so nothing has to be composed:');
+    line(`  ${report.recipesPath}`);
+  }
+
   const cli = report.surfaces.find((surface) => surface.id === 'cli');
   if (cli !== undefined && cli.present === false) {
     line('');
     line('The `waterx-predict` CLI is not on PATH, so this machine holds the library');
-    line('only: no composed commands, and no approval for a write.');
+    line('only: the composed commands are out of reach. That is NOT a statement about');
+    line('whether this agent may trade.');
   }
+
+  // Said on every run, present CLI or absent. The question "can I actually place
+  // an order from here" was being answered by looking at PATH, and PATH has
+  // nothing to do with it.
+  line('');
+  line('What gates a write from this library:');
+  line(`  ${report.writes.gatedBy} — settle it with \`${report.writes.settleWith}\``);
+  line('  The CLI\'s execution policy and its POLICY_DENIED refusal are enforced inside');
+  line('  that CLI\'s process. They are not conditions this API imposes on this package.');
 
   if (report.missing.length > 0) {
     line('');

@@ -9,6 +9,8 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
+import ts from 'typescript';
+
 import {
   AGENT_TOOLS,
   createToolDispatcher,
@@ -34,8 +36,22 @@ import {
 } from '../packages/signer-browser/src/index.ts';
 import { SIGNER_PROTOCOL as KEYSTORE_SIGNER_PROTOCOL } from '../packages/signer-keystore/src/index.ts';
 import { JOB_STATES } from '../packages/runner/src/state-machine.ts';
-import { AGENT_COMMANDS, type JsonSchema } from '../packages/schema/src/index.ts';
-import { PredictAgentClient } from '../packages/sdk/src/index.ts';
+import {
+  AGENT_COMMANDS,
+  DECIMAL_SCALE,
+  type JsonSchema,
+  POSITIVE_DECIMAL_AMOUNT_PATTERN,
+  PROBABILITY_PRICE_PATTERN,
+  SUI_ADDRESS_PATTERN,
+} from '../packages/schema/src/index.ts';
+import {
+  DECIMAL_SCALE as SDK_DECIMAL_SCALE,
+  POSITIVE_DECIMAL_AMOUNT_PATTERN as SDK_POSITIVE_DECIMAL_AMOUNT_PATTERN,
+  PredictAgentClient,
+  PROBABILITY_PRICE_PATTERN as SDK_PROBABILITY_PRICE_PATTERN,
+  SUI_ADDRESS_PATTERN as SDK_SUI_ADDRESS_PATTERN,
+  unrecoverableIntentReason,
+} from '../packages/sdk/src/index.ts';
 
 /** Repository root, with a trailing slash. */
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
@@ -347,6 +363,453 @@ describe('the SDK discovery entry point', () => {
     // not found` for every consumer and for nobody in this repository.
     expect(manifest('sdk').files, 'sdk').toContain('dist');
     expect(() => read('packages/sdk/src/bin/describe.ts'), 'sdk').not.toThrow();
+  });
+});
+
+describe('the order rules the SDK vendors', () => {
+  /**
+   * The SDK cannot import `@waterx/predict-agent-schema` — one runtime
+   * dependency, asserted elsewhere in this file — so the intent store carries
+   * its own copy of the canonical patterns. A copy is only safe while something
+   * compares it, and this is that something.
+   *
+   * The rules matter to the ledger and not only to the wire. A reservation is
+   * durable: it takes a key, goes on disk, and every later attempt replays it.
+   * An intent the server will refuse becomes a key held against an order that
+   * can never exist, and the recovery path calls it recoverable forever.
+   */
+  it('vendors the canonical patterns byte for byte', () => {
+    expect(SDK_POSITIVE_DECIMAL_AMOUNT_PATTERN).toBe(POSITIVE_DECIMAL_AMOUNT_PATTERN);
+    expect(SDK_PROBABILITY_PRICE_PATTERN).toBe(PROBABILITY_PRICE_PATTERN);
+    expect(SDK_SUI_ADDRESS_PATTERN).toBe(SUI_ADDRESS_PATTERN);
+    expect(SDK_DECIMAL_SCALE).toBe(DECIMAL_SCALE);
+  });
+
+  it('refuses the intents the command schema refuses', () => {
+    const valid = {
+      accountId: `0x${'10'.repeat(32)}`,
+      marketId: `0x${'22'.repeat(32)}`,
+      outcomeId: 'YES',
+      side: 'BUY',
+      size: { buyAmount: '5' },
+      maxSlippageBps: 100,
+    };
+    expect(unrecoverableIntentReason(valid)).toBeUndefined();
+
+    // Every one of these reached the durable ledger before the store used the
+    // canonical rules, and none of them can ever be finished.
+    for (const [label, intent] of [
+      ['outcome outside the closed set', { ...valid, outcomeId: 'MAYBE' }],
+      ['BUY sized in shares', { ...valid, size: { sellShares: '5' } }],
+      ['SELL sized in currency', { ...valid, side: 'SELL', positionId: '1' }],
+      ['SELL with no position', { ...valid, side: 'SELL', size: { sellShares: '5' } }],
+      ['BUY naming a position', { ...valid, positionId: '1145' }],
+      ['size that is not a decimal', { ...valid, size: { buyAmount: 'not-a-decimal' } }],
+      ['size of zero', { ...valid, size: { buyAmount: '0' } }],
+      ['negative size', { ...valid, size: { buyAmount: '-1' } }],
+      ['exponent notation', { ...valid, size: { buyAmount: '1e3' } }],
+      ['seven decimal places', { ...valid, size: { buyAmount: '0.1234567' } }],
+      ['both size units', { ...valid, size: { buyAmount: '5', sellShares: '5' } }],
+      ['negative slippage', { ...valid, maxSlippageBps: -1 }],
+      ['fractional slippage', { ...valid, maxSlippageBps: 0.5 }],
+      ['slippage that removes protection', { ...valid, maxSlippageBps: 10_000 }],
+      ['price outside 0–1', { ...valid, worstAcceptablePrice: '2.0' }],
+      ['empty optional identifier', { ...valid, clientOrderId: '' }],
+      ['account id that is not an address', { ...valid, accountId: '0xacct' }],
+    ] as const) {
+      expect(unrecoverableIntentReason(intent), label).toBeTypeOf('string');
+    }
+  });
+});
+
+describe('the shipped recipes', () => {
+  /**
+   * Why they exist, and therefore what they are not allowed to become.
+   *
+   * A caller holding only the library was writing a throwaway script per
+   * question — eight of them in one observed session, every one repeating the
+   * same four-line preamble, and the one that placed an order also inventing a
+   * durable idempotency store on the spot. Shipping the scripts removes that.
+   *
+   * It also creates the risk `NO_SECOND_SURFACE` names: a set of executable
+   * scripts inside the published package is one careless commit away from being
+   * a second trading surface with none of the client's retry, signing or
+   * idempotency behind it. So they are held to a rule a test can check — every
+   * recipe reaches the API through the package's public entry point and through
+   * nothing else.
+   */
+  const RECIPE_DIR = `${ROOT}packages/sdk/recipes`;
+  const RECIPES = readdirSync(RECIPE_DIR).filter((name) => name.endsWith('.mjs'));
+
+  /**
+   * Every module specifier a recipe loads, PARSED rather than matched.
+   *
+   * Scanning source text for quoted paths was wrong twice over. It read prose as
+   * code, because these files quote specifiers in their own comments. And it
+   * could not read code as code: `import('\\x2e\\x2e/dist/src/client.js')` is a
+   * perfectly ordinary module load whose raw text contains no `../`, so a
+   * regular expression over the source sees a string that is not
+   * specifier-shaped and skips it. A template literal defeats it differently, a
+   * concatenation differently again — there is always another spelling.
+   *
+   * So the compiler reads it. `text` on a parsed string literal is the specifier
+   * the runtime will resolve, escapes already applied, comments already gone.
+   *
+   * `computed` collects the loads whose specifier is not a plain literal at all.
+   * Those are refused rather than resolved: nothing static can follow a variable,
+   * and a recipe has no reason to build a module name.
+   */
+  /**
+   * Names that acquire a module loader or evaluate code.
+   *
+   * A blacklist, and the second layer rather than the first — the whitelist
+   * below is what actually decides. These exist because a loader can be
+   * obtained without naming a module at all:
+   * `process.getBuiltinModule('node:module').createRequire(import.meta.url)`
+   * is a first-class Node API that produces no import to check, and defeated
+   * the version of this test that only walked import forms.
+   *
+   * Matched wherever the NAME appears, not in a particular syntactic position.
+   * Binding it to a property access was the next thing walked past:
+   * `const { getBuiltinModule } = process` is a binding element, and the call
+   * after it is a plain identifier. Aliasing (`{ getBuiltinModule: g }`) and
+   * `process['getBuiltinModule']` are the same idea in two more spellings, so a
+   * string literal carrying one of these names counts too. Nothing in these
+   * files has a reason to mention them, so a coarse match costs nothing — and
+   * there is one fewer position to have forgotten.
+   */
+  const LOADER_ACQUISITION = new Set([
+    'getBuiltinModule',
+    'createRequire',
+    'binding',
+    'register',
+    'runInThisContext',
+    'compileFunction',
+    'eval',
+    'Function',
+  ]);
+
+  const scan = (
+    name: string,
+    text: string,
+  ): { resolved: string[]; computed: string[]; loaders: string[]; unparsed: number } => {
+    const source = ts.createSourceFile(name, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+    // A file the parser could not read is a file this cannot make claims about,
+    // and staying quiet about it is how a guard fails OPEN on syntax the parser
+    // is too old for. Not public API, and the cast says so.
+    const unparsed = (source as unknown as { parseDiagnostics?: readonly unknown[] })
+      .parseDiagnostics?.length ?? 0;
+    const resolved: string[] = [];
+    const computed: string[] = [];
+    const loaders: string[] = [];
+
+    const take = (node: ts.Node | undefined, where: string): void => {
+      if (node === undefined) return;
+      if (ts.isStringLiteralLike(node)) {
+        // `.text` for a template with no substitutions too — which is still a
+        // literal the runtime resolves the same way.
+        if (ts.isNoSubstitutionTemplateLiteral(node) || ts.isStringLiteral(node)) {
+          resolved.push(node.text);
+          return;
+        }
+      }
+      computed.push(`${where}: ${node.getText(source)}`);
+    };
+
+    const walk = (node: ts.Node): void => {
+      if (
+        (ts.isIdentifier(node) || ts.isStringLiteralLike(node)) &&
+        LOADER_ACQUISITION.has(node.text)
+      ) {
+        loaders.push(`${node.text} (${ts.SyntaxKind[node.parent.kind]})`);
+      }
+      if (ts.isImportDeclaration(node)) take(node.moduleSpecifier, 'import');
+      else if (ts.isExportDeclaration(node) && node.moduleSpecifier !== undefined) {
+        take(node.moduleSpecifier, 'export from');
+      } else if (ts.isCallExpression(node)) {
+        const isDynamicImport = node.expression.kind === ts.SyntaxKind.ImportKeyword;
+        const isRequire = ts.isIdentifier(node.expression) && node.expression.text === 'require';
+        if (isDynamicImport || isRequire) {
+          take(node.arguments[0], isRequire ? 'require' : 'import()');
+        }
+      }
+      ts.forEachChild(node, walk);
+    };
+    walk(source);
+    return { resolved, computed, loaders, unparsed };
+  };
+
+  const specifiersOf = (
+    name: string,
+  ): { resolved: string[]; computed: string[]; loaders: string[]; unparsed: number } =>
+    scan(name, readFileSync(`${RECIPE_DIR}/${name}`, 'utf8'));
+
+  /**
+   * Every module a recipe may load. A WHITELIST, and that is the first line.
+   *
+   * These are six small scripts whose imports are countable, so anything not on
+   * this list fails and somebody has to say why it belongs.
+   *
+   * WHAT THIS DOES AND DOES NOT GUARANTEE, because an earlier version of this
+   * comment claimed more than it could and was shown to be wrong. Two forms
+   * walked past it in review: `createRequire(…)(…)` through a variable, then
+   * `process.getBuiltinModule('node:module').createRequire(…)` — a first-class
+   * Node loader that names no module and so produced nothing to check. Both are
+   * refused now, by name, alongside `eval` and `Function`.
+   *
+   * A static reading of source cannot enumerate every way a runtime can be
+   * asked for a module; it can only refuse the ways that are known. So the
+   * honest claim is narrower than the last one: this catches every module these
+   * files NAME, and every loader-acquisition form known when it was written. It
+   * is a review aid and an accident-catcher, not a sandbox, and an author
+   * determined to reach past the entry point can.
+   *
+   * Nor is `exports` the thing that stops them, which an earlier version of this
+   * comment implied by calling it the boundary that holds "against a stranger".
+   * `exports` decides what `@waterx/predict-agent-sdk/…` RESOLVES to. It is an
+   * API boundary, not a security one: anyone holding the installed files can
+   * load `dist/src/…` by absolute path or `file:` URL, and no manifest field
+   * changes that. Nothing in this repository is a sandbox, and saying otherwise
+   * about a test or a package field is how somebody comes to rely on one.
+   *
+   * What both are for is keeping the SUPPORTED surface honest — one entry
+   * point, so an upgrade cannot break a caller who stayed inside it.
+   */
+  const ALLOWED_RECIPE_IMPORTS = new Set([
+    './_client.mjs',
+    '@waterx/predict-agent-sdk',
+    '@mysten/sui/keypairs/ed25519',
+    'node:fs',
+  ]);
+
+  /** Source with block comments removed, for the checks that are about text. */
+  const code = (name: string): string =>
+    readFileSync(`${RECIPE_DIR}/${name}`, 'utf8').replace(/\/\*[\s\S]*?\*\//gu, '');
+
+  it('ships inside the tarball, and the report can find them', () => {
+    // A recipe that exists only in this repository is a recipe for people who
+    // already cloned it — the same failure the shipped instructions exist to
+    // avoid.
+    expect(manifest('sdk').files, 'sdk').toContain('recipes');
+    expect(RECIPES.length).toBeGreaterThan(0);
+    expect(read('packages/sdk/recipes/README.md')).toContain('not a second trading surface');
+  });
+
+  it('covers every step the observed session had to hand-write a script for', () => {
+    for (const expected of [
+      'diagnose.mjs',
+      'onboard.mjs',
+      'markets.mjs',
+      'order.mjs',
+      'positions.mjs',
+      // The one the hand-rolled version could not have: it needs the execution
+      // id recorded beside the key, which only a store that owns both can do.
+      'reconcile.mjs',
+    ]) {
+      expect(RECIPES, expected).toContain(expected);
+    }
+  });
+
+  it('cannot become a second way to trade', () => {
+    for (const name of RECIPES) {
+      const source = code(name);
+      // No transport of its own, and no route assembled by hand. Everything that
+      // reaches the network goes through the client.
+      expect(source, `${name} calls fetch`).not.toMatch(/fetch\s*\(/u);
+      expect(source, `${name} builds a route`).not.toMatch(/agent-api\/v1/u);
+      expect(source, `${name} imports a transport`).not.toMatch(
+        /from '(?:node:)?(?:http|https|net|child_process)'/u,
+      );
+      // And no reaching past the entry point into the package's internals,
+      // which is how a recipe ends up depending on something `exports` does not
+      // even admit. By SPECIFIER, not by package name: these files sit inside
+      // the package, so `../dist/src/client.js` reaches the same module without
+      // the name appearing anywhere — the check that only looked for the name
+      // would have waved it through.
+      //
+      // The specifiers come from the parser, so this sees what the runtime will
+      // resolve rather than what the file happens to spell — and they are
+      // checked against a whitelist, so a module nobody anticipated fails
+      // rather than slipping through a pattern written before it existed.
+      const { resolved, loaders, unparsed } = specifiersOf(name);
+      expect(unparsed, `${name} did not parse cleanly, so nothing here can vouch for it`).toBe(0);
+      expect(loaders, `${name} acquires a module loader or evaluates code`).toEqual([]);
+      for (const target of resolved) {
+        expect(
+          ALLOWED_RECIPE_IMPORTS.has(target),
+          `${name} imports ${target}, which is not on the recipe whitelist`,
+        ).toBe(true);
+      }
+    }
+  });
+
+  it('refuses the loader-acquisition forms that walked past earlier versions', () => {
+    // The exact shapes from review, as fixtures rather than as prose. Each is a
+    // legal module load that reaches the internals; each must be rejected by
+    // one of the three checks above.
+    const rejected = (source: string): boolean => {
+      const { resolved, computed, loaders } = scan('probe.mjs', source);
+      return (
+        loaders.length > 0 ||
+        computed.length > 0 ||
+        resolved.some((target) => !ALLOWED_RECIPE_IMPORTS.has(target))
+      );
+    };
+
+    for (const [label, source] of [
+      [
+        'getBuiltinModule',
+        `const load = process
+           .getBuiltinModule('node:module')
+           .createRequire(import.meta.url);
+         load('../dist/src/client.js');`,
+      ],
+      [
+        'createRequire via import',
+        `import { createRequire as cr } from 'node:module';
+         cr(import.meta.url)('../dist/src/client.js');`,
+      ],
+      ['escaped literal', String.raw`await import('../dist/src/client.js');`],
+      ['template literal', 'await import(`../dist/src/client.js`);'],
+      ['variable specifier', "const p = '../dist/src/client.js'; await import(p);"],
+      ['concatenation', "await import('../di' + 'st/src/client.js');"],
+      ['side-effect import', "import '../dist/src/client.js';"],
+      ['require, double quoted', 'const x = require("../dist/src/client.js");'],
+      ['export from', "export { a } from '../dist/src/client.js';"],
+      ['unlisted package', "import { x } from 'some-random-package';"],
+      ['vm', "const vm = await import('node:vm');"],
+      ['eval', "eval(\"import('../dist/src/client.js')\");"],
+      ['Function', 'new Function("return import(\'../dist/src/client.js\')")();'],
+      // Isolating the POSITION, with no other flagged name in the source. Under
+      // the version that only looked at property access this was invisible: a
+      // binding element is not a property access, and the call after it is a
+      // plain identifier.
+      ['destructured, nothing else', 'const { getBuiltinModule } = process;'],
+      ['destructured and renamed, nothing else', 'const { getBuiltinModule: g } = process;'],
+      ['element access, nothing else', "const g = process['getBuiltinModule'];"],
+      [
+        'destructured from process',
+        `const { getBuiltinModule } = process;
+         getBuiltinModule('node:module').createRequire(import.meta.url)('../dist/src/client.js');`,
+      ],
+      [
+        'destructured and renamed',
+        `const { getBuiltinModule: gbm } = process;
+         gbm('node:module').createRequire(import.meta.url)('../dist/src/client.js');`,
+      ],
+      [
+        'element access by string',
+        `const gbm = process['getBuiltinModule'];
+         gbm('node:module').createRequire(import.meta.url)('../dist/src/client.js');`,
+      ],
+    ] as const) {
+      expect(rejected(source), label).toBe(true);
+    }
+
+    // And the real imports still pass, or the guard is only refusing things.
+    expect(
+      rejected("import { connect } from './_client.mjs';\nimport { readFileSync } from 'node:fs';"),
+    ).toBe(false);
+  });
+
+  it('names every module it loads as a plain literal', () => {
+    // The specifier scan above can only see specifiers it can read. A template
+    // literal, a concatenation or a variable defeats it — not by being clever,
+    // just by being a different token — so a computed specifier is refused
+    // outright rather than scanned for. Every import in a recipe names one
+    // module, visibly, at the character level.
+    for (const name of RECIPES) {
+      expect(specifiersOf(name).computed, `${name} computes a module specifier`).toEqual([]);
+    }
+  });
+
+  it('parses its own arguments nowhere, so nothing can quietly drop an option', () => {
+    // A recipe that filters `process.argv` itself accepts `--dry-run`, drops it,
+    // and places a real order. One strict parser, in one file, is what makes
+    // "unknown option" a refusal rather than a shrug — so no other recipe is
+    // allowed to look at argv at all.
+    for (const name of RECIPES) {
+      if (name === '_client.mjs') continue;
+      const source = readFileSync(`${RECIPE_DIR}/${name}`, 'utf8');
+      expect(source, `${name} reads argv itself`).not.toMatch(/process\.argv/u);
+      expect(source, `${name} does not use the strict parser`).toMatch(/\bparseArgv\(/u);
+    }
+    expect(readFileSync(`${RECIPE_DIR}/_client.mjs`, 'utf8')).toMatch(/Unknown option/u);
+  });
+
+  it('reports a handled failure on stdout, not only to a human', () => {
+    // `--json` exists so something can consume these. A recipe that exits 3 with
+    // an empty stdout makes "this failed" indistinguishable from "this produced
+    // nothing", and only one of those is safe to retry.
+    for (const name of RECIPES) {
+      if (name === '_client.mjs') continue;
+      const source = readFileSync(`${RECIPE_DIR}/${name}`, 'utf8');
+      const exits = /process\.exit\(\s*[1-9]|process\.exitCode\s*=\s*[1-9]/u.test(source);
+      if (!exits) continue;
+      expect(source, `${name} exits non-zero without emitting`).toMatch(/\bemitError\(/u);
+    }
+  });
+
+  it('refuses a key file anyone else can read, reach or replace', () => {
+    // The one path that loads a raw private key off disk, which the structural
+    // signer exists so a caller need not do. Mode, so a world-readable key is
+    // refused rather than warned about; owner, so a key another account controls
+    // is not read.
+    const source = readFileSync(`${RECIPE_DIR}/_client.mjs`, 'utf8');
+    expect(source).toMatch(/O_NOFOLLOW/u);
+    expect(source).toMatch(/0o077/u);
+    expect(source).toMatch(/getuid/u);
+  });
+
+  it('validates the descriptor it reads, not a name it resolves twice', () => {
+    // Checking the path and then reading the path is a race, and an `await
+    // import()` used to sit in the middle of it — so whatever passed the check
+    // had a whole module load in which to be replaced. One open, `fstat` on that
+    // descriptor, read from that descriptor.
+    const source = readFileSync(`${RECIPE_DIR}/_client.mjs`, 'utf8');
+    expect(source).toMatch(/fstatSync\(/u);
+    // A path-based stat is the shape of the race, whichever one it is.
+    expect(source, 'stats a path instead of a descriptor').not.toMatch(/\bl?statSync\(\s*KEY_FILE/u);
+    // And the read must not re-resolve the name either.
+    expect(source, 'reads the name again after checking it').not.toMatch(
+      /readFileSync\(\s*KEY_FILE/u,
+    );
+  });
+
+  it('proves any command it tells an operator to re-run is the SAME intent', () => {
+    // `reconcile` is the recipe that says "re-run this and it resumes rather
+    // than duplicating". That claim is only true if the line it prints
+    // reconstructs the recorded intent exactly, and `order.mjs` takes six things
+    // on a command line while an intent may carry more — a clientOrderId, a
+    // worstAcceptablePrice. Printing the command for one of those hands the
+    // operator a different digest, a different key, and a second order, under a
+    // sentence promising the opposite. So the reconstruction is digested against
+    // the record with the same function that decides key identity, and an intent
+    // the command line cannot express gets no command.
+    const source = readFileSync(`${RECIPE_DIR}/reconcile.mjs`, 'utf8');
+    expect(source).toMatch(/\bintentDigest\(/u);
+    expect(source).toMatch(/record\.digest/u);
+  });
+
+  it('keeps the one non-SDK dependency in one file', () => {
+    // `@mysten/sui` is the CALLER's dependency, not this package's — the signer
+    // is structural precisely so a KMS holder never installs it. Confining the
+    // import to the shared preamble is what makes that a one-file change rather
+    // than a six-file one.
+    for (const name of RECIPES) {
+      const source = readFileSync(`${RECIPE_DIR}/${name}`, 'utf8');
+      if (name === '_client.mjs') continue;
+      expect(source, `${name} loads a keypair itself`).not.toMatch(/@mysten\/sui/u);
+    }
+    expect(readFileSync(`${RECIPE_DIR}/_client.mjs`, 'utf8')).toMatch(/@mysten\/sui/u);
+  });
+
+  it('does not add a runtime dependency to the published package', () => {
+    // The recipes ship; their import of `@mysten/sui` must not turn into a
+    // dependency every consumer installs whether they use them or not.
+    expect(Object.keys((manifest('sdk').dependencies ?? {}) as Record<string, unknown>)).toEqual([
+      'socket.io-client',
+    ]);
   });
 });
 

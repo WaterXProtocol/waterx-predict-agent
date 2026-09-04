@@ -69,14 +69,31 @@ describe('the skill document', () => {
     }
   });
 
-  it('says where the flow stops rather than promising the order', () => {
+  it('says where the flow stops rather than promising the order — on the surface where it stops', () => {
     // Under the default policy a write through a tool adapter is refused, by
     // design. A skill that read as "and then it places the bet" would set every
     // user up to meet POLICY_DENIED as a fault instead of as the control it is.
     const text = renderAgentSkill();
     expect(text).toContain('POLICY_DENIED');
     expect(text).toContain('APPROVAL_IS_PER_INTENT_AND_OPERATOR_HELD');
-    expect(text).toContain('previewed order they can approve IS the completed task');
+    expect(text).toContain('previewed order the user can approve IS the completed task');
+  });
+
+  it('does not tell a library caller that the CLI policy refuses its writes', () => {
+    // The failure this pins is one that actually happened. An agent holding only
+    // the SDK read the approval rule as universal, warned its user that the
+    // order would probably be refused with POLICY_DENIED, placed it
+    // successfully, and had to retract the warning — because POLICY_DENIED is
+    // the CLI's error code and never reaches this wire at all.
+    //
+    // So the skill has to say which gate belongs to which surface, and it has to
+    // name the call that settles it rather than leaving a reader to infer an
+    // answer from what is on PATH.
+    const text = renderAgentSkill();
+    expect(text).toContain('WHAT_GATES_A_WRITE_IS_THE_SURFACE_YOU_HOLD');
+    expect(text).toContain('on-chain delegation');
+    expect(text).toContain('client.diagnose()');
+    expect(text).toContain('is not an API error code');
   });
 
   it('sends a reader to the shipped rules by their installed path', () => {

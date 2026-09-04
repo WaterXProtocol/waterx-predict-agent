@@ -68,7 +68,7 @@ exist before a write is accepted, two are automatable and one is not:
 | Risk profile (the mandate) | the owner | Yes, in the same signing session |
 
 `onboard` prints a link that names this agent wallet and carries no token, no
-secret and no pre-authorization — it is safe to paste into a chat, because
+secret and no pre-authorization — it confers no authority, because
 everything it can do the owner does with their own wallet. This CLI cannot sign a
 delegation, write a risk profile or raise a limit; a runtime that could grant its
 own authority would make the authority meaningless.

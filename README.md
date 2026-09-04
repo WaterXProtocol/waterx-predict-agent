@@ -3,6 +3,14 @@
 A pnpm workspace for operating the WaterX Predict Agent Trading API from an
 autonomous agent: quotes, price-protected market orders, positions and allowance.
 
+**A note on which gate applies to which surface.** The execution policy below
+belongs to the CLI: it is enforced in that process, over that process's own
+signer, and its `POLICY_DENIED` refusal is a CLI error code that never appears
+on the API's wire. A caller holding only the SDK writes straight to the API and
+is gated by the account owner's on-chain delegation instead. `client.diagnose()`
+reads which of those applies and whether it permits an order; do not infer it
+from whether `waterx-predict` is on PATH.
+
 **Today, the usable surfaces are the SDK and the CLI, which now trades**, plus
 two thin adapters that put the CLI's exact command set in front of a model host.
 Everything else here is the contract those surfaces are described by.
@@ -19,7 +27,7 @@ scope an operator wrote down. See
 
 | Package | What it is | State |
 | --- | --- | --- |
-| [`packages/sdk`](packages/sdk) | `@waterx/predict-agent-sdk` — the execution core. Authentication, quotes, protected market orders, reads. | Implemented |
+| [`packages/sdk`](packages/sdk) | `@waterx/predict-agent-sdk` — the execution core. Authentication, quotes, protected market orders, reads, the onboarding poll, `diagnose()`, a durable idempotency store, and the runnable `recipes/` that ship beside the rules. | Implemented |
 | [`packages/schema`](packages/schema) | `@waterx/predict-agent-schema` — the versioned, runtime-validated command contract. | Implemented |
 | [`packages/cli`](packages/cli) | The `waterx-predict` CLI: the universal agent surface. Discovery, doctor, market and account reads, and the market-order write plane, in one JSON envelope with stable exit codes. | Implemented and unpublished |
 | [`packages/runner`](packages/runner) | The self-hosted local Runner. Today: the durable job store, the state machine, lease fencing, crash recovery, `UNKNOWN_PENDING` reconciliation against REST, `driveJob`, the scheduler that calls it on a tick, a `PriceObserver` over the SDK's indicative quote stream, a signer inside the trust boundary that will only sign for a `delegated-auto` job, a daemon that recovers, supervises leases and answers an authenticated local socket, and the local configuration `runnerd` builds all three collaborators from — all-or-nothing, so a missing piece yields no driver and names the gap. | A configured `runnerd` reports `driving: true` and advances jobs, and `strategy create / get / list / cancel / events` reach it over its socket from the CLI. **The CLI cannot start, stop or supervise the daemon**; an upgrade with active jobs is `runner.drain` then `runner.shutdown`, over the daemon's own socket (backlog 2.14, `docs/RELEASE.md`) |
@@ -44,7 +52,11 @@ trigger-and-route a skill host loads — it cites the rules and never restates
 them, and a test fails if it grows past half their length.
 
 **Each of those reaches a consumer through a tarball, not through this
-repository.** `packages/sdk` ships `AGENT_INSTRUCTIONS.md` and `SKILL.md`,
+repository.** `packages/sdk` ships `AGENT_INSTRUCTIONS.md`, `SKILL.md` and
+`recipes/` — a runnable script per job, held by `tests/workspace.test.ts` to
+reaching the API only through the package's public entry point, so a set of
+executable scripts inside a published package cannot quietly become the second
+trading surface `NO_SECOND_SURFACE` forbids —
 `packages/schema` ships `agent-commands.json`, every copy is byte-compared to
 the committed one, and `npx @waterx/predict-agent-sdk` reports what an
 installation still needs with no configuration and no network. A document that

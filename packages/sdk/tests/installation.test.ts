@@ -219,3 +219,62 @@ describe('nextStepFor', () => {
     expect(step).toEqual({ actor: 'NOBODY', action: '' });
   });
 });
+
+/**
+ * What the offline report is not allowed to imply.
+ *
+ * The claim being pinned here is one this report used to make. It said that with
+ * `waterx-predict` absent, "the approval flow" was out of reach — which a reader
+ * correctly took to mean that a write would probably be refused. It would not be:
+ * a library caller reaches the API directly and is gated by the account owner's
+ * on-chain delegation, and `POLICY_DENIED` is the CLI's own error code, enforced
+ * in the CLI's own process, absent from `PredictAgentErrorCode` entirely.
+ */
+describe('what gates a write', () => {
+  it('names the delegation, and offers the call that settles it', () => {
+    const report = describeInstallation({ env: EMPTY_PATH });
+
+    expect(report.writes.gatedBy).toBe('ON_CHAIN_DELEGATION');
+    // Never answered here — this report issues no request, so it can state the
+    // rule and nothing more. Saying otherwise is how a caller believes it has
+    // checked something nobody looked at.
+    expect(report.writes.checkedHere).toBe(false);
+    expect(report.writes.settleWith).toContain('diagnose');
+  });
+
+  it('does not let an absent CLI read as an inability to trade', () => {
+    const report = describeInstallation({ env: EMPTY_PATH });
+    const cli = report.surfaces.find((surface) => surface.id === 'cli');
+
+    expect(cli?.present).toBe(false);
+    // The true part is kept: composed commands really are out of reach.
+    expect(cli?.detail).toMatch(/composed commands are out of reach/u);
+    // The part that was never true is gone, and replaced with the correction.
+    expect(cli?.detail).not.toMatch(/approval flow are out of reach/u);
+    expect(cli?.detail).toMatch(/NOTHING about whether this agent may trade/u);
+  });
+
+  it('mentions POLICY_DENIED only in order to rule it out', () => {
+    // A reader who met the term in the CLI's documentation has to be told which
+    // surface it belongs to. Silence would leave them to infer, and the inference
+    // they draw is the wrong one.
+    const report = describeInstallation({ env: EMPTY_PATH });
+
+    expect(report.writes.detail).toMatch(/POLICY_DENIED is not a code this API returns/u);
+    for (const surface of report.surfaces) {
+      expect(surface.detail, surface.id).not.toMatch(/refused with `?POLICY_DENIED/u);
+    }
+  });
+});
+
+describe('the shipped recipes', () => {
+  it('are found beside the module, so a caller is told they exist', () => {
+    // They are the answer to "I hold only the library": a known-correct script
+    // per question, instead of a new one composed at the moment it matters least
+    // to be inventing anything.
+    const report = describeInstallation({ env: EMPTY_PATH });
+
+    expect(report.recipesPath).toBeTypeOf('string');
+    expect(existsSync(`${String(report.recipesPath)}/order.mjs`)).toBe(true);
+  });
+});
