@@ -79,7 +79,7 @@ export {
   PROBABILITY_PRICE_PATTERN,
   SUI_ADDRESS_PATTERN,
   unrecoverableIntentReason,
-  unusableIdempotencyKeyReason,
+  unusableIdentifierReason,
 } from './intent-shape.ts';
 export {
   type MarketCandidate,

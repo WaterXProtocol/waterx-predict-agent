@@ -20,7 +20,12 @@ SDK documented that as the caller's job.
 
 A recipe is not a second trading surface. Every one of these calls the same
 public entry point you would; there is no route built here, no retry, no signing
-and no policy. `tests/workspace.test.ts` fails if that stops being true.
+and no policy. `tests/workspace.test.ts` holds them to a whitelist of four
+modules and refuses the loader-acquisition forms it knows about — enough to
+catch an accident and to make a deliberate detour visible in review, though a
+static reading of source cannot enumerate every way a runtime can be asked for a
+module. The boundary that holds against a stranger is the package's `exports`
+map, which admits `.` and nothing else.
 
 ## The scripts
 

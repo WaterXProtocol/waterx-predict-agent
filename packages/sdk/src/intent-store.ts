@@ -91,7 +91,7 @@ import { dirname, join } from 'node:path';
 
 import {
   unrecoverableIntentReason,
-  unusableIdempotencyKeyReason,
+  unusableIdentifierReason,
 } from './intent-shape.ts';
 import { sleep } from './sleep.ts';
 
@@ -343,11 +343,29 @@ abstract class BaseIntentStore implements IntentStore {
     executionId: string,
     enforcedWorstPrice?: string,
   ): Promise<void> {
-    await this.update(idempotencyKey, (record) => ({
-      ...record,
-      executionId,
-      ...(enforcedWorstPrice === undefined ? {} : { enforcedWorstPrice }),
-    }));
+    const unusable = unusableIdentifierReason(executionId);
+    if (unusable !== undefined) {
+      throw new TypeError(`Refusing to attach an execution id that is ${unusable}.`);
+    }
+    await this.update(idempotencyKey, (record, records) => {
+      // Checked HERE, and not only when the file is next read. The load-time
+      // check was the only one, so a duplicate was written successfully and
+      // discovered on the next open — which failed the whole ledger. That is
+      // the worst available failure: recovery becomes unreadable at exactly the
+      // moment it is needed, and this module did it to itself.
+      for (const other of records.values()) {
+        if (other.idempotencyKey === idempotencyKey) continue;
+        if (other.executionId !== executionId) continue;
+        throw new Error(
+          `Execution ${executionId} is already recorded against a different intent (${other.digest}). Attaching it here as well would let a read of that execution be reported as the outcome of either, so nothing is written. Read the execution and the account history to establish which intent placed it.`,
+        );
+      }
+      return {
+        ...record,
+        executionId,
+        ...(enforcedWorstPrice === undefined ? {} : { enforcedWorstPrice }),
+      };
+    });
   }
 
   async settle(idempotencyKey: string, outcome: string): Promise<void> {
@@ -396,13 +414,16 @@ abstract class BaseIntentStore implements IntentStore {
    */
   private async update(
     idempotencyKey: string,
-    change: (record: IntentRecord) => IntentRecord,
+    change: (record: IntentRecord, records: ReadonlyMap<string, IntentRecord>) => IntentRecord,
   ): Promise<void> {
     await this.serialize(() => {
       const records = this.load();
       for (const [digest, record] of records) {
         if (record.idempotencyKey !== idempotencyKey) continue;
-        records.set(digest, change(record));
+        // `change` sees the whole ledger because some of these decisions are
+        // about the OTHER records — a duplicate execution id is not a fact
+        // about the record being changed.
+        records.set(digest, change(record, records));
         this.save(records);
         return;
       }
@@ -723,14 +744,28 @@ class FileIntentStore extends BaseIntentStore {
     // Bounded, because it is replayed straight into the `Idempotency-Key`
     // header and the contract admits 1–128 characters. An empty string passed
     // a `typeof` check and would have been sent as a header with no value.
-    const unusableKey = unusableIdempotencyKeyReason(record?.idempotencyKey);
+    const unusableKey = unusableIdentifierReason(record?.idempotencyKey);
     if (unusableKey !== undefined) {
       throw new Error(
         `The intent ledger at ${this.path} has a record under ${digest} whose \`idempotencyKey\` is ${unusableKey}. It is replayed into the request header verbatim, so a key the API cannot accept is a write that can never be finished under it.`,
       );
     }
+    // Non-empty when present, `executionId` bounded like every other identifier
+    // on this API. An empty string passed a `typeof` check and would have been
+    // read back as an execution to fetch, a price to report, or an outcome to
+    // believe.
     for (const field of ['executionId', 'enforcedWorstPrice', 'settledAt', 'outcome'] as const) {
-      if (record?.[field] !== undefined && typeof record[field] !== 'string') bad(field);
+      const value = record?.[field];
+      if (value === undefined) continue;
+      if (typeof value !== 'string' || value === '') bad(field);
+    }
+    if (record?.executionId !== undefined) {
+      const unusable = unusableIdentifierReason(record.executionId);
+      if (unusable !== undefined) {
+        throw new Error(
+          `The intent ledger at ${this.path} has a record under ${digest} whose \`executionId\` is ${unusable}. It is used to read the execution back, so one the API cannot accept is a record that can never be reconciled.`,
+        );
+      }
     }
 
     const intent = normalizeIntent(record?.intent as Record<string, unknown>);

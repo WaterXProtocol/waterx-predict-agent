@@ -468,6 +468,15 @@ describe('the shipped recipes', () => {
    * `process.getBuiltinModule('node:module').createRequire(import.meta.url)`
    * is a first-class Node API that produces no import to check, and defeated
    * the version of this test that only walked import forms.
+   *
+   * Matched wherever the NAME appears, not in a particular syntactic position.
+   * Binding it to a property access was the next thing walked past:
+   * `const { getBuiltinModule } = process` is a binding element, and the call
+   * after it is a plain identifier. Aliasing (`{ getBuiltinModule: g }`) and
+   * `process['getBuiltinModule']` are the same idea in two more spellings, so a
+   * string literal carrying one of these names counts too. Nothing in these
+   * files has a reason to mention them, so a coarse match costs nothing — and
+   * there is one fewer position to have forgotten.
    */
   const LOADER_ACQUISITION = new Set([
     'getBuiltinModule',
@@ -476,6 +485,8 @@ describe('the shipped recipes', () => {
     'register',
     'runInThisContext',
     'compileFunction',
+    'eval',
+    'Function',
   ]);
 
   const scan = (
@@ -506,14 +517,11 @@ describe('the shipped recipes', () => {
     };
 
     const walk = (node: ts.Node): void => {
-      if (ts.isPropertyAccessExpression(node) && LOADER_ACQUISITION.has(node.name.text)) {
-        loaders.push(node.getText(source));
-      } else if (
-        ts.isIdentifier(node) &&
-        (node.text === 'eval' || node.text === 'Function') &&
-        !ts.isPropertyAccessExpression(node.parent)
+      if (
+        (ts.isIdentifier(node) || ts.isStringLiteralLike(node)) &&
+        LOADER_ACQUISITION.has(node.text)
       ) {
-        loaders.push(node.getText(source));
+        loaders.push(`${node.text} (${ts.SyntaxKind[node.parent.kind]})`);
       }
       if (ts.isImportDeclaration(node)) take(node.moduleSpecifier, 'import');
       else if (ts.isExportDeclaration(node) && node.moduleSpecifier !== undefined) {
@@ -664,6 +672,28 @@ describe('the shipped recipes', () => {
       ['vm', "const vm = await import('node:vm');"],
       ['eval', "eval(\"import('../dist/src/client.js')\");"],
       ['Function', 'new Function("return import(\'../dist/src/client.js\')")();'],
+      // Isolating the POSITION, with no other flagged name in the source. Under
+      // the version that only looked at property access this was invisible: a
+      // binding element is not a property access, and the call after it is a
+      // plain identifier.
+      ['destructured, nothing else', 'const { getBuiltinModule } = process;'],
+      ['destructured and renamed, nothing else', 'const { getBuiltinModule: g } = process;'],
+      ['element access, nothing else', "const g = process['getBuiltinModule'];"],
+      [
+        'destructured from process',
+        `const { getBuiltinModule } = process;
+         getBuiltinModule('node:module').createRequire(import.meta.url)('../dist/src/client.js');`,
+      ],
+      [
+        'destructured and renamed',
+        `const { getBuiltinModule: gbm } = process;
+         gbm('node:module').createRequire(import.meta.url)('../dist/src/client.js');`,
+      ],
+      [
+        'element access by string',
+        `const gbm = process['getBuiltinModule'];
+         gbm('node:module').createRequire(import.meta.url)('../dist/src/client.js');`,
+      ],
     ] as const) {
       expect(rejected(source), label).toBe(true);
     }

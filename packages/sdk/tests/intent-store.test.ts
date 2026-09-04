@@ -201,6 +201,42 @@ describe.each([
     expect(await store.find({ ...INTENT, size: { buyAmount: '9' } })).toBeUndefined();
   });
 
+  it('refuses to attach an execution another intent already claims', async () => {
+    // The load-time check alone let the duplicate be WRITTEN and discovered on
+    // the next open — which failed the whole ledger. Recovery becoming
+    // unreadable at the moment it is needed is the worst available outcome, and
+    // it was self-inflicted.
+    const store = make();
+    const first = await store.reserve(INTENT);
+    const second = await store.reserve({ ...INTENT, clientOrderId: 'second' });
+
+    await store.attach(first.idempotencyKey, 'exec-1', '0.5');
+
+    await expect(store.attach(second.idempotencyKey, 'exec-1', '0.5')).rejects.toThrow(
+      /already recorded against a different intent/u,
+    );
+    // Nothing was written, so the ledger still opens.
+    const pending = await store.pending();
+    expect(pending).toHaveLength(2);
+    expect(pending.filter((entry) => entry.executionId === 'exec-1')).toHaveLength(1);
+  });
+
+  it('lets the SAME intent re-attach the execution it already has', async () => {
+    const store = make();
+    const reserved = await store.reserve(INTENT);
+
+    await store.attach(reserved.idempotencyKey, 'exec-1', '0.5');
+    await expect(store.attach(reserved.idempotencyKey, 'exec-1', '0.5')).resolves.toBeUndefined();
+  });
+
+  it('refuses an execution id the API could not accept', async () => {
+    const store = make();
+    const reserved = await store.reserve(INTENT);
+
+    await expect(store.attach(reserved.idempotencyKey, '', '0.5')).rejects.toThrow(TypeError);
+    expect((await store.pending())[0]?.executionId).toBeUndefined();
+  });
+
   it('ignores a settle for a key nobody reserved instead of throwing', async () => {
     // These calls sit on the success path of a write that already happened.
     // Failing one would turn a bookkeeping miss into a reported order failure.
@@ -523,6 +559,32 @@ describe('the file store', () => {
 
     expect(reopened.replayed).toBe(true);
     expect(reopened.idempotencyKey).toBe(first.idempotencyKey);
+  });
+
+  it('refuses a record whose optional strings are present but empty', async () => {
+    for (const field of ['executionId', 'enforcedWorstPrice', 'settledAt', 'outcome'] as const) {
+      mkdirSync(dirname(ledger), { recursive: true });
+      writeFileSync(
+        ledger,
+        JSON.stringify({
+          version: 1,
+          intents: {
+            [intentDigest(INTENT)]: {
+              idempotencyKey: 'k',
+              digest: intentDigest(INTENT),
+              intent: INTENT,
+              status: 'PENDING',
+              createdAt: 'now',
+              [field]: '',
+            },
+          },
+        }),
+      );
+
+      await expect(createFileIntentStore(ledger).pending(), field).rejects.toThrow(
+        new RegExp(`\`${field}\``, 'u'),
+      );
+    }
   });
 
   it('reads an empty file location as an empty ledger, not as an error', async () => {

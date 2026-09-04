@@ -135,9 +135,16 @@ export function unrecoverableIntentReason(
   return undefined;
 }
 
-/** The same bounds, for the key a record holds rather than the intent it names. */
-export function unusableIdempotencyKeyReason(key: unknown): string | undefined {
-  return isIdentifier(key)
+/**
+ * The same bounds, for the opaque identifiers a RECORD holds rather than the
+ * intent it names — its idempotency key and the execution it points at.
+ *
+ * Both are replayed verbatim: the key into a request header, the execution id
+ * into the path of the read that reconciles it. An empty one passed a `typeof`
+ * check and would have been sent.
+ */
+export function unusableIdentifierReason(value: unknown): string | undefined {
+  return isIdentifier(value)
     ? undefined
     : `not a string of ${String(IDENTIFIER_MIN_LENGTH)}–${String(IDENTIFIER_MAX_LENGTH)} characters`;
 }
