@@ -20,12 +20,22 @@ SDK documented that as the caller's job.
 
 A recipe is not a second trading surface. Every one of these calls the same
 public entry point you would; there is no route built here, no retry, no signing
-and no policy. `tests/workspace.test.ts` holds them to a whitelist of four
-modules and refuses the loader-acquisition forms it knows about — enough to
-catch an accident and to make a deliberate detour visible in review, though a
-static reading of source cannot enumerate every way a runtime can be asked for a
-module. The boundary that holds against a stranger is the package's `exports`
-map, which admits `.` and nothing else.
+and no policy.
+
+`tests/workspace.test.ts` holds them to a whitelist of four modules and refuses
+the loader-acquisition forms it knows about. **Neither that test nor the
+package's `exports` map is a sandbox or a security boundary**, and it is worth
+being exact about what each one is. The test is a review aid: it catches an
+accident and makes a deliberate detour visible, but a static reading of source
+cannot enumerate every way a runtime can be asked for a module. `exports` is an
+API and resolution boundary: it decides what `@waterx/predict-agent-sdk/…`
+resolves to, and nothing more — anyone holding these files can still load
+`dist/src/…` by absolute path or `file:` URL, because that is how the filesystem
+works and no package manifest changes it.
+
+What they are for is keeping the SUPPORTED surface honest: one entry point, so
+an upgrade cannot break a caller who stayed inside it, and no recipe quietly
+depending on something the package does not promise.
 
 ## The scripts
 

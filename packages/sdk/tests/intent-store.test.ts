@@ -213,7 +213,7 @@ describe.each([
     await store.attach(first.idempotencyKey, 'exec-1', '0.5');
 
     await expect(store.attach(second.idempotencyKey, 'exec-1', '0.5')).rejects.toThrow(
-      /already recorded against a different intent/u,
+      /one execution on two records/u,
     );
     // Nothing was written, so the ledger still opens.
     const pending = await store.pending();
@@ -227,6 +227,27 @@ describe.each([
 
     await store.attach(reserved.idempotencyKey, 'exec-1', '0.5');
     await expect(store.attach(reserved.idempotencyKey, 'exec-1', '0.5')).resolves.toBeUndefined();
+  });
+
+  it('refuses to write ANY value its own reader would reject', async () => {
+    // The shape this keeps coming back in: a load-time rule that no write path
+    // upholds. `attach` was taught about execution ids and still wrote an empty
+    // price; `settle` still wrote an empty outcome; both saved, and the next
+    // open failed on every record in the file. The writer is held to the
+    // reader's check now, in one place, so a mutation added later inherits it.
+    const store = make();
+    const reserved = await store.reserve(INTENT);
+
+    await expect(store.attach(reserved.idempotencyKey, 'exec-1', '')).rejects.toThrow(
+      /`enforcedWorstPrice`/u,
+    );
+    await expect(store.settle(reserved.idempotencyKey, '')).rejects.toThrow(/`outcome`/u);
+
+    // And nothing was written, so the ledger still opens and still says what it
+    // said before — which is the half that makes the refusal worth having.
+    const [record] = await store.pending();
+    expect(record?.executionId).toBeUndefined();
+    expect(record?.status).toBe('PENDING');
   });
 
   it('refuses an execution id the API could not accept', async () => {

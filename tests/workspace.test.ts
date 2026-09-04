@@ -562,10 +562,18 @@ describe('the shipped recipes', () => {
    * honest claim is narrower than the last one: this catches every module these
    * files NAME, and every loader-acquisition form known when it was written. It
    * is a review aid and an accident-catcher, not a sandbox, and an author
-   * determined to reach past the entry point can. The boundary that holds
-   * against a stranger is the package's `exports` map, which admits `.` and
-   * nothing else — these files are inside the package, so nothing here can put
-   * them outside it.
+   * determined to reach past the entry point can.
+   *
+   * Nor is `exports` the thing that stops them, which an earlier version of this
+   * comment implied by calling it the boundary that holds "against a stranger".
+   * `exports` decides what `@waterx/predict-agent-sdk/…` RESOLVES to. It is an
+   * API boundary, not a security one: anyone holding the installed files can
+   * load `dist/src/…` by absolute path or `file:` URL, and no manifest field
+   * changes that. Nothing in this repository is a sandbox, and saying otherwise
+   * about a test or a package field is how somebody comes to rely on one.
+   *
+   * What both are for is keeping the SUPPORTED surface honest — one entry
+   * point, so an upgrade cannot break a caller who stayed inside it.
    */
   const ALLOWED_RECIPE_IMPORTS = new Set([
     './_client.mjs',

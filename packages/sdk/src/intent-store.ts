@@ -276,7 +276,178 @@ abstract class BaseIntentStore implements IntentStore {
   private queue: Promise<unknown> = Promise.resolve();
 
   protected abstract load(): Map<string, IntentRecord>;
-  protected abstract save(records: Map<string, IntentRecord>): void;
+  /** Where this ledger lives, for an error a person has to act on. */
+  protected abstract get ledgerLabel(): string;
+  /** Write the records. Never called directly — `save` guards it. */
+  protected abstract persist(records: Map<string, IntentRecord>): void;
+
+  /**
+   * Write, but only what could be read back.
+   *
+   * Concrete, with the abstract `persist` beneath it, so no implementation and
+   * no future mutation reaches storage without passing the reader's check. That
+   * placement IS the fix. The alternative is remembering to validate in
+   * `reserve`, in `attach`, in `settle`, in `forget`, and in whatever is added
+   * next — and three rounds of review in a row found that list incomplete.
+   */
+  protected save(records: Map<string, IntentRecord>): void {
+    this.assertUsable(records);
+    this.persist(records);
+  }
+
+  /**
+   * Everything a ledger must satisfy, checked in BOTH directions.
+   *
+   * The load path grew rules — a bounded key, a non-empty execution id, one key
+   * and one execution per record — and the write paths did not grow with them.
+   * That gap does not close by remembering. `attach` was taught about execution
+   * ids and still wrote an empty `enforcedWorstPrice`; `settle` still wrote an
+   * empty `outcome`; each saved happily and left a file the next `load`
+   * refused. A ledger that cannot be reopened is worse than any single bad
+   * record in it, because it takes every other record down with it — and this
+   * module wrote it.
+   *
+   * So the writer is held to the reader's standard by calling the reader's
+   * check. `save` runs this over what it is about to write and refuses instead,
+   * which makes "wrote something it cannot read back" impossible by
+   * construction rather than by review. Every future mutation inherits it
+   * without having to know it exists.
+   */
+  protected assertUsable(records: ReadonlyMap<string, IntentRecord>): void {
+    const byKey = new Map<string, string>();
+    const byExecution = new Map<string, string>();
+    for (const [digest, record] of records) {
+      // Re-checks the per-record rules as well, because a mutation builds a
+      // record in memory and never goes near the parser that checked the last
+      // one.
+      this.validate(digest, record);
+
+      const already = byKey.get(record.idempotencyKey);
+      if (already !== undefined) {
+        throw new Error(
+          `The intent ledger at ${this.ledgerLabel} has one idempotency key on two records — ${already} and ${digest} both hold ${record.idempotencyKey}. They are different intents, so replaying that key sends one of them to the other's execution. The executions they name have to be read back before either is used again.`,
+        );
+      }
+      byKey.set(record.idempotencyKey, digest);
+
+      // One execution, one intent. Enforcing key uniqueness alone left the same
+      // identity confusion one field over: the replay path trusts the recorded
+      // execution id and reads it back, so two records naming one execution
+      // report it as the outcome of whichever intent asked, and the second
+      // economic order is swallowed and announced as the first.
+      if (record.executionId !== undefined) {
+        const claimed = byExecution.get(record.executionId);
+        if (claimed !== undefined) {
+          throw new Error(
+            `The intent ledger at ${this.ledgerLabel} has one execution on two records — ${claimed} and ${digest} both name ${record.executionId}. They are different intents, so reading that execution back would report it as the outcome of whichever one asked. Read the execution and the account history to establish which intent actually placed it.`,
+          );
+        }
+        byExecution.set(record.executionId, digest);
+      }
+    }
+  }
+
+  /**
+   * A record, or an error naming it.
+   *
+   * Every field a reader will reach for is checked here, because the readers are
+   * the recovery paths and they run at the worst moment. A record with an
+   * `idempotencyKey` and no `intent` used to load fine and then take the
+   * reconciliation recipe down on a property access — an uncaught throw, an
+   * empty `--json` stdout, and an operator none the wiser about the order the
+   * record was there to tell them about.
+   *
+   * Malformed is FATAL rather than skipped, for the same reason an unparseable
+   * ledger is: a record this cannot read may be the one naming an execution
+   * that exists, and quietly dropping it frees the next attempt to mint a new
+   * key. A person has to look.
+   */
+  protected unreadable(because: string): Error {
+    return new Error(
+      `The intent ledger at ${this.ledgerLabel} cannot be read: ${because}. This will not carry on over a ledger it does not understand — every record it fails to see is a key it will mint again, and a key minted twice is an order placed twice. Inspect the file, recover what it names, then move it aside.`,
+    );
+  }
+
+  protected validate(digest: string, value: unknown): IntentRecord {
+    const record = value as Partial<IntentRecord> | null;
+    const bad = (field: string): never => {
+      throw new Error(
+        `The intent ledger at ${this.ledgerLabel} has a record under ${digest} whose \`${field}\` is missing or the wrong type. This will not load a record it cannot read, and will not skip one either — a record it cannot read may be the one naming an order that exists, and dropping it frees the next attempt to mint a new key. Inspect the file, recover what it names, then move it aside.`,
+      );
+    };
+    if (record === null || typeof record !== 'object') bad('record');
+    if (record?.intent === null || typeof record?.intent !== 'object') bad('intent');
+    if (record?.status !== 'PENDING' && record?.status !== 'SETTLED') bad('status');
+    if (typeof record?.createdAt !== 'string') bad('createdAt');
+    // Present, not merely the right type when it happens to be there. `digest`
+    // is required by the record interface and written on every save, so a
+    // record without one was not written by this module — and synthesizing it
+    // from the map key is the silent repair the three-way check exists to
+    // refuse.
+    if (typeof record?.digest !== 'string') bad('digest');
+    // Bounded, because it is replayed straight into the `Idempotency-Key`
+    // header and the contract admits 1–128 characters. An empty string passed
+    // a `typeof` check and would have been sent as a header with no value.
+    const unusableKey = unusableIdentifierReason(record?.idempotencyKey);
+    if (unusableKey !== undefined) {
+      throw new Error(
+        `The intent ledger at ${this.ledgerLabel} has a record under ${digest} whose \`idempotencyKey\` is ${unusableKey}. It is replayed into the request header verbatim, so a key the API cannot accept is a write that can never be finished under it.`,
+      );
+    }
+    // Non-empty when present, `executionId` bounded like every other identifier
+    // on this API. An empty string passed a `typeof` check and would have been
+    // read back as an execution to fetch, a price to report, or an outcome to
+    // believe.
+    for (const field of ['executionId', 'enforcedWorstPrice', 'settledAt', 'outcome'] as const) {
+      const value = record?.[field];
+      if (value === undefined) continue;
+      if (typeof value !== 'string' || value === '') bad(field);
+    }
+    if (record?.executionId !== undefined) {
+      const unusable = unusableIdentifierReason(record.executionId);
+      if (unusable !== undefined) {
+        throw new Error(
+          `The intent ledger at ${this.ledgerLabel} has a record under ${digest} whose \`executionId\` is ${unusable}. It is used to read the execution back, so one the API cannot accept is a record that can never be reconciled.`,
+        );
+      }
+    }
+
+    const intent = normalizeIntent(record?.intent as Record<string, unknown>);
+    // Written by a build that checked less, or by hand. Either way, a PENDING
+    // record whose intent cannot be re-sent is a key held against a write
+    // nothing can finish.
+    const unrecoverable = unrecoverableIntentReason(intent);
+    if (unrecoverable !== undefined) {
+      throw new Error(
+        `The intent ledger at ${this.ledgerLabel} has a record under ${digest} whose intent could not be re-sent: ${unrecoverable}. Finishing an interrupted write means re-running the same intent, and this record does not hold one — whatever is reconstructed hashes differently and becomes a second order. Read ${record?.executionId === undefined ? 'the account history' : `execution ${String(record.executionId)}`} to establish what happened before writing anything else.`,
+      );
+    }
+
+    // Three names for one thing: the key it is filed under, the digest recorded
+    // inside it, and the digest its intent actually hashes to. All three have to
+    // agree. A record under the wrong key is invisible to `reserve`, which finds
+    // nothing for that intent, mints a second key, and places a second order.
+    const computed = intentDigest(intent);
+    const stored = (record as { digest?: unknown }).digest;
+    if (stored !== digest) {
+      throw new Error(
+        `The intent ledger at ${this.ledgerLabel} has a record filed under ${digest} that records its own digest as ${String(stored)}. Overwriting one with the other would decide which is right on no evidence, so this refuses to load.`,
+      );
+    }
+    if (computed !== digest) {
+      // Deliberately no instruction to re-file it. A mismatch says the key and
+      // the intent disagree; it does NOT say which of them changed. If the
+      // INTENT is what was damaged, re-indexing under the computed digest
+      // attaches this record's key — and the execution it names — to a
+      // different order than the one it was minted for. The only thing that
+      // settles it is what the server says happened.
+      throw new Error(
+        `The intent ledger at ${this.ledgerLabel} has a record filed under ${digest} whose intent hashes to ${computed}. Something changed one of them and this cannot tell which, so it will neither load the record nor suggest re-filing it — re-indexing a damaged INTENT would attach this key, and the execution it names, to an order it was never minted for. ${record?.executionId === undefined ? 'Read the account history' : `Read execution ${String(record.executionId)}`} to establish what actually happened, then rebuild the entry from that.`,
+      );
+    }
+    return { ...(record as IntentRecord), digest };
+  }
+
 
   /**
    * Run one read-modify-write with whatever exclusion this storage needs.
@@ -347,25 +518,15 @@ abstract class BaseIntentStore implements IntentStore {
     if (unusable !== undefined) {
       throw new TypeError(`Refusing to attach an execution id that is ${unusable}.`);
     }
-    await this.update(idempotencyKey, (record, records) => {
-      // Checked HERE, and not only when the file is next read. The load-time
-      // check was the only one, so a duplicate was written successfully and
-      // discovered on the next open — which failed the whole ledger. That is
-      // the worst available failure: recovery becomes unreadable at exactly the
-      // moment it is needed, and this module did it to itself.
-      for (const other of records.values()) {
-        if (other.idempotencyKey === idempotencyKey) continue;
-        if (other.executionId !== executionId) continue;
-        throw new Error(
-          `Execution ${executionId} is already recorded against a different intent (${other.digest}). Attaching it here as well would let a read of that execution be reported as the outcome of either, so nothing is written. Read the execution and the account history to establish which intent placed it.`,
-        );
-      }
-      return {
-        ...record,
-        executionId,
-        ...(enforcedWorstPrice === undefined ? {} : { enforcedWorstPrice }),
-      };
-    });
+    // Everything else this could get wrong — a duplicate execution, an empty
+    // price — is caught by `save`, which holds a write to what a read will
+    // accept. This one check stays here only because it names the field before
+    // any work is done.
+    await this.update(idempotencyKey, (record) => ({
+      ...record,
+      executionId,
+      ...(enforcedWorstPrice === undefined ? {} : { enforcedWorstPrice }),
+    }));
   }
 
   async settle(idempotencyKey: string, outcome: string): Promise<void> {
@@ -414,16 +575,13 @@ abstract class BaseIntentStore implements IntentStore {
    */
   private async update(
     idempotencyKey: string,
-    change: (record: IntentRecord, records: ReadonlyMap<string, IntentRecord>) => IntentRecord,
+    change: (record: IntentRecord) => IntentRecord,
   ): Promise<void> {
     await this.serialize(() => {
       const records = this.load();
       for (const [digest, record] of records) {
         if (record.idempotencyKey !== idempotencyKey) continue;
-        // `change` sees the whole ledger because some of these decisions are
-        // about the OTHER records — a duplicate execution id is not a fact
-        // about the record being changed.
-        records.set(digest, change(record, records));
+        records.set(digest, change(record));
         this.save(records);
         return;
       }
@@ -433,14 +591,28 @@ abstract class BaseIntentStore implements IntentStore {
 
 /** Nothing survives the process. For tests, and for a caller who says so. */
 class MemoryIntentStore extends BaseIntentStore {
-  private readonly records = new Map<string, IntentRecord>();
+  private records = new Map<string, IntentRecord>();
 
+  /**
+   * A COPY, so a rejected write changes nothing.
+   *
+   * Handing out the live map was the difference between this store and the file
+   * one, and it showed up the moment `save` gained the power to refuse: the
+   * mutation had already landed in the map before the refusal, so the record
+   * the ledger would not accept was sitting in memory anyway. The file store
+   * gets rollback for free — it builds a new file and renames it — and this one
+   * has to be told.
+   */
   protected load(): Map<string, IntentRecord> {
-    return this.records;
+    return new Map(this.records);
   }
 
-  protected save(): void {
-    // The map IS the storage; `load` handed out the live one.
+  protected override get ledgerLabel(): string {
+    return 'the in-memory intent ledger';
+  }
+
+  protected persist(records: Map<string, IntentRecord>): void {
+    this.records = records;
   }
 }
 
@@ -641,7 +813,7 @@ class FileIntentStore extends BaseIntentStore {
       // torn write: keys for orders that may be in flight, discarded, and the
       // next attempt free to place a second one. A person has to look.
       throw new Error(
-        `The intent ledger at ${this.path} is not readable JSON, and this store will not start a new one over it — a reserved key that is discarded is a second order waiting to be placed. Inspect the file, recover the keys, then move it aside.`,
+        `The intent ledger at ${this.ledgerLabel} is not readable JSON, and this store will not start a new one over it — a reserved key that is discarded is a second order waiting to be placed. Inspect the file, recover the keys, then move it aside.`,
         { cause: error },
       );
     }
@@ -667,150 +839,25 @@ class FileIntentStore extends BaseIntentStore {
     }
 
     const records = new Map<string, IntentRecord>();
-    const byKey = new Map<string, string>();
-    const byExecution = new Map<string, string>();
     for (const [digest, value] of Object.entries(entries as Record<string, unknown>)) {
-      const record = this.validate(digest, value);
-      // One key, one intent — the whole guarantee, and nothing enforced it.
-      // Two records sharing a key both replay it, so a second economic intent
-      // is deduped by the server onto the FIRST execution or swallows the trade
-      // that was actually asked for. It also splits this module against itself:
-      // `attach` finds one of them and `forget` removes both.
-      const already = byKey.get(record.idempotencyKey);
-      if (already !== undefined) {
-        throw new Error(
-          `The intent ledger at ${this.path} has one idempotency key on two records — ${already} and ${digest} both hold ${record.idempotencyKey}. They are different intents, so replaying that key sends one of them to the other's execution. This refuses to load; the executions they name have to be read back before either is used again.`,
-        );
-      }
-      byKey.set(record.idempotencyKey, digest);
-
-      // And one execution, one intent. Enforcing key uniqueness alone left the
-      // same identity confusion one field over: the replay path trusts the
-      // recorded execution id and reads it back, so two records naming one
-      // execution report it as the outcome of whichever intent asked. The
-      // second economic order is swallowed and announced as the first.
-      if (record.executionId !== undefined) {
-        const claimed = byExecution.get(record.executionId);
-        if (claimed !== undefined) {
-          throw new Error(
-            `The intent ledger at ${this.path} has one execution on two records — ${claimed} and ${digest} both name ${record.executionId}. They are different intents, so reading that execution back would report it as the outcome of whichever one asked. This refuses to load; read the execution and the account history to establish which intent actually placed it.`,
-          );
-        }
-        byExecution.set(record.executionId, digest);
-      }
-      records.set(digest, record);
+      records.set(digest, this.validate(digest, value));
     }
+    this.assertUsable(records);
     return records;
   }
 
-  /**
-   * A record, or an error naming it.
-   *
-   * Every field a reader will reach for is checked here, because the readers are
-   * the recovery paths and they run at the worst moment. A record with an
-   * `idempotencyKey` and no `intent` used to load fine and then take the
-   * reconciliation recipe down on a property access — an uncaught throw, an
-   * empty `--json` stdout, and an operator none the wiser about the order the
-   * record was there to tell them about.
-   *
-   * Malformed is FATAL rather than skipped, for the same reason an unparseable
-   * ledger is: a record this cannot read may be the one naming an execution
-   * that exists, and quietly dropping it frees the next attempt to mint a new
-   * key. A person has to look.
-   */
-  private unreadable(because: string): Error {
-    return new Error(
-      `The intent ledger at ${this.path} cannot be read: ${because}. This will not carry on over a ledger it does not understand — every record it fails to see is a key it will mint again, and a key minted twice is an order placed twice. Inspect the file, recover what it names, then move it aside.`,
-    );
+
+  protected override get ledgerLabel(): string {
+    return this.path;
   }
 
-  private validate(digest: string, value: unknown): IntentRecord {
-    const record = value as Partial<IntentRecord> | null;
-    const bad = (field: string): never => {
-      throw new Error(
-        `The intent ledger at ${this.path} has a record under ${digest} whose \`${field}\` is missing or the wrong type. This will not load a record it cannot read, and will not skip one either — a record it cannot read may be the one naming an order that exists, and dropping it frees the next attempt to mint a new key. Inspect the file, recover what it names, then move it aside.`,
-      );
-    };
-    if (record === null || typeof record !== 'object') bad('record');
-    if (record?.intent === null || typeof record?.intent !== 'object') bad('intent');
-    if (record?.status !== 'PENDING' && record?.status !== 'SETTLED') bad('status');
-    if (typeof record?.createdAt !== 'string') bad('createdAt');
-    // Present, not merely the right type when it happens to be there. `digest`
-    // is required by the record interface and written on every save, so a
-    // record without one was not written by this module — and synthesizing it
-    // from the map key is the silent repair the three-way check exists to
-    // refuse.
-    if (typeof record?.digest !== 'string') bad('digest');
-    // Bounded, because it is replayed straight into the `Idempotency-Key`
-    // header and the contract admits 1–128 characters. An empty string passed
-    // a `typeof` check and would have been sent as a header with no value.
-    const unusableKey = unusableIdentifierReason(record?.idempotencyKey);
-    if (unusableKey !== undefined) {
-      throw new Error(
-        `The intent ledger at ${this.path} has a record under ${digest} whose \`idempotencyKey\` is ${unusableKey}. It is replayed into the request header verbatim, so a key the API cannot accept is a write that can never be finished under it.`,
-      );
-    }
-    // Non-empty when present, `executionId` bounded like every other identifier
-    // on this API. An empty string passed a `typeof` check and would have been
-    // read back as an execution to fetch, a price to report, or an outcome to
-    // believe.
-    for (const field of ['executionId', 'enforcedWorstPrice', 'settledAt', 'outcome'] as const) {
-      const value = record?.[field];
-      if (value === undefined) continue;
-      if (typeof value !== 'string' || value === '') bad(field);
-    }
-    if (record?.executionId !== undefined) {
-      const unusable = unusableIdentifierReason(record.executionId);
-      if (unusable !== undefined) {
-        throw new Error(
-          `The intent ledger at ${this.path} has a record under ${digest} whose \`executionId\` is ${unusable}. It is used to read the execution back, so one the API cannot accept is a record that can never be reconciled.`,
-        );
-      }
-    }
-
-    const intent = normalizeIntent(record?.intent as Record<string, unknown>);
-    // Written by a build that checked less, or by hand. Either way, a PENDING
-    // record whose intent cannot be re-sent is a key held against a write
-    // nothing can finish.
-    const unrecoverable = unrecoverableIntentReason(intent);
-    if (unrecoverable !== undefined) {
-      throw new Error(
-        `The intent ledger at ${this.path} has a record under ${digest} whose intent could not be re-sent: ${unrecoverable}. Finishing an interrupted write means re-running the same intent, and this record does not hold one — whatever is reconstructed hashes differently and becomes a second order. Read ${record?.executionId === undefined ? 'the account history' : `execution ${String(record.executionId)}`} to establish what happened before writing anything else.`,
-      );
-    }
-
-    // Three names for one thing: the key it is filed under, the digest recorded
-    // inside it, and the digest its intent actually hashes to. All three have to
-    // agree. A record under the wrong key is invisible to `reserve`, which finds
-    // nothing for that intent, mints a second key, and places a second order.
-    const computed = intentDigest(intent);
-    const stored = (record as { digest?: unknown }).digest;
-    if (stored !== digest) {
-      throw new Error(
-        `The intent ledger at ${this.path} has a record filed under ${digest} that records its own digest as ${String(stored)}. Overwriting one with the other would decide which is right on no evidence, so this refuses to load.`,
-      );
-    }
-    if (computed !== digest) {
-      // Deliberately no instruction to re-file it. A mismatch says the key and
-      // the intent disagree; it does NOT say which of them changed. If the
-      // INTENT is what was damaged, re-indexing under the computed digest
-      // attaches this record's key — and the execution it names — to a
-      // different order than the one it was minted for. The only thing that
-      // settles it is what the server says happened.
-      throw new Error(
-        `The intent ledger at ${this.path} has a record filed under ${digest} whose intent hashes to ${computed}. Something changed one of them and this cannot tell which, so it will neither load the record nor suggest re-filing it — re-indexing a damaged INTENT would attach this key, and the execution it names, to an order it was never minted for. ${record?.executionId === undefined ? 'Read the account history' : `Read execution ${String(record.executionId)}`} to establish what actually happened, then rebuild the entry from that.`,
-      );
-    }
-    return { ...(record as IntentRecord), digest };
-  }
-
-  protected save(records: Map<string, IntentRecord>): void {
+  protected persist(records: Map<string, IntentRecord>): void {
     // The fence. A section that somehow lost its lock must not commit — and
     // "somehow" is not hypothetical, because the lock file is a file and a
     // person or a script can remove it while this is running.
     if (this.held !== undefined && this.readHolder()?.token !== this.held) {
       throw new Error(
-        `The intent ledger lock at ${this.lockPath} is no longer held by this process; refusing to write. Nothing was changed. Something removed or replaced the lock mid-write — re-run, and check what else is touching ${this.path}.`,
+        `The intent ledger lock at ${this.lockPath} is no longer held by this process; refusing to write. Nothing was changed. Something removed or replaced the lock mid-write — re-run, and check what else is touching ${this.ledgerLabel}.`,
       );
     }
     const document = {
