@@ -599,6 +599,10 @@ describe('the shipped recipes', () => {
     for (const expected of [
       'diagnose.mjs',
       'onboard.mjs',
+      // The prompt an agent gets is "place a bet", which names no market — so
+      // the first thing needed is a look at the catalog. Five recorded sessions
+      // hand-wrote this one under five different names.
+      'browse.mjs',
       'markets.mjs',
       'order.mjs',
       'positions.mjs',
@@ -608,6 +612,46 @@ describe('the shipped recipes', () => {
     ]) {
       expect(RECIPES, expected).toContain(expected);
     }
+  });
+
+  it('says what each one is for, where somebody looking for one will read it', () => {
+    // Every observed cold start opened four documents before its first call.
+    // `npx @waterx/predict-agent-sdk` is the one that runs with nothing
+    // configured, so it is where the list belongs — and a filename is not a
+    // purpose, so the purposes are written down. This fails if a recipe ships
+    // without one, because a list that falls behind the directory sends a
+    // reader to open the files anyway.
+    const describeSource = read('packages/sdk/src/bin/describe.ts');
+    for (const name of RECIPES) {
+      if (name === '_client.mjs') continue;
+      expect(describeSource, `${name} has no line in the describe output`).toContain(`'${name}'`);
+    }
+  });
+
+  it('tells a reader they are scripts rather than modules', () => {
+    // An agent tried `import { connect } from
+    // '@waterx/predict-agent-sdk/recipes/_client.mjs'` and met
+    // ERR_PACKAGE_PATH_NOT_EXPORTED, then reached into `node_modules` by
+    // relative path to get around it. Both the attempt and the workaround are
+    // reasonable; what was missing was anybody saying which one is meant.
+    expect(read('packages/sdk/src/bin/describe.ts')).toMatch(/not modules to import/u);
+    expect(read('packages/sdk/recipes/README.md')).toMatch(/ERR_PACKAGE_PATH_NOT_EXPORTED/u);
+  });
+
+  it('decides whether an order traded with the SDK, not with `timedOut`', () => {
+    // The defect this pins: `order.mjs` branched on whether the WAIT timed out
+    // — a fact about the process — and treated everything else as success. Four
+    // CANCELLED orders out of five in one re-test exited zero, with the word
+    // three lines into an ordinary-looking result block. `dispositionOf` is the
+    // SDK answering "did the money move"; a recipe that decides for itself is
+    // how the two get out of step again.
+    const source = code('order.mjs');
+    expect(source).toMatch(/\bdispositionOf\(/u);
+    expect(source, 'still branches on timedOut to decide success').not.toMatch(
+      /if\s*\(\s*result\.timedOut\s*\)/u,
+    );
+    // And it says so where a person reads first, not only in the JSON.
+    expect(source).toMatch(/NOT FILLED/u);
   });
 
   it('cannot become a second way to trade', () => {

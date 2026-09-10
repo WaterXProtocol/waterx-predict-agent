@@ -14,7 +14,13 @@
 import { describe, expect, it } from 'vitest';
 
 import { PredictAgentClient } from '../src/client.ts';
-import { isTerminalExecutionStatus, toFeeFacts } from '../src/execution-facts.ts';
+import {
+  dispositionOf,
+  isFilled,
+  isTerminalExecutionStatus,
+  toFeeFacts,
+} from '../src/execution-facts.ts';
+import type { PredictExecutionStatus } from '../src/contract.ts';
 import type { AgentSigner } from '../src/signer.ts';
 
 const AGENT = '0xagent';
@@ -316,5 +322,55 @@ describe('execution fact helpers', () => {
     expect(toFeeFacts(undefined)).toEqual({ available: false, reason: 'NO_FILL_OBSERVED' });
     expect(toFeeFacts(FILL)).toEqual({ available: false, reason: 'EMBEDDED_IN_PRICE' });
     expect(toFeeFacts({ ...FILL, actualFee: '0' })).toEqual({ available: true, actualFee: '0' });
+  });
+});
+
+/**
+ * Did the money move?
+ *
+ * The question `status` does not answer on its own, and the one every caller
+ * that has had to work it out has answered wrongly in the same way: by
+ * branching on whether the WAIT timed out — a fact about the caller's process —
+ * and treating everything else as success. The shipped `order.mjs` did exactly
+ * that, sent five orders in a re-test, and reported four `CANCELLED` results
+ * with the same shape and the same exit code as the one that traded.
+ */
+describe('dispositionOf', () => {
+  const outcome = (
+    status: string,
+    terminal: boolean,
+    timedOut = false,
+  ): { status: PredictExecutionStatus; terminal: boolean; timedOut: boolean } => ({
+    status: status as PredictExecutionStatus,
+    terminal,
+    timedOut,
+  });
+
+  it('calls only a fill a fill', () => {
+    expect(dispositionOf(outcome('FILLED', true))).toBe('FILLED');
+    expect(isFilled(outcome('FILLED', true))).toBe(true);
+  });
+
+  it('separates "it finished and nothing moved" from every other answer', () => {
+    // Each of these is an order that existed, was answered, and the answer was
+    // no. None of them is a timeout and none of them traded.
+    for (const status of ['CANCELLED', 'REJECTED', 'EXPIRED'] as const) {
+      expect(dispositionOf(outcome(status, true)), status).toBe('NOT_FILLED');
+      expect(isFilled(outcome(status, true)), status).toBe(false);
+    }
+  });
+
+  it('does not let a non-fill hide behind `timedOut: false`', () => {
+    // The exact shape of the defect: `timedOut` is false on a CANCELLED order,
+    // because nothing timed out. A caller branching on it calls this a success.
+    const cancelled = outcome('CANCELLED', true, false);
+
+    expect(cancelled.timedOut).toBe(false);
+    expect(dispositionOf(cancelled)).toBe('NOT_FILLED');
+  });
+
+  it('separates "still moving" from "we stopped watching"', () => {
+    expect(dispositionOf(outcome('PENDING_FILL', false))).toBe('IN_FLIGHT');
+    expect(dispositionOf(outcome('PENDING_FILL', false, true))).toBe('UNOBSERVED');
   });
 });

@@ -24,17 +24,45 @@
  *
  * An option this does not recognise is REFUSED, not ignored. `--dry-run` that
  * fell through a filter and left the order to go out anyway is the reason.
+ *
+ * WHAT THE EXIT CODE MEANS, because it used to mean less than it looked like.
+ * `0` is a FILL and nothing else. A `CANCELLED`, `REJECTED` or `EXPIRED` order
+ * is terminal and traded nothing, and this exited zero on all of them — four
+ * times out of five orders in one re-test, with `status : CANCELLED` sitting
+ * three lines into an otherwise ordinary-looking result. It now exits 7 and
+ * says so in the first line a person reads.
  */
-import { isPredictAgentApiError, isUnresolvedWrite, describeQuoteCost } from '@waterx/predict-agent-sdk';
+import {
+  describeQuoteCost,
+  dispositionOf,
+  isPredictAgentApiError,
+  isUnresolvedWrite,
+} from '@waterx/predict-agent-sdk';
 
 import { connect, emit, emitError, out, parseArgv } from './_client.mjs';
 
-const { positionals, options } = parseArgv({ '--dry-run': 'boolean', '--account': 'value' });
+const { positionals, options } = parseArgv({
+  '--dry-run': 'boolean',
+  '--account': 'value',
+  '--retry': 'boolean',
+});
 const [marketId, outcomeId, side, amount, bps, positionId] = positionals;
 const dryRun = options['--dry-run'] === true;
+/**
+ * State a genuinely new attempt at an intent that already has an outcome.
+ *
+ * The key is content-addressed, so re-running the same arguments replays the
+ * same key and returns the RECORDED result — for a filled order that is the
+ * guarantee working, and for one that did not fill it means those arguments can
+ * never do anything else. `--retry` mints a `clientOrderId`, which the digest
+ * counts, so the intent is a different one and says so rather than pretending
+ * the last one might go differently.
+ */
+const retry = options['--retry'] === true;
+const clientOrderId = retry ? `retry-${Date.now().toString(36)}` : undefined;
 
 if (!marketId || !outcomeId || !side || !amount || !bps) {
-  out('usage: node recipes/order.mjs <marketId> <YES|NO> <BUY|SELL> <amount|shares> <maxSlippageBps> [positionId] [--dry-run] [--json]');
+  out('usage: node recipes/order.mjs <marketId> <YES|NO> <BUY|SELL> <amount|shares> <maxSlippageBps> [positionId] [--account <id>] [--dry-run] [--retry] [--json]');
   emitError('USAGE');
   process.exit(2);
 }
@@ -123,30 +151,62 @@ try {
       size,
       maxSlippageBps: Number(bps),
       ...(positionId === undefined ? {} : { positionId }),
+      ...(clientOrderId === undefined ? {} : { clientOrderId }),
     },
     { waitFor: 'TERMINAL', timeoutMs: 90_000 },
   );
 
+  // Decided before anything is printed, because it decides what to print. The
+  // SDK owns the question — `status` alone does not answer "did the money
+  // move", and working it out per caller is how four cancelled orders came to
+  // look exactly like the one that traded.
+  const disposition = dispositionOf(result);
+
+  out('');
+  out(
+    disposition === 'FILLED'
+      ? '*** FILLED ***'
+      : disposition === 'NOT_FILLED'
+        ? `*** NOT FILLED — ${result.status}. Nothing traded. ***`
+        : `*** NOT OBSERVED — ${result.status}. The order may still be live. ***`,
+  );
+  out('');
   out(`executionId : ${result.executionId}`);
   out(`status      : ${result.status}  (terminal: ${result.terminal}, timedOut: ${result.timedOut})`);
-  out(`key         : ${result.idempotencyKey}${result.idempotencyKeyReplayed ? '  (REPLAYED — this intent had been attempted before)' : ''}`);
+  out(`key         : ${result.idempotencyKey}${result.idempotencyKeyReplayed ? '  (REPLAYED)' : ''}`);
   out(`enforced    : ${result.enforcedWorstPrice}`);
   if (result.fill !== undefined) out(`fill        : ${JSON.stringify(result.fill)}`);
   if (result.remainingAllowance !== undefined) out(`allowance   : ${result.remainingAllowance}`);
   if (!result.fee.available) {
     out(`fee         : none reportable — ${result.fee.reason}. Do not compute one.`);
   }
-  // Classified BEFORE anything reaches stdout. Emitting the result first and
-  // the failure afterwards left a caller holding `{ ok: true }` next to exit 4
-  // — the suppressor kept stdout parseable and the document still said the
-  // wrong thing.
-  if (result.timedOut) {
+
+  if (disposition === 'NOT_FILLED') {
+    out('');
+    out('This order is over. It traded nothing and the allowance above is unchanged.');
+    // Whole sentences. Trimming at the first period cut them mid-decimal —
+    // "fills at 0." — which is worse than not echoing them at all.
+    if (cost.concerns.length > 0) {
+      out('The disclosure above already said why this was likely:');
+      for (const concern of cost.concerns) out(`  ! ${concern}`);
+    }
+    if (result.idempotencyKeyReplayed) {
+      // The half a caller works out by trial otherwise, five minutes at a time.
+      out('');
+      out('And this was a REPLAY: the key is content-addressed, so these exact');
+      out('arguments will keep returning this same recorded result and will never');
+      out('send anything. To attempt it again as a NEW intent, add --retry (which');
+      out('mints a clientOrderId), or change what you are asking for.');
+    }
+    emitError(result.status, { result, cost, disposition });
+    process.exitCode = 7;
+  } else if (disposition === 'FILLED') {
+    emit({ result, cost, disposition });
+  } else {
     out('');
     out('The wait expired. The order is LIVE, not failed. Run `node recipes/reconcile.mjs`.');
-    emitError('WAIT_EXPIRED', { result, cost });
+    emitError('WAIT_EXPIRED', { result, cost, disposition });
     process.exitCode = 4;
-  } else {
-    emit({ result, cost });
   }
 } catch (error) {
   if (isUnresolvedWrite(error)) {

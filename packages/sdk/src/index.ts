@@ -100,8 +100,11 @@ export {
   type SizeConfidence,
 } from './quote-cost.ts';
 export {
+  dispositionOf,
+  type ExecutionDisposition,
   type ExecutionFeeFacts,
   type ExecutionOutcome,
+  isFilled,
   isTerminalExecutionStatus,
   needsAgentSignature,
   toExecutionOutcome,
