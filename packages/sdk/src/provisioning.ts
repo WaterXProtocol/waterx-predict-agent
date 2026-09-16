@@ -192,7 +192,11 @@ export function nextStepFor(resolved: readonly ResolvedRequirement[]): {
   if (operator !== undefined) {
     return {
       actor: 'AGENT_OPERATOR',
-      action: `Supply the ${operator.title}: ${operator.supplyWith[0] ?? ''}`,
+      // The titles are not all noun phrases — 'Which deployment this is' does
+      // not survive being dropped after 'Supply the'. Naming the requirement
+      // and then how to supply it reads correctly for every one of them, and
+      // mirrors the ACCOUNT_OWNER branch below.
+      action: `${operator.title} — supply it with: ${operator.supplyWith[0] ?? ''}`,
     };
   }
   const owner = missing[0];
