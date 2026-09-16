@@ -130,8 +130,10 @@ has to act, and reports anything unsettled before offering anything new. The
 first half is the two operator artifacts (`pnpm cli:bundle`): the CLI, and the
 keystore signer it needs, whose `init` / `agent` steps `next` hands to the
 operator as commands. Both are built and walked to READY against a local stub
-in CI. **Nothing has been released:** that waits on ADR-0010 and ADR-0012, both
-Proposed. `npm install github:…` is not an installation
+in CI. ADR-0010 and ADR-0012 are Accepted, so a release may carry them;
+**none has been made yet**, and the agent API on mainnet is deployed but not
+yet switched on (backlog 3.12), so a mainnet setup currently stops at the
+login with the server saying so. `npm install github:…` is not an installation
 path — the repository root is a private workspace with no binary.
 
 **The CLI uses mainnet unless told otherwise** (ADR-0011): with no

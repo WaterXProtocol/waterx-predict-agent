@@ -207,7 +207,7 @@ line or an error body.
 
 ## The operator CLI bundle
 
-ADR-0010 and ADR-0012 (both **Proposed**). The CLI and its keystore signer
+ADR-0010 and ADR-0012 (both **Accepted**; nothing released yet). The CLI and its keystore signer
 never go to a registry. What can go to a GitHub release is two tarballs — the
 CLI with the SDK and the schema inside it, and the keystore signer beside it —
 so the whole setup an agent host needs is one sentence:

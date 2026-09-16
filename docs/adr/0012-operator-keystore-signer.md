@@ -1,7 +1,7 @@
 # ADR-0012 — The keystore signer ships beside the CLI
 
-- Status: Proposed
-- Date: 2026-09-16
+- Status: Accepted
+- Date: 2026-09-16 (proposed and accepted the same day, by the repository owner)
 - Decides: how an operator who installed the CLI bundle gets a signer, and
   when that signer may be handed to anyone outside this repository
 - Amends: ADR-0009 D-28, for this one artifact and only once this ADR is

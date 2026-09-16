@@ -1,7 +1,7 @@
 # ADR-0010 — The CLI ships as one self-contained release tarball
 
-- Status: Proposed
-- Date: 2026-09-16
+- Status: Accepted
+- Date: 2026-09-16 (proposed and accepted the same day, by the repository owner)
 - Decides: how an operator installs `waterx-predict` without a registry, and
   when that installation may be handed to anyone outside this repository
 - Amends: ADR-0009 D-28, for this one artifact and only once this ADR is
@@ -101,9 +101,9 @@ was written:
 - every write is still gated by the owner's on-chain delegation and risk
   profile, which this runtime cannot grant itself (ADR-0003).
 
-If that is not enough, leave this ADR Proposed until 1.11 has run against a
-deployed environment. Nothing else needs to change: the bundle keeps being
-built and checked, and cannot be released.
+The owner accepted that gap on 2026-09-16. Accepting it authorizes a release;
+it does not perform one, and none has been made. A release is still the
+manually dispatched workflow, run by a person.
 
 ## What this forbids
 

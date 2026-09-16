@@ -16,8 +16,8 @@ See [Execution policy](#execution-policy).
 
 The package is `private: true` and is never published to a registry. It is run
 from the workspace, or installed from the operator bundle — one tarball with the
-SDK and the schema inside it (`pnpm cli:bundle`, ADR-0010, which is Proposed, so
-no bundle has been released yet):
+SDK and the schema inside it (`pnpm cli:bundle`, ADR-0010, Accepted; no bundle
+has been released yet):
 
 ```sh
 npm install <release-asset-url>/waterx-predict-agent-cli-<version>.tgz \
