@@ -43,8 +43,15 @@ function summarize(report: InstallationReport): void {
 
   if (report.recipesPath !== undefined) {
     line('');
-    line('Runnable recipes for the reads and the write, so nothing has to be composed:');
+    line('Runnable recipes, so nothing has to be composed:');
     line(`  ${report.recipesPath}`);
+    for (const [name, purpose] of RECIPES) {
+      line(`    ${name.padEnd(14)}${purpose}`);
+    }
+    line('');
+    line('They are scripts to RUN or copy, not modules to import — they read the');
+    line("environment and exit the process, which is right in a script and wrong in a");
+    line('library. For the three lines that build a client yourself, see the README.');
   }
 
   const cli = report.surfaces.find((surface) => surface.id === 'cli');
@@ -88,9 +95,52 @@ function summarize(report: InstallationReport): void {
   }
 }
 
+/**
+ * The recipes, and the one thing each answers.
+ *
+ * Listed here rather than read off the directory because a filename is not a
+ * purpose, and this output exists to stop a reader opening six files to find
+ * out which one they want. `tests/workspace.test.ts` fails if a recipe ships
+ * without a line here, so the list cannot fall behind the directory.
+ */
+const RECIPES: readonly (readonly [string, string])[] = [
+  ['diagnose.mjs', 'may this agent trade right now, and if not, who acts?'],
+  ['onboard.mjs', "the owner's authorization link — and it waits for the signature"],
+  ['browse.mjs', 'what is there to trade, cheapest spread first'],
+  ['markets.mjs', 'a name (and a round) to one market id'],
+  ['order.mjs', 'one protected order, with its cost stated before it goes'],
+  ['positions.mjs', 'what is held, and what is left to spend'],
+  ['reconcile.mjs', 'what was started and never seen to land'],
+];
+
+/**
+ * The next three things to run, in order.
+ *
+ * The report above says what is missing; this says what to DO about it, which
+ * is not the same sentence. Every observed cold start opened four documents
+ * before its first call — the instructions, the skill, the recipe README and
+ * this output — and none of them ended with a command anybody could paste.
+ */
+function nextCommands(report: InstallationReport): void {
+  if (report.recipesPath === undefined) return;
+  const blocked = report.missing.filter((requirement) => requirement.suppliedBy === 'AGENT_OPERATOR');
+  line('');
+  line('The order to do it in:');
+  if (blocked.length > 0) {
+    line(`  0. Supply ${String(blocked.length)} thing(s) listed above — a network, a wallet, a signer.`);
+  }
+  line('  1. node <recipes>/diagnose.mjs            can I trade?');
+  line('  2. node <recipes>/onboard.mjs &           if not: hand the owner the link, wait');
+  line('  3. node <recipes>/browse.mjs              pick a market');
+  line('  4. node <recipes>/order.mjs …             place it');
+  line('');
+  line(`  <recipes> = ${report.recipesPath}`);
+}
+
 const report = describeInstallation();
 process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
 summarize(report);
+nextCommands(report);
 
 /**
  * Non-zero while something is missing.

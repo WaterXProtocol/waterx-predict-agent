@@ -46,6 +46,45 @@ const AWAITING_AGENT: ReadonlySet<PredictExecutionStatus> = new Set([
 ]);
 
 /**
+ * What actually happened to the money.
+ *
+ * `status` alone does not answer it, and every caller that has had to work it
+ * out has got it wrong the same way: they branch on whether the wait timed out,
+ * which is a question about THIS PROCESS, and treat everything else as success.
+ * A `CANCELLED` order then reports exactly like a filled one — same shape, same
+ * exit code, the word buried three lines into a result block.
+ *
+ * That happened here. The shipped `order.mjs` sent five orders across a
+ * re-test; four came back `CANCELLED` with nothing traded and the allowance
+ * untouched, and all five exited zero. `SUBMITTED_IS_NOT_FILLED` is a rule in
+ * the agent instructions precisely because this distinction is load-bearing,
+ * and the surface that ships those instructions could not make it.
+ *
+ * So it is a field now, decided once, here:
+ *
+ *   `FILLED`      terminal, and shares moved. The only outcome that traded.
+ *   `NOT_FILLED`  terminal, and nothing moved — CANCELLED, REJECTED, EXPIRED.
+ *                 Not an error in the transport sense; the order existed, was
+ *                 answered, and the answer was no.
+ *   `IN_FLIGHT`   not terminal, and still being watched.
+ *   `UNOBSERVED`  the wait stopped before the order did. It may yet fill; this
+ *                 process stopped looking.
+ */
+export type ExecutionDisposition = 'FILLED' | 'NOT_FILLED' | 'IN_FLIGHT' | 'UNOBSERVED';
+
+export function dispositionOf(
+  outcome: Pick<ExecutionOutcome, 'status' | 'terminal' | 'timedOut'>,
+): ExecutionDisposition {
+  if (outcome.terminal) return outcome.status === 'FILLED' ? 'FILLED' : 'NOT_FILLED';
+  return outcome.timedOut ? 'UNOBSERVED' : 'IN_FLIGHT';
+}
+
+/** Did this order trade? The one-line form of {@link dispositionOf}. */
+export const isFilled = (
+  outcome: Pick<ExecutionOutcome, 'status' | 'terminal' | 'timedOut'>,
+): boolean => dispositionOf(outcome) === 'FILLED';
+
+/**
  * Whether this execution is still waiting on the agent's signature.
  *
  * Load-bearing for recovery. Reading an execution back is the right way to

@@ -88,11 +88,15 @@ agent may trade** — it says the composed commands are out of reach. Read
 node_modules/@waterx/predict-agent-sdk/recipes/
 ```
 
-`diagnose` · `onboard` · `markets` · `order` · `positions` · `reconcile`.
-Runnable, `--json` on every one, and each is the whole of one job — including
-the durable idempotency store, so nothing about a write has to be composed at
-the terminal. Copy them into your project to edit them; see
-[`recipes/README.md`](recipes/README.md).
+`diagnose` · `onboard` · `browse` · `markets` · `order` · `positions` ·
+`reconcile`. Runnable, `--json` on every one, and each is the whole of one job —
+including the durable idempotency store, so nothing about a write has to be
+composed at the terminal. `npx @waterx/predict-agent-sdk` lists them with what
+each one answers, and ends with the order to run them in.
+
+They are scripts to run or copy, **not modules to import**: they read the
+environment and exit the process, which is right in a script and wrong in a
+library. See [`recipes/README.md`](recipes/README.md).
 
 ### Loading this as a skill
 
@@ -528,6 +532,7 @@ for (const entry of results) {
 | `executeMany(intents, options?)` | Independent legs, bounded concurrency |
 | `waitForExecution(id, options?)` | Wait for terminal facts; also the reconciliation entry point |
 | `getExecution(id)` | Poll one execution |
+| `dispositionOf(outcome)` | Did the money move? `FILLED` / `NOT_FILLED` / `IN_FLIGHT` / `UNOBSERVED` |
 | `listExecutions(accountId, page?)` | Your order history on that account, newest first |
 | `getFills(accountId, page?)` | Filled executions only, by fill time |
 | `getPositions(accountId, page?)` | Positions you opened, with cost basis |
@@ -558,6 +563,33 @@ the one that biases `winRate` downward and by the most, because a resolved marke
 is claimed from the FE and its payout never passes through this API. There is no
 time window; every figure is lifetime-to-date, because the exclusions have no
 recorded instant to window on.
+
+**`dispositionOf` is the one to reach for after a write, and the reason it
+exists is a mistake this package shipped.** `status` alone does not answer "did
+the money move", so every caller that has had to work it out has worked it out
+the same wrong way: branch on `timedOut`, which is a fact about your own
+process, and treat everything else as success. A `CANCELLED` order then reports
+exactly like a filled one. The recipe that ships here did that, sent five orders
+in a re-test, and reported four terminal non-fills as successes. `FILLED` is the
+only disposition that traded; `NOT_FILLED` is an order that existed, was
+answered, and the answer was no.
+
+```ts
+const result = await client.executeMarketOrder(intent, { waitFor: 'TERMINAL' });
+
+switch (dispositionOf(result)) {
+  case 'FILLED':     break;                       // result.fill is the trade
+  case 'NOT_FILLED': break;                       // terminal, nothing moved
+  case 'UNOBSERVED': break;                       // may still land — reconcile
+  case 'IN_FLIGHT':  break;                       // still moving
+}
+```
+
+One pairing is worth knowing before it surprises somebody: a `NOT_FILLED`
+outcome together with `idempotencyKeyReplayed: true` means those exact arguments
+will keep returning that recorded result and will never send anything again.
+That is the content-addressed key working as designed. To attempt the same trade
+as a genuinely new intent, give it a `clientOrderId` — the digest counts it.
 
 `diagnose()` is the one call to make first, and the one to make again whenever
 something stops working. It merges the offline `describeInstallation()` with an

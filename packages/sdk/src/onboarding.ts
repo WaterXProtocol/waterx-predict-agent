@@ -209,7 +209,20 @@ export interface AuthorizationPoller {
 }
 
 export interface WaitForAuthorizationOptions extends DescribeOnboardingOptions {
-  /** Default 10 minutes: an owner has to find their wallet and read a screen. */
+  /**
+   * Default 30 minutes.
+   *
+   * It was ten, on the reasoning that an owner has to find their wallet and
+   * read a screen. Measured, one did: thirty-five minutes and fifty seconds
+   * from link to signature, during which the wait expired twice and the agent
+   * driving it had to notice and restart it — turning a step that runs itself
+   * into one somebody has to supervise.
+   *
+   * Thirty is not a promise that nobody takes longer; it is a bound chosen so
+   * that expiring is unusual rather than routine. Expiry is still not a failure
+   * and still cancels nothing, so a caller that means to wait indefinitely
+   * passes its own number and runs this where blocking is free.
+   */
   timeoutMs?: number;
   /** Default 3 s. The owner is signing in another window; polling faster helps nobody. */
   pollIntervalMs?: number;
@@ -223,7 +236,7 @@ export interface AuthorizationWaitResult extends OnboardingState {
   timedOut: boolean;
 }
 
-const DEFAULT_AUTHORIZATION_TIMEOUT_MS = 10 * 60 * 1_000;
+const DEFAULT_AUTHORIZATION_TIMEOUT_MS = 30 * 60 * 1_000;
 const DEFAULT_AUTHORIZATION_POLL_MS = 3_000;
 
 /**

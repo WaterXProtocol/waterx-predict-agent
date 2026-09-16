@@ -42,9 +42,10 @@ depending on something the package does not promise.
 | | What it answers |
 | --- | --- |
 | `diagnose.mjs` | May this agent trade right now, and if not, who does what? Run it first, and run it again whenever something stops working. |
-| `onboard.mjs` | Prints the owner's authorization link **and waits for the signature**, instead of stopping and asking someone to come back and say they are done. |
+| `onboard.mjs` | Prints the owner's authorization link **and waits for the signature**, instead of stopping and asking someone to come back and say they are done. Run it in the background — a measured owner took thirty-six minutes. |
+| `browse.mjs` | What is there to trade, cheapest spread first. The prompt an agent actually gets names no market, and this is the step that was hand-written in every recorded session. |
 | `markets.mjs` | Free text — plus, when you have it, `--closes-at` — to one market, or to a shortlist with the prices already attached. |
-| `order.mjs` | One protected market order, with the spread and the size confidence stated *before* it goes, and the key kept on disk. `--dry-run` stops after the disclosure; `--account <id>` pins the account. |
+| `order.mjs` | One protected market order, with the spread and the size confidence stated *before* it goes, and the key kept on disk. `--dry-run` stops after the disclosure; `--account <id>` pins the account; `--retry` states a genuinely new attempt. |
 | `positions.mjs` | What is held, and what is left to spend. |
 | `reconcile.mjs` | What did this project start writing and never see land? Reads it back, and tells the difference between an order that is *in flight* and one that is *stopped waiting for this agent to sign* — the second is not fixed by reading. |
 
@@ -58,11 +59,39 @@ export WATERX_PREDICT_ENVIRONMENT=testnet     # practice money
 node node_modules/@waterx/predict-agent-sdk/recipes/diagnose.mjs
 ```
 
-Copy them into your project if you want to edit them. They are examples that
-run, not a framework:
+## Run them, or copy them. Do not import them.
 
 ```bash
 cp -r node_modules/@waterx/predict-agent-sdk/recipes ./waterx-recipes
+```
+
+They are not importable, and the package says so rather than leaving you to find
+out:
+
+```
+import { connect } from '@waterx/predict-agent-sdk/recipes/_client.mjs';
+Error [ERR_PACKAGE_PATH_NOT_EXPORTED]: Package subpath './recipes/_client.mjs'
+is not defined by "exports"
+```
+
+That is deliberate, and the reason is in the file rather than in the manifest:
+`_client.mjs` reads environment variables, writes to stderr and calls
+`process.exit()`. That is correct in a script and wrong in a library, and
+exporting it would hand you something that can end your process. Reaching it by
+relative path through `node_modules` works and is worse — it depends on a layout
+nothing promises.
+
+What people reach for it for is `connect()`, and that is three lines of the SDK
+proper:
+
+```ts
+const signer = Ed25519Keypair.fromSecretKey(await loadAgentSecretKey());
+const client = new PredictAgentClient({
+  deployment: 'testnet',
+  signer,
+  intentStore: createFileIntentStore('.waterx/intents.json'),
+});
+await client.authenticate();
 ```
 
 Every script takes `--json` and writes **exactly one** JSON document to stdout,
@@ -101,6 +130,18 @@ whether removing `.waterx/intents.json.lock` is safe. Automatic takeover is two
 steps — check, then remove — and two callers can both take it, which is how one
 intent becomes two orders.
 
+**`0` means a fill, and nothing else.** This used to exit zero on a `CANCELLED`
+order — four times out of five orders in one re-test — with the word three lines
+into a result block that otherwise looked exactly like a success. A terminal
+order that traded nothing now leads with `*** NOT FILLED ***` and exits 7.
+
+**A non-fill does not become a fill by running it again.** The key is
+content-addressed, so the same arguments replay the same key and return the same
+recorded outcome — which is the guarantee working, and also means those
+arguments can never do anything else. `order.mjs` says that when it happens, and
+`--retry` mints a `clientOrderId` so a genuinely new attempt is a different
+intent rather than a hope.
+
 **A stopped order and a live one are different things.** An execution left at
 `AWAITING_SIGNATURE` is not in flight — nothing but this agent's signature moves
 it, and a read reports that status accurately until it expires. `reconcile.mjs`
@@ -135,4 +176,5 @@ made, and it is the only file to change.
 | `4` | A wait expired. **Not a failure** — the order or the signature may still land. |
 | `5` | An unresolved write. The outcome is unknown; run `reconcile.mjs`. |
 | `6` | The server refused the order, and said why. |
+| `7` | The order finished and **did not fill** — `CANCELLED`, `REJECTED`, `EXPIRED`. It existed, it was answered, and the answer was no. |
 | `70` | An unexpected fault. Still a `{ "ok": false }` document — an unhandled failure is a thing that happened, and stdout says so. |
