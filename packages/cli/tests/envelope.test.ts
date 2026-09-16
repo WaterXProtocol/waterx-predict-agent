@@ -81,8 +81,17 @@ describe('the stdout envelope', () => {
   });
 
   it('omits meta entirely when there is nothing to report', async () => {
-    const result = await invoke(['describe']);
+    const result = await invoke(['describe'], { env: { WATERX_PREDICT_ENVIRONMENT: 'testnet' } });
     expect(result.envelope.meta).toBeUndefined();
+  });
+
+  it('warns on every command when mainnet was chosen by default', async () => {
+    for (const argv of [['describe'], ['command-schema'], ['market', 'list']]) {
+      const result = await invoke(argv);
+      expect(result.envelope.meta?.warnings?.join(' '), argv.join(' ')).toMatch(
+        /No deployment was named.*mainnet.*real funds/u,
+      );
+    }
   });
 });
 
@@ -101,8 +110,9 @@ describe('exit codes', () => {
   it('exits on configuration before it opens a socket', async () => {
     const result = await invoke(['market', 'list']);
 
+    // The deployment defaults to mainnet; with no signer, nothing may reach it.
     expect(result.exit).toBe(EXIT_CODES.CONFIG);
-    expect(result.envelope.error?.code).toBe('NOT_CONFIGURED');
+    expect(result.envelope.error?.code).toBe('SIGNER_UNAVAILABLE');
     expect(result.fetches).toHaveLength(0);
   });
 

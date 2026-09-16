@@ -3,6 +3,11 @@
   "version": "0.1.0",
   "description": "TypeScript client for the WaterX Predict Agent Trading API — quotes, protected market orders, positions and allowance for autonomous strategies.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/WaterXProtocol/waterx-predict-agent.git",
+    "directory": "packages/sdk"
+  },
   "type": "module",
   "main": "dist/src/index.js",
   "types": "dist/src/index.d.ts",
@@ -12,10 +17,25 @@
       "import": "./dist/src/index.js"
     }
   },
-  "bin": { "waterx-predict-agent-sdk": "dist/src/bin/describe.js" },
-  "files": ["dist", "recipes", "AGENT_INSTRUCTIONS.md", "SKILL.md", "LICENSE", "package.json", "README.md"],
-  "engines": { "node": ">=20" },
-  "publishConfig": { "access": "public", "provenance": true },
+  "bin": {
+    "waterx-predict-agent-sdk": "dist/src/bin/describe.js"
+  },
+  "files": [
+    "dist",
+    "recipes",
+    "AGENT_INSTRUCTIONS.md",
+    "SKILL.md",
+    "LICENSE",
+    "package.json",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "scripts": {
     "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json && node -e \"require('node:fs').chmodSync('dist/src/bin/describe.js',0o755)\"",
     "typecheck": "tsc -p tsconfig.json",

@@ -3,6 +3,11 @@
   "version": "0.1.0",
   "description": "Versioned, runtime-validated command contract for the WaterX Predict agent runtime — one source of truth for the CLI, the emitted JSON Schema and every adapter.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/WaterXProtocol/waterx-predict-agent.git",
+    "directory": "packages/schema"
+  },
   "type": "module",
   "main": "dist/src/index.js",
   "types": "dist/src/index.d.ts",
@@ -12,9 +17,20 @@
       "import": "./dist/src/index.js"
     }
   },
-  "files": ["dist", "agent-commands.json", "LICENSE", "package.json", "README.md"],
-  "engines": { "node": ">=20" },
-  "publishConfig": { "access": "public", "provenance": true },
+  "files": [
+    "dist",
+    "agent-commands.json",
+    "LICENSE",
+    "package.json",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "scripts": {
     "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json",

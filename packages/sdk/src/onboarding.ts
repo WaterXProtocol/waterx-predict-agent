@@ -196,7 +196,14 @@ export interface AuthorizationUrlOptions {
  * the link confers no authority, not that it says nothing.
  */
 export function buildAuthorizationUrl(options: AuthorizationUrlOptions): string {
-  const url = new URL(PREDICT_AGENT_AUTHORIZE_PATH, `${options.consoleBaseUrl.replace(/\/+$/, '')}/`);
+  // Resolved RELATIVE to the console, not from its root: the path is written
+  // absolute, and `new URL('/agent/authorize', base)` would drop any prefix the
+  // console is served under — a console at `https://host/console` would send
+  // the owner to `https://host/agent/authorize`, a page that grants nothing.
+  const url = new URL(
+    PREDICT_AGENT_AUTHORIZE_PATH.replace(/^\/+/, ''),
+    `${options.consoleBaseUrl.replace(/\/+$/, '')}/`,
+  );
   url.searchParams.set('agent', options.agentWallet);
   if (options.label !== undefined) url.searchParams.set('label', options.label);
   if (options.accountId !== undefined) url.searchParams.set('account', options.accountId);

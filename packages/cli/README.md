@@ -14,8 +14,24 @@ started, so no code path can produce a transaction signature — and
 `delegated-auto` writes unattended only inside a scope an operator wrote down.
 See [Execution policy](#execution-policy).
 
-The package is `private: true` and publishes nothing yet (backlog 3.6). Run it
-from the workspace.
+The package is `private: true` and is never published to a registry. It is run
+from the workspace, or installed from the operator bundle — one tarball with the
+SDK and the schema inside it (`pnpm cli:bundle`, ADR-0010, Accepted; no bundle
+has been released yet):
+
+```sh
+npm install <release-asset-url>/waterx-predict-agent-cli-<version>.tgz \
+            <release-asset-url>/waterx-predict-agent-signer-keystore-<version>.tgz
+npx --no waterx-predict next --json
+```
+
+The second tarball is the keystore signer (ADR-0012). `next` sees what of it is
+done on this machine and hands the operator the rest as commands — `init`
+(a new agent wallet), `agent` (unlock once, leave it running), and the two
+settings, with the wallet address filled in.
+
+Keep `--no`: without it `npx` goes to the public registry when the binary is not
+installed.
 
 ## Quickstart
 
@@ -23,11 +39,16 @@ from the workspace.
 pnpm --filter @waterx/predict-agent-cli build
 alias waterx-predict='node packages/cli/dist/src/main.js'
 
+# 0. Ask where this agent stands. Works with nothing configured; see `next` below.
+waterx-predict next --json
+
 # 1. Ask what this thing is. No configuration, no network, no signer.
 waterx-predict describe
 
 # 2. Configure. The signer is an external command; no key enters this process.
-export WATERX_PREDICT_BASE_URL='https://<your-agent-api-host>'
+#    With no deployment named this CLI uses MAINNET (ADR-0011) and says so on
+#    every answer. To practise, name testnet.
+export WATERX_PREDICT_ENVIRONMENT=testnet   # or mainnet; unset means mainnet
 export WATERX_PREDICT_AGENT_WALLET='0x<64 hex>'
 export WATERX_PREDICT_SIGNER_COMMAND='/path/to/your-signer'
 
@@ -79,6 +100,35 @@ read **failed** and is not a refusal, `SUSPENDED` will not be fixed by signing
 again, and `AMBIGUOUS` means more than one account is ready — choosing whose
 money is traded is not this CLI's call. A `--wait` that runs out is not a failure
 either: run it again.
+
+## `next` — the loop
+
+`waterx-predict next --json` is what an agent host runs, obeys, and runs again.
+It answers in every state with exit 0 — the exit code says it answered, and
+`data.state` says where things stand:
+
+| State | Who acts | What it suggests |
+| --- | --- | --- |
+| `SETUP_INCOMPLETE` | operator | the settings to supply (`handOver.settings`) — the wallet and signer; the network defaults to mainnet unless a name it does not know was given. Nothing is sent |
+| `SESSION_FAILED` | agent | `doctor` |
+| `AUTHORIZATION_UNKNOWN` | agent | ask again — a failed read is not a refusal |
+| `AWAITING_OWNER` | owner | hand over `handOver.authorizationUrl`, then `onboard --wait` |
+| `ACCOUNT_CHOICE_NEEDED` | operator | ask the user which account (`needsFromUser`) |
+| `ACCOUNT_UNREADABLE` | agent | ask again; no order until the account is read |
+| `UNSETTLED_EXECUTION` | agent | `order reconcile` for each — before anything new |
+| `STRATEGY_NEEDS_ATTENTION` | agent, or operator if the Runner is not driving | `strategy get` / `strategy list` |
+| `TRADING_BLOCKED` | owner, or agent for a rolling window | `account risk-limits` |
+| `READY` | agent | `market search` and `order preview`, with what the user must choose in `needsFromUser` |
+
+`facts.deployment` says which network this is and why: `source: "DEFAULT"`
+means nobody named one and this is mainnet (`realFunds: true`). A host tells
+the user before the first preview.
+
+Three guarantees, each tested: every suggestion is a **read** in the contract,
+carried as `command`, `input` and `argv` the CLI accepts back; `stop: true`
+means hand `handOver` to the named person and do not act for them; and the
+states are checked worst-first, so nothing new is ever suggested beside an
+order of unknown outcome. Its only signature is the login challenge.
 
 ## The envelope
 

@@ -861,6 +861,39 @@ const runtimeOnboard: AgentCommandSpec = {
   ],
 };
 
+const runtimeNext: AgentCommandSpec = {
+  ...readOnly,
+  name: 'runtime.next',
+  cli: 'next',
+  summary: 'Where this agent stands, and the one thing to do next — as commands, not prose.',
+  description:
+    'The loop an agent host runs: call this, do what it says, call it again. It answers in every degraded state — nothing configured, no session, no owner grant — because each of those is an answer rather than an error, and the exit code is 0 whenever an answer was produced; `state` says whether this agent may trade. Every suggestion names a command in THIS contract with its argv, its classification, and who must run it: a suggestion for ACCOUNT_OWNER or AGENT_OPERATOR means stop and hand it to that person, and `stop: true` says so at the top. It never suggests a write while something is unsettled: a non-terminal execution on the account, or a Runner job in UNKNOWN_PENDING, is reported first with the read that settles it, because offering a new order beside an order of unknown outcome is how a position is opened twice. It never fills in a value a person has to choose — the network, the account, the market, the size or the slippage bound come back in needsFromUser, never guessed. Under the interactive policy a suggested write is the previewed order a person approves, not an order this command can cause. Composes the same reads as doctor and onboard; places nothing and signs nothing but the login challenge.',
+  sideEffects: ['AUTHENTICATES'],
+  implementation: {
+    kind: 'runtime',
+    note: 'Composes authenticate(), listAuthorizedAccounts(), getEffectiveLimits(), listExecutions() and getPositions(), plus a read-only strategy.list on the local Runner when one is listening. Writes nothing, anywhere.',
+  },
+  input: {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      accountId: { $ref: '#/$defs/accountId' },
+      label: {
+        title: 'Agent label',
+        description:
+          'Carried in the authorization link when an owner still has to act, so they can tell two agents apart. Cosmetic; it authorizes nothing.',
+        type: 'string',
+        minLength: 1,
+        maxLength: 64,
+      },
+    },
+  },
+  examples: [
+    { title: 'What should happen next', input: {} },
+    { title: 'Next, on one named account', input: { accountId: EXAMPLE_ACCOUNT_ID } },
+  ],
+};
+
 const accountList: AgentCommandSpec = {
   ...readOnly,
   name: 'account.list',
@@ -1161,6 +1194,7 @@ export const AGENT_COMMANDS: readonly AgentCommandSpec[] = [
   runtimeCommandSchema,
   runtimeDoctor,
   runtimeOnboard,
+  runtimeNext,
   marketList,
   marketSearch,
   marketGet,

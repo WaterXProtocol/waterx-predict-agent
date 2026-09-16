@@ -74,7 +74,11 @@ export function readRuntimeFacts(run: CliRun): RuntimeFacts {
   const signer = asRecord(data.signer);
   const policy = asRecord(data.policy);
   return {
-    baseUrl: asString(api.baseUrl),
+    // A deployment the CLI chose because nobody named one is production —
+    // mainnet (ADR-0011). This harness is non-production only, so that host is
+    // not one anybody SUPPLIED, and reading it as provisioned would point every
+    // read step at real accounts.
+    baseUrl: api.deploymentSource === 'DEFAULT' ? null : asString(api.baseUrl),
     environment: asString(api.environment),
     agentWallet: asString(identity.agentWallet),
     defaultAccountId: asString(identity.defaultAccountId),

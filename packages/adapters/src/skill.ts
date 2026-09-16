@@ -24,7 +24,7 @@ import { AGENT_COMMAND_SCHEMA_VERSION } from '@waterx/predict-agent-schema';
 import { AGENT_INSTRUCTIONS_VERSION, buildAgentInstructions } from './instructions.ts';
 
 /** Bumped when the route changes, not when the wording is tidied. */
-export const AGENT_SKILL_VERSION = '1';
+export const AGENT_SKILL_VERSION = '2';
 
 export interface AgentSkillStep {
   readonly id: string;
@@ -68,6 +68,7 @@ const STEPS: readonly AgentSkillStep[] = [
       'After `npm install`, the operating rules are on disk at `node_modules/@waterx/predict-agent-sdk/AGENT_INSTRUCTIONS.md`. Read them before anything else. They are not background: each rule is a refusal you would otherwise meet with money in flight.',
       'For the exact shape of a call, use the SDK\'s own types — its `.d.ts` IS the contract as your compiler sees it. `@waterx/predict-agent-schema` publishes the same contract as plain JSON for a surface that cannot import a Node module, but the SDK does not depend on it, so `node_modules/@waterx/predict-agent-schema/agent-commands.json` exists only if you installed it too. Check before you read it.',
       'If `waterx-predict` is on PATH, `waterx-predict describe` and `waterx-predict command-schema` are the authoritative answer for THIS build and outrank any document, including this one.',
+      'Holding the CLI, the rest of this route is one loop: run `waterx-predict next --json`, do what it says, run it again. It stops you where a person has to act and names them (`NEXT_IS_A_ROUTE_NOT_A_MANDATE`); the steps below are what its states mean.',
     ],
   },
   {
@@ -128,6 +129,10 @@ const STOPS: readonly AgentSkillStop[] = [
   {
     rule: 'SIZE_AMBIGUITY_STOPS_BEFORE_A_WRITE',
     text: 'A vague size is not a size. Never default to a house size, a round number, the whole balance or the last order.',
+  },
+  {
+    rule: 'NEXT_IS_A_ROUTE_NOT_A_MANDATE',
+    text: '`next` suggests reads. When it says stop, hand over to the person it names; when it asks for a value, ask the user.',
   },
   {
     rule: 'ACCOUNT_IS_NEVER_INFERRED',

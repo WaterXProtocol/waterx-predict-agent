@@ -132,6 +132,17 @@ describe('buildAuthorizationUrl', () => {
 
     expect(url).toBe('https://console.example.com/agent/authorize?agent=0xagent');
   });
+
+  it('keeps the path a console is served under', () => {
+    // Found by walking `next` against a console configured at a path: the
+    // absolute authorize path replaced the prefix, and the owner was sent to a
+    // page on the right host that grants nothing.
+    for (const consoleBaseUrl of ['https://host.example.com/console', 'https://host.example.com/console/']) {
+      expect(buildAuthorizationUrl({ consoleBaseUrl, agentWallet: AGENT })).toBe(
+        'https://host.example.com/console/agent/authorize?agent=0xagent',
+      );
+    }
+  });
 });
 
 describe('waitForAuthorization', () => {

@@ -75,7 +75,9 @@ describe('describeInstallation', () => {
     const deployment = report.requirements.find((entry) => entry.id === 'deployment');
     // It names the network, and the hostname is the fallback for a deployment
     // that has no name.
-    expect(deployment?.supplyWith[0]).toContain("deployment: 'testnet'");
+    expect(deployment?.supplyWith[0]).toContain("deployment: 'production'");
+    // The CLI's default is stated where the requirement is, not left to be found.
+    expect(deployment?.why).toMatch(/CLI uses production when none is named/u);
   });
 
   it('takes either spelling of the deployment', () => {
@@ -276,5 +278,55 @@ describe('the shipped recipes', () => {
 
     expect(report.recipesPath).toBeTypeOf('string');
     expect(existsSync(`${String(report.recipesPath)}/order.mjs`)).toBe(true);
+  });
+});
+
+/**
+ * The two sentences a first-time reader meets before anything works.
+ *
+ * Both are assembled from data — the environment keys a requirement reads, and
+ * the requirement's own title — and both used to be assembled on the assumption
+ * that every case looked like the one they were written against. The reader is
+ * someone whose agent has just refused to start, which is the moment they are
+ * least willing to forgive the tool a sentence that reads as broken.
+ */
+describe('the report reads correctly for every requirement, not just the first one', () => {
+  it('does not say "neither" about a single environment key', () => {
+    // `agentWallet` and `signer` read ONE key each; only `deployment` reads two.
+    // "Neither WATERX_PREDICT_AGENT_WALLET is set" is not a sentence.
+    const report = describeInstallation({ env: EMPTY_PATH });
+    const single = report.requirements.filter(
+      (requirement) => requirement.id === 'agentWallet' || requirement.id === 'signer',
+    );
+    expect(single).toHaveLength(2);
+    for (const requirement of single) {
+      expect(requirement.evidence).not.toMatch(/Neither/u);
+      expect(requirement.evidence).toMatch(/^WATERX_PREDICT_\w+ is not set, and the caller declared nothing\.$/u);
+    }
+  });
+
+  it('still says "neither … nor" when a requirement really does read two keys', () => {
+    // The word is correct here, and dropping it to fix the case above would be
+    // the same defect with the sign flipped.
+    const deployment = describeInstallation({ env: EMPTY_PATH }).requirements.find(
+      (requirement) => requirement.id === 'deployment',
+    );
+    expect(deployment?.evidence).toBe(
+      'Neither WATERX_PREDICT_ENVIRONMENT nor WATERX_PREDICT_BASE_URL is set, and the caller declared nothing.',
+    );
+  });
+
+  it('never drops a requirement title after an article', () => {
+    // The titles are not all noun phrases: `Supply the ${title}` produced
+    // "Supply the Which deployment this is:" for the very first thing an
+    // operator is asked for.
+    for (const requirement of AGENT_REQUIREMENTS) {
+      const step = nextStepFor([{ ...requirement, state: 'MISSING', evidence: 'fixture' }]);
+      // The defect was a sentence frame that swallowed the title. Guard the
+      // frame, not the prose after it — `supplyWith` legitimately contains
+      // articles ("a Sui Keypair satisfies it structurally").
+      expect(step.action).not.toMatch(/^\w+ (the|a|an) /u);
+      expect(step.action.startsWith(requirement.title)).toBe(true);
+    }
   });
 });

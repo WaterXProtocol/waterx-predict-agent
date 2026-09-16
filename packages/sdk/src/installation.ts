@@ -217,6 +217,19 @@ const surfaceDetail = (present: boolean | undefined, absent: string, found: stri
  * Safe to call before configuration, before authentication and inside a
  * sandbox: it opens no socket and spawns no process.
  */
+/**
+ * How to name the environment keys that were looked for and not found.
+ *
+ * One key is not "neither": that word needs two things to be neither of, and a
+ * report that gets it wrong is read by someone whose agent has just refused to
+ * start — the moment they are least willing to extend the tool any credit.
+ */
+function describeUnsetKeys(keys: readonly string[]): string {
+  if (keys.length === 0) return 'It is not set';
+  if (keys.length === 1) return `${keys[0] ?? ''} is not set`;
+  return `Neither ${keys.join(' nor ')} is set`;
+}
+
 export function describeInstallation(
   options: DescribeInstallationOptions = {},
 ): InstallationReport {
@@ -262,10 +275,11 @@ export function describeInstallation(
     return {
       ...requirement,
       state: 'MISSING',
-      evidence:
-        keys.length === 0
-          ? 'It is not set, and the caller declared nothing.'
-          : `Neither ${keys.join(' nor ')} is set, and the caller declared nothing.`,
+      // "Neither" needs two things to be neither of. With one key it is simply
+      // not set, and with none there is no key to name at all — the same
+      // sentence for all three cases reads as a bug to whoever is reading it
+      // while their agent refuses to start.
+      evidence: `${describeUnsetKeys(keys)}, and the caller declared nothing.`,
     };
   });
 

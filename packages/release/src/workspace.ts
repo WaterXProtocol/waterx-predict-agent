@@ -64,6 +64,19 @@ export function readWorkspacePackages(repoRoot: string): readonly WorkspacePacka
     });
 }
 
+/**
+ * The one private package that is distributed anyway — as a self-contained
+ * release asset, never to a registry (ADR-0010). Named here rather than in
+ * `bundle.ts` so the SBOM generator can reach it without a cycle.
+ */
+export const BUNDLE_ROOT_PACKAGE = '@waterx/predict-agent-cli';
+
+/** The signer that ships beside it, as its own release asset (ADR-0012). */
+export const KEYSTORE_ROOT_PACKAGE = '@waterx/predict-agent-signer-keystore';
+
+/** Every private package distributed as a release asset, in install order. */
+export const OPERATOR_ROOT_PACKAGES: readonly string[] = [BUNDLE_ROOT_PACKAGE, KEYSTORE_ROOT_PACKAGE];
+
 export const publishedPackages = (repoRoot: string): readonly WorkspacePackage[] =>
   readWorkspacePackages(repoRoot).filter((pkg) => pkg.published);
 

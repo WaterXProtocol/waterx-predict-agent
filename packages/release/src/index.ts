@@ -10,3 +10,4 @@ export * from './sbom.ts';
 export * from './workspace.ts';
 export * from './artifacts.ts';
 export * from './preflight.ts';
+export * from './bundle.ts';

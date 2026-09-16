@@ -12,7 +12,7 @@
  */
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { accessSync, constants as fsConstants, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { connect } from 'node:net';
 import { homedir } from 'node:os';
 
@@ -37,6 +37,7 @@ import { commandSchema } from './commands/command-schema.ts';
 import { describeRuntime } from './commands/describe.ts';
 import { doctorFailure, runDoctor } from './commands/doctor.ts';
 import { marketGet, marketList, marketQuote, marketSearch } from './commands/market.ts';
+import { runtimeNext } from './commands/next.ts';
 import { runtimeOnboard } from './commands/onboard.ts';
 import {
   orderExecute,
@@ -82,6 +83,7 @@ import {
   type RunnerDialer,
   type RunnerSession,
 } from './runner-ipc.ts';
+import { probeKeystore } from './keystore-probe.ts';
 import { createNodeSignerRunner, type SignerRunner } from './signer.ts';
 import { CLI_NAME, CLI_VERSION } from './version.ts';
 
@@ -120,6 +122,13 @@ export interface CliIo {
    * flag instead of pretending. Throws with a reason a person can act on.
    */
   openUrl?(url: string): void;
+  /**
+   * Resolves a bare command name on PATH, or null.
+   *
+   * Optional, and absent means "cannot say" rather than "not installed": `next`
+   * uses it to tell an operator whether the keystore signer is already there.
+   */
+  findExecutable?(name: string): string | null;
   /** This process's uid, for the cache's ownership check. Absent disables it. */
   readonly uid?: number | undefined;
   /** Injected so an envelope is reproducible in a test. */
@@ -140,6 +149,7 @@ const HANDLERS: Readonly<Record<string, CommandHandler>> = {
   'market.get': marketGet,
   'market.quote': marketQuote,
   'runtime.onboard': runtimeOnboard,
+  'runtime.next': runtimeNext,
   'account.list': accountList,
   'account.status': accountStatus,
   'account.allowance': accountAllowance,
@@ -171,6 +181,7 @@ const USAGE = [
   'Usage: waterx-predict <command> [flags]',
   '',
   'Start with:',
+  '  waterx-predict next            where this agent stands, and what to do next',
   '  waterx-predict describe        what this runtime can and cannot do',
   '  waterx-predict command-schema  the versioned command contract',
   '  waterx-predict doctor          check configuration, signer and reachability',
@@ -556,6 +567,14 @@ function createContext(
       diagnostic,
       nodeVersion: io.nodeVersion,
       now: io.now,
+      probeKeystore: () =>
+        probeKeystore(config, {
+          env: io.env,
+          homeDir: () => io.homeDir(),
+          readFile: (path) => io.readFile(path),
+          pathStat: io.pathStat,
+          ...(io.findExecutable === undefined ? {} : { findExecutable: io.findExecutable.bind(io) }),
+        }),
     },
     close: () => {
       // Swallowed deliberately: a socket that failed to open has nothing to
@@ -620,6 +639,20 @@ export function createNodeIo(overrides: Partial<CliIo> = {}): CliIo {
         // become an unhandled 'error' event that kills the process.
       });
       child.unref();
+    },
+    // PATH lookup the way `spawn` will do it, so "installed" here means "the
+    // signer command will resolve". Under `npx`, `node_modules/.bin` is on PATH.
+    findExecutable: (name: string): string | null => {
+      for (const dir of (process.env['PATH'] ?? '').split(':')) {
+        if (dir === '') continue;
+        try {
+          accessSync(`${dir}/${name}`, fsConstants.X_OK);
+          return `${dir}/${name}`;
+        } catch {
+          // not here
+        }
+      }
+      return null;
     },
     dialRunner: createNodeRunnerDialer(connect),
     pathStat: createNodePathStat(statSync),

@@ -10,9 +10,19 @@ on:
   workflow_dispatch:
     inputs:
       dry-run:
-        description: 'Pack and verify without publishing. Set to false to actually publish.'
+        description: 'Pack and verify only; nothing leaves this run. Set to false to release what is selected below.'
         type: boolean
         default: true
+        required: true
+      npm-publish:
+        description: 'Publish the SDK and the schema to npm (when dry-run is false).'
+        type: boolean
+        default: true
+        required: true
+      cli-bundle:
+        description: 'Attach the operator artifacts (CLI + keystore signer) to the GitHub release v<version>. Refused unless ADR-0010 and ADR-0012 are Accepted.'
+        type: boolean
+        default: false
         required: true
 
 # Least privilege, plus the one token provenance needs. `id-token: write` is
@@ -63,8 +73,10 @@ jobs:
           pnpm --filter @waterx/predict-agent-sdk exec npm pack --dry-run
           pnpm --filter @waterx/predict-agent-schema exec npm pack --dry-run
 
+      # The operator artifacts carry the SDK and the schema inside them, so they
+      # do not need these on a registry: the two releases are separate choices.
       - name: publish
-        if: ${{ inputs.dry-run == false }}
+        if: ${{ inputs.dry-run == false && inputs.npm-publish }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         # `provenance` and `access` come from each package's publishConfig, so
@@ -75,4 +87,46 @@ jobs:
 
       - name: dry run summary
         if: ${{ inputs.dry-run }}
-        run: echo "Dry run. Nothing was published. Re-dispatch with dry-run=false to publish."
+        run: echo "Dry run. Nothing was published or attached. Re-dispatch with dry-run=false to release what is selected."
+
+  # The operator artifacts (ADR-0010, ADR-0012): the CLI with the two libraries
+  # inside it, and the keystore signer beside it, attached to a GitHub release —
+  # never published to a registry.
+  #
+  # Its own job, because it is the only one that needs to write to the
+  # repository, and least privilege is per job. It runs only when asked, only
+  # for a real release, and only after `release` has passed every gate above.
+  # Whether it may run at all is not this file's decision: `cli:bundle --release`
+  # reads ADR-0010's and ADR-0012's status and refuses unless both are Accepted.
+  cli-bundle:
+    needs: release
+    if: ${{ inputs.cli-bundle && inputs.dry-run == false }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+
+      # Install it the way the sentence says, before anyone is told to.
+      - run: pnpm cli:bundle:check
+
+      - name: build the release artifacts (refused unless ADR-0010 and ADR-0012 are Accepted)
+        run: pnpm cli:bundle -- --release --out "$GITHUB_WORKSPACE/bundle-out"
+
+      - name: attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="v$(node -p "require('./packages/cli/package.json').version")"
+          gh release view "$version" >/dev/null 2>&1 || gh release create "$version" --verify-tag --title "$version" --notes "Operator artifacts. Install both in one command: npm install <CLI asset URL> <keystore asset URL>, then run npx --no waterx-predict next --json and do what it says. Without WATERX_PREDICT_ENVIRONMENT the CLI uses mainnet (ADR-0011)."
+          gh release upload "$version" bundle-out/*.tgz bundle-out/SHA256SUMS bundle-out/*.cdx.json --clobber

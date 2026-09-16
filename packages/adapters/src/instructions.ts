@@ -28,7 +28,7 @@ import { toolNameFor } from './tools.ts';
  * caches the document can tell whether what it cached still says the same
  * thing.
  */
-export const AGENT_INSTRUCTIONS_VERSION = '3';
+export const AGENT_INSTRUCTIONS_VERSION = '4';
 
 export interface InstructionRule {
   /** Stable, symbolic, quotable in a refusal. */
@@ -118,6 +118,17 @@ const SECTIONS: readonly InstructionSection[] = [
         body: [
           'Call `runtime.describe` for the build, the resolved configuration, the execution policy in force, and the capability inventory. Call `runtime.command-schema` for the exact input each command accepts. Both are local and issue no request.',
           'The capability inventory lists what is unavailable as well as what works, with a symbolic reason for each. A capability that is not in the inventory is not a capability.',
+        ],
+      },
+      {
+        id: 'NEXT_IS_A_ROUTE_NOT_A_MANDATE',
+        title: 'Loop on `runtime.next`, and obey its boundaries as well as its steps',
+        body: [
+          'Holding the CLI or an adapter, `runtime.next` (`waterx-predict next --json`) is the loop: call it, do what it says, call it again. It answers in every state — nothing configured, no session, no owner grant — and `state` says where you stand. Its exit code is 0 whenever it answered; it is not a verdict on whether you may trade.',
+          'Every suggestion it returns is a READ in this contract, carried as `command`, `input` and `argv`. Run those exactly. A suggestion never authorizes a write: an order is still the previewed intent a person approves, or one inside a delegated-auto scope an operator wrote down.',
+          'When `stop` is true, relay `handOver` to the person it names — the owner, or the operator — and do not act for them. What remains in `suggestions` is what you may run meanwhile, such as waiting for the owner\'s signature. When a suggestion carries `needsFromUser`, ask the user for exactly those fields; a default, an earlier answer or the conversation is not the user saying so.',
+          'It reports anything unsettled before anything new. While it says `UNSETTLED_EXECUTION` or `STRATEGY_NEEDS_ATTENTION`, place nothing: read the outcome it points at first.',
+          'Read `facts.deployment` before the first preview. When its `source` is `DEFAULT`, nobody chose the network and this runtime is on mainnet, where orders spend real funds: tell the user so, once, before showing them an order. `WATERX_PREDICT_ENVIRONMENT=testnet` is how they practise instead.',
         ],
       },
       {

@@ -76,6 +76,8 @@ export function describeRuntime(config: ResolvedConfig, nodeVersion: string): un
       version: API_VERSION,
       baseUrl: config.baseUrl ?? null,
       environment: config.environment ?? null,
+      /** `DEFAULT`: nothing was named and this is production — mainnet (ADR-0011). */
+      deploymentSource: config.deploymentSource,
       configured: config.baseUrl !== undefined,
     },
     identity: {

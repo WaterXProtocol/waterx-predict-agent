@@ -91,7 +91,10 @@ describe('doctor', () => {
     const actual = report ?? details;
 
     expect(result.envelope.ok).toBe(false);
-    expect(statusOf(actual, 'config')).toBe('FAIL');
+    // The deployment defaults to production, and says so; the signer is what fails.
+    expect(statusOf(actual, 'config')).toBe('PASS');
+    expect(actual.checks.find((check) => check.id === 'config')?.summary).toMatch(/mainnet.*real funds/u);
+    expect(statusOf(actual, 'signer')).toBe('FAIL');
     expect(statusOf(actual, 'api-reachable')).toBe('SKIP');
     expect(statusOf(actual, 'authentication')).toBe('SKIP');
     expect(result.fetches).toHaveLength(0);
@@ -102,7 +105,15 @@ describe('doctor', () => {
 
     expect(result.exit).not.toBe(EXIT_CODES.OK);
     expect(result.exit).toBe(EXIT_CODES.CONFIG);
+    expect(result.envelope.error?.code).toBe('SIGNER_UNAVAILABLE');
+  });
+
+  it('fails the config check for a deployment name it does not know', async () => {
+    const result = await invoke(['doctor'], { env: { WATERX_PREDICT_ENVIRONMENT: 'staging' } });
+    const report = (result.envelope.error?.details as { report: Report }).report;
+    expect(statusOf(report, 'config')).toBe('FAIL');
     expect(result.envelope.error?.code).toBe('NOT_CONFIGURED');
+    expect(result.fetches).toHaveLength(0);
   });
 
   it('reports the failing check’s own code, so the exit code matches the real cause', async () => {
@@ -295,17 +306,17 @@ describe('doctor: what is missing, and whose it is to supply', () => {
   });
 
   it('names the operator gaps ahead of the owner gaps', async () => {
-    // Nothing is configured, so nothing was asked of any server. The four local
-    // requirements are missing and the three owner-side ones are unchecked —
+    // Nothing is configured, so nothing was asked of any server. The local
+    // requirements other than the defaulted deployment are missing and the three owner-side ones are unchecked —
     // and an operator cannot fix an owner's step by trying harder anyway.
     const details = (await invoke(['doctor'])).envelope.error?.details as { report: Report };
     const report = details.report;
 
-    expect(report.missing.map((requirement) => requirement.id)).toEqual([
-      'deployment',
-      'agentWallet',
-      'signer',
-    ]);
+    expect(report.missing.map((requirement) => requirement.id)).toEqual(['agentWallet', 'signer']);
+    // Satisfied by default, and the evidence says what that default costs.
+    const deployment = report.requirements.find((requirement) => requirement.id === 'deployment');
+    expect(deployment?.state).toBe('SATISFIED');
+    expect(deployment?.evidence).toMatch(/production \(mainnet\).*real funds/u);
     expect(report.unchecked).toHaveLength(3);
     expect(report.nextStep.actor).toBe('AGENT_OPERATOR');
     expect(report.requirements.every((requirement) => requirement.evidence.length > 0)).toBe(true);

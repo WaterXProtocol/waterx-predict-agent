@@ -39,7 +39,7 @@ const DEFAULT_WAIT_MS = 10 * 60 * 1_000;
  * cannot grant anything — so that case is an error naming the setting to fill in,
  * never a guess.
  */
-function consoleUrlFor(context: CommandContext): string {
+export function pairedConsoleUrl(context: CommandContext): string | undefined {
   const explicit = context.input.consoleUrl;
   if (typeof explicit === 'string' && explicit !== '') return explicit;
   if (context.config.consoleUrl !== undefined) return context.config.consoleUrl;
@@ -50,6 +50,13 @@ function consoleUrlFor(context: CommandContext): string {
       return PREDICT_AGENT_CONSOLE_ENDPOINTS[name as keyof typeof PREDICT_AGENT_CONSOLE_ENDPOINTS];
     }
   }
+  return undefined;
+}
+
+function consoleUrlFor(context: CommandContext): string {
+  const paired = pairedConsoleUrl(context);
+  if (paired !== undefined) return paired;
+  const baseUrl = context.config.baseUrl;
   throw new CliError(
     'NOT_CONFIGURED',
     `No console is paired with ${baseUrl ?? 'the configured API'}, so there is no link an owner could open. Set WATERX_PREDICT_CONSOLE_URL (or \`consoleUrl\` in the config file), or pass --consoleUrl.`,

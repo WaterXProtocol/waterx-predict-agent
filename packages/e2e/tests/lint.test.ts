@@ -97,6 +97,18 @@ describe('extractInvocations', () => {
     expect(extractInvocations('waterx-predict describe 2>/dev/null')).toEqual([['describe']]);
   });
 
+  it('ends an invocation at a closing backtick, in Markdown and in shell', () => {
+    expect(
+      extractInvocations('`waterx-predict next --json` is what an agent host runs, and `waterx-predict describe` too.'),
+    ).toEqual([['next', '--json'], ['describe']]);
+    expect(extractInvocations('ID=`waterx-predict order get --executionId exec-1`')).toEqual([
+      ['order', 'get', '--executionId', 'exec-1'],
+    ]);
+    // Still checked: a bad flag inside the span is reported, not lost.
+    const [inline] = extractInvocations('Run `waterx-predict next --acountId 0x1` first.');
+    expect(lintInvocation(inline ?? []).map((violation) => violation.message).join(' ')).toContain('acountId');
+  });
+
   it('ignores an invocation whose command path is computed', () => {
     // `try() { OUT="$(waterx-predict "$@")"; }` names no command statically, and
     // inventing a violation about `$@` would be noise.

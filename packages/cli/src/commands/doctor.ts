@@ -134,15 +134,18 @@ export async function runDoctor(context: CommandContext): Promise<DoctorReport> 
       ? {
           id: 'config',
           status: 'PASS',
-          summary: `API base URL configured${config.configPath === null ? ' from the environment' : ` from ${config.configPath}`}.`,
+          summary:
+            config.deploymentSource === 'DEFAULT'
+              ? `No deployment named: using production (mainnet) by default, ${config.baseUrl ?? ''}. Orders spend real funds.`
+              : `API base URL configured${config.configPath === null ? ' from the environment' : ` from ${config.configPath}`}.`,
         }
       : {
           id: 'config',
           status: 'FAIL',
           code: 'NOT_CONFIGURED',
-          summary: 'No deployment is configured.',
+          summary: `\`${config.environment ?? ''}\` names no deployment this build knows.`,
           detail:
-            'Name the network and the host follows: WATERX_PREDICT_ENVIRONMENT=testnet (or production), or `environment` in the config file. Nobody should be typing a hostname — a private or preview deployment is the one case that has no name, and WATERX_PREDICT_BASE_URL is for that.',
+            'Known names are production (alias mainnet) and testnet; with no name at all this runtime uses production. A private or preview deployment has no name — set WATERX_PREDICT_BASE_URL for that.',
         },
   );
 

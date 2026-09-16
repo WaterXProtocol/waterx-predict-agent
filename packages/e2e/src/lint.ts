@@ -212,6 +212,12 @@ function tokenize(line: string): string[] {
       break;
     }
     if (depth === 0 && (char === '|' || char === ';' || char === '&')) break;
+    // A backtick closes the span the invocation sits in: Markdown inline code
+    // (`waterx-predict next --json` is what…) and a shell command substitution
+    // both end there. Read past it and the prose after it becomes flags —
+    // `--json\`` — or, worse, a real typo inside the span goes unreported
+    // because the whole line no longer parses.
+    if (depth === 0 && char === '`') break;
     if (/\s/u.test(char)) {
       flush();
       continue;

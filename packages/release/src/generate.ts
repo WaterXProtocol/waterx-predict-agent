@@ -3,6 +3,11 @@
  *
  *   node dist/src/generate.js <output-dir>
  *   node dist/src/generate.js <output-dir> --check
+ *   node dist/src/generate.js <output-dir> --bundle [--check]
+ *
+ * `--bundle` emits the operator artifacts' SBOMs instead of the published
+ * packages'. It goes to its own directory: the bundle is not a published
+ * package, and the stale-file check below would rightly call it one that is.
  *
  * `--check` writes nothing and exits non-zero when a committed SBOM has drifted
  * from the installed tree — a dependency bumped without regenerating, or a
@@ -15,19 +20,20 @@
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
-import { buildSbomArtifacts } from './artifacts.ts';
+import { buildSbomArtifacts, bundleSbomArtifacts } from './artifacts.ts';
 
 function main(argv: readonly string[]): number {
-  const args = argv.filter((arg) => arg !== '--check');
+  const args = argv.filter((arg) => arg !== '--check' && arg !== '--bundle');
   const check = argv.includes('--check');
+  const bundle = argv.includes('--bundle');
   const target = args[0];
   if (target === undefined) {
-    process.stderr.write('usage: generate <output-dir> [--check]\n');
+    process.stderr.write('usage: generate <output-dir> [--bundle] [--check]\n');
     return 2;
   }
 
   const outputDir = resolve(process.cwd(), target);
-  const artifacts = buildSbomArtifacts();
+  const artifacts = bundle ? bundleSbomArtifacts() : buildSbomArtifacts();
 
   if (check) {
     let failed = false;
