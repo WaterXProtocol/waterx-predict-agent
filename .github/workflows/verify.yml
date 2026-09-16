@@ -66,7 +66,10 @@ jobs:
       # and a stale inventory tells a scanner the wrong version is running.
       - run: pnpm sbom:generate
       - name: SBOM is reproducible
-        run: git diff --exit-code -- sbom/
+        run: |
+          git diff --exit-code -- sbom/
+          test -z "$(git status --porcelain -- sbom/)"
+
 
       # Reported, not enforced: unresolved checks are facts nobody has settled
       # yet, and blocking every branch on them would only teach people to ignore
@@ -104,6 +107,14 @@ jobs:
       - run: pnpm build
 
       - run: pnpm consumer:check
+
+      # The operator artifacts (ADR-0010, ADR-0012), installed the way the
+      # one-sentence setup says — npm alone, scripts off — and then walked:
+      # keystore init and agent in a throwaway directory, `next` followed from
+      # SETUP_INCOMPLETE to READY against a stub on 127.0.0.1, the login
+      # signature verified. Checked on every push whether or not the ADRs are
+      # Accepted — only releasing is gated.
+      - run: pnpm cli:bundle:check
 
   # The published packages promise `engines.node: ">=20"`. Verifying only on the
   # Runner's Node 24 would leave that promise untested, and a consumer on 20 is

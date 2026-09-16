@@ -100,9 +100,14 @@ pnpm release:preflight       # is this workspace fit to publish, and what is unr
 pnpm consumer:kit ~/tmp/consumer   # a portable project against the packed tarballs
 pnpm consumer:registry             # serve the same tarballs, resolvable by name
 pnpm consumer:check                # pack, install, assert what arrived — CI runs this
+pnpm cli:bundle                    # the CLI as one installable tarball (ADR-0010)
+pnpm cli:bundle:check              # install it with npm alone and run `next` — CI runs this
 
 # What the CLI is, with no configuration and no network.
 node packages/cli/dist/src/main.js describe
+
+# Where this agent stands and what to do next — the loop an agent host runs.
+node packages/cli/dist/src/main.js next --json
 
 # What is still missing before an end-to-end can run, and who supplies each.
 # Reads only; exits non-zero until every step has actually run.
@@ -110,6 +115,29 @@ node packages/e2e/dist/src/main.js
 ```
 
 Node.js 20+ and ESM. macOS and Linux; Windows is not verified (ADR-0002).
+
+## The one-sentence setup
+
+An agent host needs one instruction:
+
+```
+Run `npm install <cli.tgz-url> <keystore.tgz-url>`, then `npx --no waterx-predict next --json`, and do what it says.
+```
+
+The second half is `runtime.next`: it answers in every state, suggests only
+reads from the command contract, stops and names the person whenever a person
+has to act, and reports anything unsettled before offering anything new. The
+first half is the two operator artifacts (`pnpm cli:bundle`): the CLI, and the
+keystore signer it needs, whose `init` / `agent` steps `next` hands to the
+operator as commands. Both are built and walked to READY against a local stub
+in CI. **Nothing has been released:** that waits on ADR-0010 and ADR-0012, both
+Proposed. `npm install github:…` is not an installation
+path — the repository root is a private workspace with no binary.
+
+**The CLI uses mainnet unless told otherwise** (ADR-0011): with no
+`WATERX_PREDICT_ENVIRONMENT` or `WATERX_PREDICT_BASE_URL` it connects to
+production and says so on every answer. Set `WATERX_PREDICT_ENVIRONMENT=testnet`
+to practise. The SDK library still requires a deployment to be named.
 
 ## Documentation
 

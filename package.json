@@ -18,7 +18,9 @@
     "release:preflight:strict": "pnpm --filter @waterx/predict-agent-release run preflight -- --strict",
     "consumer:kit": "pnpm --filter @waterx/predict-agent-release run kit --",
     "consumer:registry": "pnpm --filter @waterx/predict-agent-release run registry --",
-    "consumer:check": "pnpm --filter @waterx/predict-agent-release run check --"
+    "consumer:check": "pnpm --filter @waterx/predict-agent-release run check --",
+    "cli:bundle": "pnpm --filter @waterx/predict-agent-release run bundle --",
+    "cli:bundle:check": "pnpm --filter @waterx/predict-agent-release run bundle:check --"
   },
   "devDependencies": {
     "@types/node": "^24.12.0",

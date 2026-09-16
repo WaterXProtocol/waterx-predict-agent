@@ -34,7 +34,11 @@ import {
   parseRequest as parseSignerRequest,
   SIGNER_PROTOCOL as BROWSER_SIGNER_PROTOCOL,
 } from '../packages/signer-browser/src/index.ts';
-import { SIGNER_PROTOCOL as KEYSTORE_SIGNER_PROTOCOL } from '../packages/signer-keystore/src/index.ts';
+import {
+  AGENT_PROTOCOL as KEYSTORE_AGENT_PROTOCOL,
+  SIGNER_PROTOCOL as KEYSTORE_SIGNER_PROTOCOL,
+} from '../packages/signer-keystore/src/index.ts';
+import { KEYSTORE_LAYOUT } from '../packages/cli/src/keystore-probe.ts';
 import { JOB_STATES } from '../packages/runner/src/state-machine.ts';
 import {
   AGENT_COMMANDS,
@@ -893,6 +897,8 @@ describe('the release tooling package', () => {
       'waterx-predict-consumer-kit': 'dist/src/bin/kit.js',
       'waterx-predict-local-registry': 'dist/src/bin/registry.js',
       'waterx-predict-consumer-check': 'dist/src/bin/check.js',
+      'waterx-predict-cli-bundle': 'dist/src/bin/bundle.js',
+      'waterx-predict-cli-bundle-check': 'dist/src/bin/bundle-check.js',
     });
   });
 
@@ -909,6 +915,9 @@ describe('the release tooling package', () => {
       'consumer:kit',
       'consumer:registry',
       'consumer:check',
+      // The operator bundle (ADR-0010): built and installed the same way.
+      'cli:bundle',
+      'cli:bundle:check',
     ]) {
       expect(scripts[script], script).toContain('@waterx/predict-agent-release');
     }
@@ -1117,6 +1126,25 @@ describe('the local signing protocol', () => {
     }
     // Pinned, so a change to all four at once is still a decision someone states.
     expect(RUNNER_SIGNER_PROTOCOL.version).toBe(1);
+  });
+
+  it('locates the keystore where the keystore itself puts it', () => {
+    // `next` reads the keystore's address and looks for its socket so it can
+    // tell an operator which step is undone. It must not import the keystore to
+    // do that — the CLI never carries the Sui SDK or a key path — so it holds a
+    // copy of the layout, and this is what keeps the copy honest. A drift here
+    // is `next` telling an operator to run `init` over a keystore they have.
+    expect(KEYSTORE_LAYOUT.runtimeDirEnv).toBe(KEYSTORE_AGENT_PROTOCOL.runtimeDirEnv);
+    expect(KEYSTORE_LAYOUT.defaultRuntimeDir).toEqual(KEYSTORE_AGENT_PROTOCOL.defaultRuntimeDir);
+    expect(KEYSTORE_LAYOUT.socketFile).toBe(KEYSTORE_AGENT_PROTOCOL.socketFile);
+    // The file name and the binary are not in AGENT_PROTOCOL; they are read from
+    // the two places that define them.
+    expect(read('packages/signer-keystore/src/bin/keystore.ts')).toContain(
+      `\`\${runtimeDir()}/${KEYSTORE_LAYOUT.keystoreFile}\``,
+    );
+    expect(Object.keys((readJson('packages/signer-keystore/package.json') as { bin: object }).bin)).toEqual([
+      KEYSTORE_LAYOUT.command,
+    ]);
   });
 
   it('is enforced against what each side actually writes, not just declared', () => {

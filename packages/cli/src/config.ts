@@ -29,6 +29,12 @@ export interface ResolvedConfig {
   readonly baseUrl: string | undefined;
   /** Free-form label, e.g. `testnet`. Reported by `describe`, never inferred. */
   readonly environment: string | undefined;
+  /**
+   * How `baseUrl` was arrived at. `DEFAULT` means nobody named a deployment and
+   * this runtime chose production — mainnet, real funds (ADR-0011) — and every
+   * envelope says so in `meta.warnings`.
+   */
+  readonly deploymentSource: 'URL' | 'NAMED' | 'DEFAULT' | 'NONE';
   readonly agentWallet: string | undefined;
   /**
    * The web console an OWNER opens to authorize this agent.
@@ -53,6 +59,21 @@ export interface ResolvedConfig {
 }
 
 export const DEFAULT_TIMEOUT_MS = 15_000;
+
+/**
+ * The deployment used when none is named: production, which is mainnet.
+ *
+ * A decision with a cost, recorded in ADR-0011: an unconfigured install reaches
+ * real funds. What keeps that from being an accident is that an order still
+ * needs an agent wallet, a signer, an owner's on-chain delegation and — under
+ * the default `interactive` policy — a person approving that exact intent.
+ */
+export const DEFAULT_DEPLOYMENT: PredictAgentDeployment = 'production';
+
+/** Names people use for a deployment the SDK knows by another. */
+export const DEPLOYMENT_ALIASES: Readonly<Record<string, PredictAgentDeployment>> = {
+  mainnet: 'production',
+};
 
 const MIN_TIMEOUT_MS = 1_000;
 const MAX_TIMEOUT_MS = 600_000;
@@ -305,11 +326,31 @@ export function loadConfig(sources: ConfigSources): ResolvedConfig {
    * cannot serve. A label that names no known deployment is left alone rather
    * than rejected: `environment` is also a free-form marker other things read.
    */
+  const named = environment === undefined ? undefined : (DEPLOYMENT_ALIASES[environment] ?? environment);
   const derivedBaseUrl =
-    environment !== undefined && environment in PREDICT_AGENT_ENDPOINTS
-      ? PREDICT_AGENT_ENDPOINTS[environment as PredictAgentDeployment]
+    named !== undefined && named in PREDICT_AGENT_ENDPOINTS
+      ? PREDICT_AGENT_ENDPOINTS[named as PredictAgentDeployment]
       : undefined;
-  const baseUrl = explicitBaseUrl ?? derivedBaseUrl;
+
+  /**
+   * Nothing named at all: production, which is mainnet (ADR-0011).
+   *
+   * Only when NOTHING was said. A label this build does not know — `staging` —
+   * is somebody naming a network other than production, and sending them to
+   * mainnet because the name did not resolve would be the worst available
+   * reading of what they asked for. That case stays unconfigured.
+   */
+  const defaulted = explicitBaseUrl === undefined && environment === undefined;
+  const baseUrl = explicitBaseUrl ?? derivedBaseUrl ?? (defaulted ? PREDICT_AGENT_ENDPOINTS[DEFAULT_DEPLOYMENT] : undefined);
+  const deploymentSource =
+    explicitBaseUrl !== undefined ? 'URL' : derivedBaseUrl !== undefined ? 'NAMED' : defaulted ? 'DEFAULT' : 'NONE';
+  if (defaulted) {
+    // Every envelope, every command. A default that spends real money is not
+    // something an operator should be able to miss by not reading `describe`.
+    warnings.push(
+      `No deployment was named, so this runtime uses ${DEFAULT_DEPLOYMENT} (mainnet, ${PREDICT_AGENT_ENDPOINTS[DEFAULT_DEPLOYMENT]}): orders spend real funds. Set ${ENV_KEYS.environment}=testnet to practise.`,
+    );
+  }
 
   const timeoutMs =
     sources.timeoutMs ??
@@ -337,6 +378,7 @@ export function loadConfig(sources: ConfigSources): ResolvedConfig {
   return {
     baseUrl: baseUrl?.replace(/\/+$/u, ''),
     environment,
+    deploymentSource,
     agentWallet:
       asString(env[ENV_KEYS.agentWallet], ENV_KEYS.agentWallet, 'the environment') ??
       asString(config.agentWallet, 'agentWallet', where),

@@ -75,7 +75,9 @@ describe('describeInstallation', () => {
     const deployment = report.requirements.find((entry) => entry.id === 'deployment');
     // It names the network, and the hostname is the fallback for a deployment
     // that has no name.
-    expect(deployment?.supplyWith[0]).toContain("deployment: 'testnet'");
+    expect(deployment?.supplyWith[0]).toContain("deployment: 'production'");
+    // The CLI's default is stated where the requirement is, not left to be found.
+    expect(deployment?.why).toMatch(/CLI uses production when none is named/u);
   });
 
   it('takes either spelling of the deployment', () => {

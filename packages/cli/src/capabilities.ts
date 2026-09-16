@@ -75,6 +75,13 @@ export const CAPABILITIES: readonly Capability[] = [
       'What is still missing before this agent may trade, and the link an owner opens to grant it.',
   },
   {
+    id: 'next',
+    command: 'runtime.next',
+    status: 'AVAILABLE',
+    summary:
+      'Where this agent stands and what to do next, as contract commands with who must run each.',
+  },
+  {
     id: 'market list',
     command: 'market.list',
     status: 'AVAILABLE',

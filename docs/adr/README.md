@@ -20,9 +20,15 @@ wins and the plan should be corrected.
 | [0007](0007-runner-job-store-engine.md) | The Runner's job store engine, and the Node floor it costs | Accepted | ADR-0001 §8, ADR-0002 |
 | [0008](0008-runner-local-ipc.md) | How a local client authenticates to the Runner | Accepted | ADR-0001 §4, §6, ADR-0002 |
 | [0009](0009-release-and-update-policy.md) | What is published, how it is updated, and what it reports home | Accepted | D-26…D-30 |
+| [0010](0010-operator-cli-bundle.md) | The CLI ships as one self-contained release tarball | Proposed | amends D-28 |
+| [0011](0011-cli-defaults-to-mainnet.md) | The CLI uses mainnet when no deployment is named | Accepted | — |
+| [0012](0012-operator-keystore-signer.md) | The keystore signer ships beside the CLI | Proposed | amends D-28, ADR-0010 |
 
 ## Status vocabulary
 
+- **Proposed** — written and reviewable, not yet binding. What it would
+  authorize stays forbidden until it is Accepted; where a check reads the
+  status (ADR-0010 does), the check refuses.
 - **Accepted** — binding on implementation now.
 - **Superseded** — replaced by a later ADR, which must be named.
 - **Deferred** — deliberately not decided; the ADR states what unblocks it.

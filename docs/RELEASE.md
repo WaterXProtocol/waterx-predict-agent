@@ -14,7 +14,7 @@ has been built and mechanically checked, not one that has been walked.
 | --- | --- | --- |
 | `@waterx/predict-agent-sdk` | Yes | A contract. Verifiable by reading it against the backend wire contract. |
 | `@waterx/predict-agent-schema` | Yes | The command registry every other package validates against. |
-| `@waterx/predict-agent-cli` | No — `private` | Operational software that places orders. Its end-to-end path has never run (backlog 1.11). |
+| `@waterx/predict-agent-cli` | No — `private`; see [the operator bundle](#the-operator-cli-bundle) | Operational software that places orders. Never to a registry; as a release asset only once ADR-0010 is Accepted. |
 | `@waterx/predict-agent-runner` | No — `private` | Same: it holds the signer, and its end-to-end path has never run. The drain path now exists (backlog 2.14); 1.11 still gates it. |
 | `@waterx/predict-agent-adapters` | No — `private` | Built (backlog 3.2). Held with the CLI it instructs an agent to call. |
 | `@waterx/predict-agent-mcp` | No — `private` | Built (backlog 3.2). Held for the same reason; D-28 in ADR-0009. |
@@ -205,6 +205,50 @@ signatures, or anything derived from a key.
 Local logs are not telemetry. They stay local, and no secret is written to a log
 line or an error body.
 
+## The operator CLI bundle
+
+ADR-0010 and ADR-0012 (both **Proposed**). The CLI and its keystore signer
+never go to a registry. What can go to a GitHub release is two tarballs — the
+CLI with the SDK and the schema inside it, and the keystore signer beside it —
+so the whole setup an agent host needs is one sentence:
+
+```
+Run `npm install <cli.tgz-url> <keystore.tgz-url>`, then `npx --no waterx-predict next --json`, and do what it says.
+```
+
+`next` then hands the operator the keystore steps still undone (`init`,
+`agent`, the two settings) as commands.
+
+`--no` is required in every published copy of that sentence: without it, `npx`
+looks the name up on the public registry when nothing is installed.
+
+```sh
+pnpm build
+pnpm cli:bundle              # dist/bundle/: both .tgz, SHA256SUMS, both SBOMs
+pnpm cli:bundle:check        # install both, scripts off; walk `next` to READY against a local stub
+pnpm cli:bundle -- --release # the same, refused unless ADR-0010 and ADR-0012 are Accepted
+```
+
+What each artifact is: `private: true` (unpublishable), no lifecycle scripts,
+third-party dependencies installed from the registry, and its SBOM inside it
+and at `sbom/bundle/`. The CLI carries the two libraries as
+`bundleDependencies`; the keystore carries nothing of the workspace and brings
+the Sui SDK. `cli:bundle:check` runs in CI on every push: it runs `keystore
+init` and `agent` in a throwaway directory, follows `next` from SETUP_INCOMPLETE
+to READY against a stub on 127.0.0.1, and verifies the login signature.
+
+To attach them to a release: tag the commit, push the tag, then dispatch
+`release.yml` with dry-run **false** and `cli-bundle` **true**. `npm-publish`
+is a separate choice — the artifacts carry the libraries inside them, so set it
+**false** to release the artifacts without publishing anything to npm. The `cli-bundle`
+job runs only then, only after every gate in `release`, and produces what it
+attaches with `cli:bundle --release` — so while ADR-0010 or ADR-0012 is not
+Accepted, it fails there and attaches nothing.
+
+Two facts to put in the release notes: a private repository's asset needs an
+authenticated download, and `SHA256SUMS` identifies the file that was attached
+rather than a reproducible build.
+
 ## The release run
 
 1. Land everything on the release branch; the working tree is clean.
@@ -217,8 +261,8 @@ line or an error body.
    safe, and the severity of any security fix.
 6. Dispatch `.github/workflows/release.yml` with dry-run **true**. Read the
    packed file list and the preflight output.
-7. Dispatch it again with dry-run **false**. This is the only step that
-   publishes.
+7. Dispatch it again with dry-run **false** (and `npm-publish` **true**). This
+   is the only step that publishes.
 8. Verify on the registry that provenance is attached to both packages.
 9. Tag the release commit.
 

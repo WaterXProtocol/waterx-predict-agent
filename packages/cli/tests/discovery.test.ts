@@ -14,7 +14,7 @@ import manifest from '../package.json' with { type: 'json' };
 
 interface Described {
   runtime: { name: string; version: string; node: string; supportedPlatforms: string[] };
-  api: { configured: boolean; baseUrl: string | null; version: string };
+  api: { configured: boolean; baseUrl: string | null; deploymentSource: string; version: string };
   signer: { configured: boolean; canSignTransactions: boolean; policy: string };
   policy: {
     mode: string;
@@ -43,9 +43,31 @@ describe('describe', () => {
     expect(result.exit).toBe(EXIT_CODES.OK);
     expect(result.fetches).toHaveLength(0);
     expect(result.signerRuns).toHaveLength(0);
+    // Nothing named means production — mainnet — by default (ADR-0011), and
+    // `describe` says where that default came from. It still sends nothing.
+    expect(data.api.configured).toBe(true);
+    expect(data.api.baseUrl).toBe('https://api.waterx.app');
+    expect(data.api.deploymentSource).toBe('DEFAULT');
+    expect(result.envelope.meta?.warnings?.join(' ')).toMatch(/mainnet.*real funds/u);
+    expect(data.signer.configured).toBe(false);
+  });
+
+  it('treats mainnet as a name for production, and warns only about a default', async () => {
+    const result = await invoke(['describe'], { env: { WATERX_PREDICT_ENVIRONMENT: 'mainnet' } });
+    const data = result.envelope.data as Described;
+    expect(data.api.baseUrl).toBe('https://api.waterx.app');
+    expect(data.api.deploymentSource).toBe('NAMED');
+    expect(result.envelope.meta).toBeUndefined();
+  });
+
+  it('does not send a label it does not know to mainnet', async () => {
+    // Somebody named a network. That it is not one this build knows is no
+    // reason to trade on production instead.
+    const result = await invoke(['describe'], { env: { WATERX_PREDICT_ENVIRONMENT: 'staging' } });
+    const data = result.envelope.data as Described;
     expect(data.api.configured).toBe(false);
     expect(data.api.baseUrl).toBeNull();
-    expect(data.signer.configured).toBe(false);
+    expect(data.api.deploymentSource).toBe('NONE');
   });
 
   it('defaults to the interactive policy and says an approval is not authentication', async () => {

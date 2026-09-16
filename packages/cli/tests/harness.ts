@@ -82,6 +82,8 @@ export interface InvokeOptions {
   readonly uid?: number;
   /** Moves the clock, for expiry. */
   readonly nowIso?: string;
+  /** Command names that resolve on PATH. Absent means none do. */
+  readonly executables?: readonly string[];
 }
 
 /** A fake Runner: a handshake, and one canned answer per command. */
@@ -376,6 +378,7 @@ export async function invoke(
       return Promise.resolve(fakeRunnerSocket(script, runnerRecord));
     },
     pathStat: options.pathStat ?? (script === undefined ? () => null : runnerPathStat()),
+    findExecutable: (name) => (options.executables?.includes(name) === true ? `/usr/local/bin/${name}` : null),
     readFile: (path) => files[path] ?? null,
     homeDir: () => options.homeDir ?? null,
     readStdin: () => Promise.resolve(options.stdin ?? ''),

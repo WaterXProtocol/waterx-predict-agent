@@ -49,7 +49,7 @@ import {
   type HarnessOptions,
   type StepContext,
 } from "../src/steps.ts";
-import type { RuntimeFacts } from "../src/preflight.ts";
+import { readRuntimeFacts, type RuntimeFacts } from "../src/preflight.ts";
 
 /* ── a stub that answers everything correctly ──────────────────────────────
  * Deliberately generous: every step it answers would PASS on its merits. That
@@ -801,5 +801,30 @@ describe("the process backstop", () => {
         DEFAULT_PROCESS_TIMEOUT_MS,
       );
     }
+  });
+});
+
+describe("a deployment the CLI defaulted to", () => {
+  const run = (api: Record<string, unknown>) =>
+    ({
+      argv: ["describe"],
+      exitCode: 0,
+      stdout: "",
+      stderr: "",
+      timedOut: false,
+      envelope: { ok: true, command: "runtime.describe", data: { ...PROVISIONED, api } },
+    }) as unknown as Parameters<typeof readRuntimeFacts>[0];
+
+  it("is not a base URL anybody supplied, because the default is mainnet", () => {
+    // ADR-0011: nothing named means production. This harness is
+    // non-production only, and must not read steps against real accounts
+    // because the operator left the setting out.
+    const facts = readRuntimeFacts(run({ baseUrl: "https://api.waterx.app", environment: null, deploymentSource: "DEFAULT" }));
+    expect(facts.baseUrl).toBeNull();
+  });
+
+  it("is still a base URL when it was named", () => {
+    const facts = readRuntimeFacts(run({ baseUrl: "https://api-testnet.waterx.app", environment: "testnet", deploymentSource: "NAMED" }));
+    expect(facts.baseUrl).toBe("https://api-testnet.waterx.app");
   });
 });

@@ -16,6 +16,7 @@ import type { PredictAgentClient } from '@waterx/predict-agent-sdk';
 
 import type { ResolvedConfig } from './config.ts';
 import type { ExitCode } from './exit-codes.ts';
+import type { KeystoreProbe } from './keystore-probe.ts';
 import type { SigningGate } from './policy.ts';
 import type { RunnerSession } from './runner-ipc.ts';
 
@@ -86,6 +87,11 @@ export interface CommandContext {
   diagnostic(text: string): void;
   readonly nodeVersion: string;
   now(): Date;
+  /**
+   * What is on this machine of the keystore signer, read from the filesystem
+   * only. `undefined` when a different signer is configured.
+   */
+  probeKeystore(): KeystoreProbe | undefined;
 }
 
 export type CommandHandler = (context: CommandContext) => Promise<unknown>;

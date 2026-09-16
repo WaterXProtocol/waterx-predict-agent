@@ -12,7 +12,7 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { buildSbomArtifacts, SBOM_DIR } from '../src/artifacts.ts';
+import { buildSbomArtifacts, BUNDLE_SBOM_DIR, bundleSbomArtifacts, SBOM_DIR } from '../src/artifacts.ts';
 import { findRepoRoot, publishedPackages, sbomFileName } from '../src/workspace.ts';
 
 const repoRoot = findRepoRoot();
@@ -70,5 +70,55 @@ describe('the committed SBOM set', () => {
     const schema = artifacts.find((artifact) => artifact.packageName === '@waterx/predict-agent-schema');
     const document = JSON.parse(schema?.contents ?? '{}') as { components: unknown[] };
     expect(document.components).toEqual([]);
+  });
+});
+
+describe('the operator artifact SBOMs', () => {
+  const bundles = bundleSbomArtifacts(repoRoot);
+  const bundleDir = join(repoRoot, BUNDLE_SBOM_DIR);
+  const names = (contents: string): string[] =>
+    (JSON.parse(contents) as { components: { name: string; version: string }[] }).components.map(
+      (component) => `${component.name}@${component.version}`,
+    );
+  const byName = (name: string): string =>
+    bundles.find((artifact) => artifact.packageName === name)?.contents ?? '{"components":[]}';
+
+  it('are committed in their own directory, one per artifact, byte-identical to a fresh generation', () => {
+    expect(readdirSync(bundleDir).filter((name) => name.endsWith('.cdx.json')).sort()).toEqual(
+      bundles.map((artifact) => artifact.fileName).sort(),
+    );
+    expect(bundles.map((artifact) => artifact.packageName)).toEqual([
+      '@waterx/predict-agent-cli',
+      '@waterx/predict-agent-signer-keystore',
+    ]);
+    for (const artifact of bundles) {
+      expect(readFileSync(join(bundleDir, artifact.fileName), 'utf8'), `${artifact.fileName} is stale`).toBe(
+        artifact.contents,
+      );
+    }
+  });
+
+  it('name the two libraries inside the CLI and everything they reach, a superset of the SDK', () => {
+    const inBundle = names(byName('@waterx/predict-agent-cli'));
+    expect(inBundle).toContain('@waterx/predict-agent-sdk@0.1.0');
+    expect(inBundle).toContain('@waterx/predict-agent-schema@0.1.0');
+    const sdk = artifacts.find((artifact) => artifact.packageName === '@waterx/predict-agent-sdk');
+    for (const component of names(sdk?.contents ?? '{"components":[]}')) expect(inBundle).toContain(component);
+  });
+
+  it('name the Sui SDK the keystore signs with, and keep it out of the CLI', () => {
+    const keystore = names(byName('@waterx/predict-agent-signer-keystore')).map((key) => key.replace(/@[^@]+$/u, ''));
+    expect(keystore).toContain('@mysten/sui');
+    const cli = names(byName('@waterx/predict-agent-cli')).map((key) => key.replace(/@[^@]+$/u, ''));
+    expect(cli).not.toContain('@mysten/sui');
+  });
+
+  it('leave no dependency unresolved', () => {
+    for (const artifact of bundles) {
+      const document = JSON.parse(artifact.contents) as { metadata: { properties: { name: string }[] } };
+      expect(document.metadata.properties.map((property) => property.name), artifact.packageName).not.toContain(
+        'waterx:dependency-unresolved',
+      );
+    }
   });
 });

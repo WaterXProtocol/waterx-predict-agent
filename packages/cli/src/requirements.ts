@@ -65,8 +65,10 @@ export function resolveRequirements(
       supplied: config.baseUrl !== undefined,
       evidence:
         config.baseUrl === undefined
-          ? 'Neither a deployment name nor a host is configured.'
-          : config.environment === undefined
+          ? `\`${config.environment ?? ''}\` names no deployment this build knows, and no host is configured.`
+          : config.deploymentSource === 'DEFAULT'
+            ? 'No deployment was named, so production (mainnet) is used by default. Orders spend real funds.'
+            : config.environment === undefined
             ? `A host is configured${config.configPath === null ? ' from the environment' : ` from ${config.configPath}`}, with no deployment name — treated as production.`
             : // The normal case: a name, and the host resolved from it. Nobody
               // typed a hostname, which is the point.

@@ -4,6 +4,10 @@ The signer for **unattended** work: a price trigger fires at 03:00, and there is
 nobody to press a button. This is the only provider a Runner can use, and the one
 `delegated-auto` was always describing.
 
+Installed from a release, it arrives beside the CLI in the same `npm install`
+(ADR-0012), so run it through `npx --no`; `waterx-predict next` tells an
+operator which of the steps below is still undone.
+
 It is shaped like `ssh-agent`, for the same reason `ssh-agent` is shaped that way:
 
 ```

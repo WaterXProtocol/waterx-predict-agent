@@ -104,10 +104,10 @@ export const AGENT_REQUIREMENTS: readonly AgentRequirement[] = [
     title: 'Which deployment this is',
     suppliedBy: 'AGENT_OPERATOR',
     ownerAuthenticated: false,
-    why: 'Testnet or production — the difference between practice money and real money. Nobody should be typing a hostname for it: the SDK ships every host it talks to, and a host that differs from the intended one by a hyphen is a silent failure. What cannot be supplied for you is WHICH network, because a default would either break a production caller or point a first experiment at real funds.',
+    why: 'Production (mainnet) or testnet — the difference between real money and practice money. Nobody should be typing a hostname for it: the SDK ships every host it talks to, and a host that differs from the intended one by a hyphen is a silent failure. The library has no default and requires a name; the `waterx-predict` CLI uses production when none is named (ADR-0011), and says so on every answer.',
     supplyWith: [
-      "new PredictAgentClient({ deployment: 'testnet', signer })",
-      'WATERX_PREDICT_ENVIRONMENT=testnet (the CLI resolves the host from it)',
+      "new PredictAgentClient({ deployment: 'production', signer }) — or 'testnet' to practise",
+      'WATERX_PREDICT_ENVIRONMENT=mainnet or testnet (the CLI resolves the host from it; unset means mainnet)',
       'A private or preview deployment has no name: pass `baseUrl` / WATERX_PREDICT_BASE_URL',
     ],
     settledBy: 'A client that authenticates, and the console URL `runtime.onboard` prints.',
