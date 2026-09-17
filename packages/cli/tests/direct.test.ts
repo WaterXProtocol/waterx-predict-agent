@@ -426,6 +426,18 @@ describe('direct mode', () => {
     expect(result.signerRuns).toHaveLength(0);
   });
 
+  it('warns that a buy below the keeper’s minimum fill would be cancelled, and does not refuse it', async () => {
+    const { run } = setup();
+    const marketId = await resolveMarket(run);
+    const small = await run(['order', 'preview', '--input', JSON.stringify(buy(marketId, { size: { buyAmount: '1' } }))]);
+    expect(small.envelope.data).toMatchObject({
+      fillRisk: { likelyCancelled: true, reason: 'BELOW_KEEPER_MIN_FILL' },
+      policy: { decision: 'APPROVAL_REQUIRED' },
+    });
+    const enough = await run(['order', 'preview', '--input', JSON.stringify(buy(marketId, { size: { buyAmount: '2' } }))]);
+    expect(enough.envelope.data).not.toHaveProperty('fillRisk');
+  });
+
   it('places one approved order: one transaction signature, sponsored, and journaled', async () => {
     const { run, store, world } = setup();
     const marketId = await resolveMarket(run);

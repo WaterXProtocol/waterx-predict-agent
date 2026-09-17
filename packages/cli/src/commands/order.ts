@@ -521,6 +521,31 @@ function previewPolicy(
 }
 
 /**
+ * The keeper's own floor on an opening order (`waterx_pm_broker`,
+ * `WATERX_PM_BROKER_MIN_FILL_USD`, default 2 USD). The backend accepts from
+ * 1 USD, so a BUY between the two is built, signed and placed — and then
+ * cancelled unfilled within seconds (`below_min_fill`), as a 1 USD order on
+ * mainnet was on 2026-09-17. The floor is keeper configuration this runtime
+ * cannot read, so it is reported, never enforced.
+ */
+const KEEPER_MIN_FILL_USD = 2_000000n;
+
+function fillRisk(leg: NormalizedLeg): Record<string, unknown> {
+  if (leg.side !== 'BUY') return {};
+  const amount = parseDecimal(leg.size);
+  if (amount === null || amount >= KEEPER_MIN_FILL_USD) return {};
+  return {
+    fillRisk: {
+      likelyCancelled: true,
+      reason: 'BELOW_KEEPER_MIN_FILL',
+      detail:
+        'The keeper cancels an opening order whose fill would cost less than its minimum (2 wxUSD by default) before trying to fill it. This order would be placed and then cancelled unfilled, its budget refunded.',
+      alternative: 'Buy at least 2 wxUSD.',
+    },
+  };
+}
+
+/**
  * Why there is no spendable figure — three different answers, kept apart.
  *
  * A SELL never had one. A read-only preview did not ask. A BUY that asked and
@@ -627,6 +652,7 @@ async function previewOneLeg(context: CommandContext, leg: NormalizedLeg, issue:
       availableSize: quote.availableSize,
       feeAmount: quote.feeAmount,
     },
+    ...fillRisk(leg),
     priceProtection: {
       maxSlippageBps: leg.maxSlippageBps,
       worstAcceptablePrice: leg.worstAcceptablePrice,

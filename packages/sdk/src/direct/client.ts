@@ -1462,7 +1462,7 @@ export class PredictDirectClient {
       return done('SUBMITTING');
     }
 
-    const onChain = await this.chainOutcome(ref, indexed?.fill, signal);
+    const onChain = await this.chainOutcome(ref, indexed?.fill, feed, signal);
     if (onChain !== undefined) return { ...done(onChain.status, onChain.fill), ...onChain.extra };
     if (feed === undefined) throw feedError;
     return done(indexed?.landed === true ? 'PENDING_FILL' : 'SUBMITTED');
@@ -1476,6 +1476,7 @@ export class PredictDirectClient {
   private async chainOutcome(
     ref: ExecutionRef,
     indexedFill: PredictExecutionFill | undefined,
+    feed: readonly PublicActivityEntry[] | undefined,
     signal?: AbortSignal,
   ): Promise<
     | {
@@ -1511,9 +1512,17 @@ export class PredictDirectClient {
           : { status: 'PENDING_FILL', extra: { openOrder } };
       }
       if (ref.side === 'BUY') {
+        // The feed's fill or cancel carries the KEEPER's digest, not this
+        // submission's — so it is found by the order id the chain named.
+        const byOrder = (kind: string): PublicActivityEntry | undefined =>
+          feed?.find((entry) => entry.kind === kind && entry.orderIds.includes(order.orderId));
+        const bought = byOrder('bought');
         if (state.state === 'FILLED') {
-          return { status: 'FILLED', fill: indexedFill ?? positionFill(state.position) };
+          return { status: 'FILLED', fill: indexedFill ?? (bought === undefined ? undefined : fillOf(bought)) ?? positionFill(state.position) };
         }
+        // Gone from the registry: the feed says which way.
+        if (bought !== undefined) return { status: 'FILLED', fill: fillOf(bought) };
+        if (byOrder('bought_unfilled') !== undefined) return { status: 'CANCELLED' };
         return undefined;
       }
       // A close order that is no longer open: the position it closes decides

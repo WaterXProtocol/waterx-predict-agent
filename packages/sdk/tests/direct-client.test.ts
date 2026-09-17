@@ -832,6 +832,18 @@ describe('settlement read from the registry', () => {
     expect(await client.readExecution(placed.executionId)).toMatchObject(expected);
   });
 
+  it('settles a buy the keeper cancelled, found by the order id the chain named', async () => {
+    // As on mainnet (order 38308): the feed has only the keeper's cancel, under
+    // the keeper's digest, and the order is gone from the registry.
+    const { client, chain, waterx } = withRegistry();
+    const id = await marketId(client);
+    const placed = await client.executeMarketOrder({ ...BUY, marketId: id });
+    chain.order = { state: 'GONE' };
+    expect((await client.readExecution(placed.executionId)).status).toBe('SUBMITTED');
+    waterx.activity.push({ kind: 'bought_unfilled', txDigest: 'KeeperCancel', orderIds: ['1857'], positionIds: [], timestampMs: NOW, roundId: ROUND, side: 'up', shares: 0, amountUsd: 5, oddsCents: null });
+    expect(await client.readExecution(placed.executionId)).toMatchObject({ status: 'CANCELLED', terminal: true, fill: undefined });
+  });
+
   it('prefers the feed’s fill, which names the keeper’s transaction', async () => {
     const { client, chain, waterx } = withRegistry();
     const id = await marketId(client);
