@@ -6,14 +6,20 @@
  * fail on exactly the machine that most needs to run it.
  */
 import {
+  DirectDeploymentError,
+  DirectVerificationError,
   PredictAgentClient,
   PredictAgentTransportError,
+  PredictDirectClient,
+  isDirectCapabilityUnavailable,
   isPredictAgentApiError,
   isUnresolvedWrite,
+  type IntentStore,
+  type MarketCatalog,
 } from '@waterx/predict-agent-sdk';
 
 import type { ResolvedConfig } from './config.ts';
-import { CliError, isCliError } from './errors.ts';
+import { CliError, isCliError, isCliErrorCode } from './errors.ts';
 import {
   EXIT_CODES,
   exitCodeForCliError,
@@ -44,9 +50,28 @@ export interface ClientFactoryOptions {
    * file is refused outright for holding anything credential-shaped.
    */
   readonly token?: string | undefined;
+  /**
+   * Direct mode's durable record of what was submitted. Without it a retry in a
+   * later process cannot tell a lost answer from an order never sent, so direct
+   * mode refuses to trade without one (see `createClient`).
+   */
+  readonly intentStore?: IntentStore | undefined;
+  readonly marketCatalog?: MarketCatalog | undefined;
+  /** Accounts the operator named, verified on chain by direct mode (see its client). */
+  readonly accountHints?: readonly string[] | undefined;
 }
 
-export function createClient(options: ClientFactoryOptions): PredictAgentClient {
+/**
+ * What a command holds. The two clients answer the same questions in the same
+ * types (ADR-0013); where direct mode has no public source it says so by
+ * throwing, and `toEnvelopeError` turns that into CAPABILITY_UNAVAILABLE.
+ */
+export type TradingClient = PredictAgentClient | PredictDirectClient;
+
+export const isDirectClient = (client: TradingClient): client is PredictDirectClient =>
+  client instanceof PredictDirectClient;
+
+export function createClient(options: ClientFactoryOptions): TradingClient {
   const { config } = options;
   if (config.baseUrl === undefined) {
     throw new CliError(
@@ -55,6 +80,27 @@ export function createClient(options: ClientFactoryOptions): PredictAgentClient 
     );
   }
   const signer = createSigner(config, options.runSigner, options.onDiagnostic, options.gate);
+  if (config.mode === 'direct') {
+    if (config.network === undefined) {
+      throw new CliError(
+        'NOT_CONFIGURED',
+        'Direct mode needs to know which Sui network a custom host serves. Set WATERX_PREDICT_NETWORK to mainnet or testnet, or name the deployment instead of the host.',
+      );
+    }
+    return new PredictDirectClient({
+      baseUrl: config.baseUrl,
+      network: config.network,
+      fetch: options.fetch,
+      signer,
+      timeoutMs: config.timeoutMs,
+      requireIntentStore: true,
+      ...(config.deploymentUrl === undefined ? {} : { deploymentUrl: config.deploymentUrl }),
+      ...(config.suiGraphqlUrl === undefined ? {} : { suiGraphqlUrl: config.suiGraphqlUrl }),
+      ...(options.accountHints === undefined ? {} : { accountHints: options.accountHints }),
+      ...(options.intentStore === undefined ? {} : { intentStore: options.intentStore }),
+      ...(options.marketCatalog === undefined ? {} : { catalog: options.marketCatalog }),
+    });
+  }
   return new PredictAgentClient({
     baseUrl: config.baseUrl,
     fetch: options.fetch,
@@ -136,6 +182,35 @@ export function toEnvelopeError(error: unknown, timeoutMs: number): EnvelopeErro
     };
   }
 
+  // Direct mode's own refusals, each in the CLI's vocabulary. None of them
+  // reached the chain.
+  if (isDirectCapabilityUnavailable(error)) {
+    return {
+      code: 'CAPABILITY_UNAVAILABLE',
+      message: error.message,
+      retryable: false,
+      source: 'CLI',
+      details: { capability: error.capability, mode: 'direct', alternative: 'Set WATERX_PREDICT_MODE=agent-api where the Agent Trading API is enabled.' },
+    };
+  }
+  if (error instanceof DirectVerificationError) {
+    return {
+      code: 'TRANSACTION_REFUSED',
+      message: `${error.message}. Nothing was signed or sent.`,
+      retryable: false,
+      source: 'CLI',
+      details: { rule: error.rule },
+    };
+  }
+  if (error instanceof DirectDeploymentError) {
+    return {
+      code: 'DEPLOYMENT_UNAVAILABLE',
+      message: `${error.message}. Nothing was signed or sent.`,
+      retryable: true,
+      source: 'CLI',
+    };
+  }
+
   if (isPredictAgentApiError(error)) {
     return {
       code: error.code,
@@ -188,6 +263,7 @@ export function toEnvelopeError(error: unknown, timeoutMs: number): EnvelopeErro
 export function exitCodeForThrown(error: unknown): ExitCode {
   if (isCliError(error)) return exitCodeForCliError(error.code);
   const envelope = toEnvelopeError(error, 0);
+  if (envelope.source === 'CLI' && isCliErrorCode(envelope.code)) return exitCodeForCliError(envelope.code);
   if (envelope.source === 'SERVER') return exitCodeForServerError(envelope.code);
   if (envelope.source === 'RUNNER') return exitCodeForRunnerError(envelope.code);
   if (envelope.source === 'TRANSPORT') return EXIT_CODES.TRANSPORT;

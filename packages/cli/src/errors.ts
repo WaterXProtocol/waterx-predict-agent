@@ -38,6 +38,13 @@ export type CliErrorCode =
   | 'COMMAND_NOT_IMPLEMENTED'
   /** The local deadline elapsed. Says nothing about what the server did. */
   | 'TIMEOUT'
+  /**
+   * Direct mode (ADR-0013): the backend built a transaction that is not the
+   * order that was asked for, so nothing was signed and nothing was sent.
+   */
+  | 'TRANSACTION_REFUSED'
+  /** Direct mode: the deployment config naming what a transaction may touch could not be read. */
+  | 'DEPLOYMENT_UNAVAILABLE'
   /** A bug in this CLI. Anything unrecognised lands here rather than being guessed at. */
   | 'INTERNAL';
 
@@ -59,6 +66,8 @@ export const CLI_ERROR_CODES: ReadonlySet<string> = new Set<CliErrorCode>([
   'CAPABILITY_UNAVAILABLE',
   'COMMAND_NOT_IMPLEMENTED',
   'TIMEOUT',
+  'TRANSACTION_REFUSED',
+  'DEPLOYMENT_UNAVAILABLE',
   'INTERNAL',
 ]);
 

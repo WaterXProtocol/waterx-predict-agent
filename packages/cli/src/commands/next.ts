@@ -50,7 +50,7 @@ import {
 } from '@waterx/predict-agent-sdk';
 import { getCommand, type AgentCommandClassification } from '@waterx/predict-agent-schema';
 
-import { toEnvelopeError } from '../client.ts';
+import { isDirectClient, toEnvelopeError } from '../client.ts';
 import type { CommandContext } from '../context.ts';
 import { CliError } from '../errors.ts';
 import { resolveRequirements } from '../requirements.ts';
@@ -211,7 +211,8 @@ export type SessionFact =
 
 export type AccountFact =
   | {
-      readonly limits: PredictEffectiveLimitsResponseBody;
+      /** Null in direct mode: there is no server-side mandate to read (ADR-0013). */
+      readonly limits: PredictEffectiveLimitsResponseBody | null;
       readonly unsettled: readonly PredictExecutionSummary[];
       readonly positions: number;
     }
@@ -224,6 +225,10 @@ export interface NextFacts {
   /** Present when the keystore is, or could be, this runtime's signer. */
   readonly keystore?: KeystoreProbe;
   readonly writes: WritePosture;
+  /** Read-only only because nothing was configured on mainnet (ADR-0017). */
+  readonly readOnlyByDefault?: boolean;
+  /** Direct mode (ADR-0013): the grant is the on-chain delegation alone. */
+  readonly direct?: boolean;
   /** Absent when no session was attempted, because the local setup is incomplete. */
   readonly session?: SessionFact;
   /** Absent when the listing was not read; `failed` when the read failed. */
@@ -233,6 +238,15 @@ export interface NextFacts {
   readonly namedAccountId?: string;
   /** Present exactly when the onboarding state is READY. */
   readonly account?: AccountFact;
+  /**
+   * Direct mode: the account this agent was trading on, against the one now
+   * authorized. `CONFLICT` stops the loop — a different account is whose money
+   * trades, and only someone naming it may switch.
+   */
+  readonly adoption?:
+    | { readonly status: 'ADOPTED_NOW' | 'UNCHANGED' | 'SWITCHED_BY_NAME'; readonly accountId: string }
+    | { readonly status: 'CONFLICT'; readonly adopted: string; readonly authorized: string }
+    | { readonly status: 'UNRECORDED'; readonly reason: string };
   readonly runner?: RunnerGlance;
 }
 
@@ -427,7 +441,9 @@ export function decideNext(facts: NextFacts): NextAnswer {
           message:
             link === undefined
               ? 'The owner has to authorize this agent in their own wallet, and no console is paired with this deployment to send them to. Ask the operator for the console URL (WATERX_PREDICT_CONSOLE_URL).'
-              : 'Send the owner this link. They pick an account, set the limits and sign once in their own wallet. The link carries no token and grants nothing by itself; never ask for their key.',
+              : facts.direct === true
+                ? 'Send the owner this link. They pick an account and sign the delegation once in their own wallet; that signature is the whole grant in direct mode. If the page then fails to save limits, the grant has still landed — this runtime bounds spending with its own execution policy. The link carries no token; never ask for their key.'
+                : 'Send the owner this link. They pick an account, set the limits and sign once in their own wallet. The link carries no token and grants nothing by itself; never ask for their key.',
           ...(link === undefined ? {} : { authorizationUrl: link }),
         },
       );
@@ -476,6 +492,26 @@ export function decideNext(facts: NextFacts): NextAnswer {
     }
     case 'READY':
       break;
+  }
+
+  if (facts.adoption?.status === 'CONFLICT') {
+    const { adopted, authorized } = facts.adoption;
+    return answer(
+      'ACCOUNT_CHOICE_NEEDED',
+      `This agent was trading on ${adopted}, and the account authorized now is ${authorized}. Switching is the user's decision.`,
+      [
+        suggest('runtime.next', {}, 'Ask again with the account the user chose.', [
+          {
+            field: 'accountId',
+            why: `${authorized} is authorized now; ${adopted} is where this agent traded before. Taking up a different account moves someone else's money, so it is never done without being named.`,
+          },
+        ]),
+      ],
+      {
+        to: 'AGENT_OPERATOR',
+        message: `Confirm with the user that this agent should now trade on ${authorized} instead of ${adopted}, then name it (--accountId or WATERX_PREDICT_ACCOUNT_ID).`,
+      },
+    );
   }
 
   const accountId = onboarding.account?.accountId;
@@ -549,8 +585,9 @@ export function decideNext(facts: NextFacts): NextAnswer {
     }
   }
 
-  // 7. The owner's limits.
-  const blockers = account.limits.blockers;
+  // 7. The owner's limits. Direct mode has none to read; its ceiling is the
+  //    execution policy, already reflected in `facts.writes`.
+  const blockers = account.limits?.blockers ?? [];
   if (blockers.length > 0) {
     const ownerOnly = blockers.some((blocker) => OWNER_BLOCKERS.has(blocker));
     const suggestions: NextSuggestion[] = [
@@ -601,7 +638,7 @@ export function decideNext(facts: NextFacts): NextAnswer {
         'order.preview',
         onAccount,
         facts.writes === 'NEEDS_APPROVAL'
-          ? 'Prices and policy-checks the order without placing it. Show the user what it would do and the `order execute --approve <token>` line it returns; the approval is theirs to give, and no tool call can supply it.'
+          ? 'Prices and policy-checks the order without placing it. Show the user what it would do and the `order execute --approve <token> --approver <name>` line it returns; the approval is theirs to give, and no tool call can supply it.'
           : 'Prices and policy-checks the order without placing it. It executes only inside the delegated-auto scope the operator wrote down.',
         [
           { field: 'marketId', why: 'From market search. Never assembled, completed or remembered.' },
@@ -624,7 +661,9 @@ export function decideNext(facts: NextFacts): NextAnswer {
   }
   const posture =
     facts.writes === 'REFUSED'
-      ? ' The execution policy is read-only, so this runtime can place no order.'
+      ? facts.readOnlyByDefault === true
+        ? ' This runtime is read-only by default on mainnet: it can search and preview, and places no order until the operator sets WATERX_PREDICT_POLICY=interactive.'
+        : ' The execution policy is read-only, so this runtime can place no order.'
       : facts.writes === 'SCOPE_EXPIRED'
         ? ' The delegated-auto window has closed, so this runtime authorizes no order until the operator renews it.'
         : '';
@@ -790,6 +829,8 @@ async function gatherFacts(context: CommandContext): Promise<NextFacts> {
   const keystore = context.probeKeystore();
   const base = {
     writes: writePosture(context),
+    ...(config.policy.mode === 'read-only' && config.policy.source === 'DEFAULT' ? { readOnlyByDefault: true } : {}),
+    ...(config.mode === 'direct' ? { direct: true } : {}),
     ...(named === undefined ? {} : { namedAccountId: named }),
     ...(config.agentWallet === undefined ? {} : { agentWallet: config.agentWallet }),
     ...(keystore === undefined ? {} : { keystore }),
@@ -853,6 +894,29 @@ async function gatherFacts(context: CommandContext): Promise<NextFacts> {
 
   const accountId = onboarding.account.accountId;
   const client = await context.client();
+  if (isDirectClient(client)) {
+    const adoption = adopt(context, onboarding.account.accountId, onboarding.account.ownerAddress, named);
+    if (adoption.status === 'CONFLICT') return { ...settled, adoption };
+    // Direct mode: what is unsettled is what this runtime's own intent journal
+    // sent and has not seen settle. There is no mandate and no blocker list.
+    const [unsettled, positions, runner] = await Promise.allSettled([
+      client.listUnsettled(accountId, context.signal()),
+      client.getPositions(accountId, { limit: POSITION_SCAN }, context.signal()),
+      glanceAtRunner(context, accountId),
+    ]);
+    const runnerFact: RunnerGlance =
+      runner.status === 'fulfilled' ? runner.value : { status: 'UNREADABLE', code: codeOf(runner.reason) };
+    if (unsettled.status === 'rejected' || positions.status === 'rejected') {
+      const reason = unsettled.status === 'rejected' ? unsettled.reason : (positions as PromiseRejectedResult).reason;
+      return { ...settled, account: { failed: codeOf(reason) }, runner: runnerFact };
+    }
+    return {
+      ...settled,
+      account: { limits: null, unsettled: unsettled.value, positions: positions.value.positions.length },
+      runner: runnerFact,
+      adoption,
+    };
+  }
   // All three or nothing. A partial picture — limits without executions — is
   // exactly the one that would offer an order beside an unsettled one.
   const [limits, executions, positions, runner] = await Promise.allSettled([
@@ -885,13 +949,66 @@ async function gatherFacts(context: CommandContext): Promise<NextFacts> {
   };
 }
 
+/**
+ * Record — or refuse to silently change — the account direct mode trades on.
+ * Naming an account (the command's `accountId`, or the configured default) is
+ * the only way to move off one that was in use.
+ */
+function adopt(
+  context: CommandContext,
+  accountId: string,
+  ownerAddress: string,
+  namedOnCommand: string | undefined,
+): NonNullable<NextFacts['adoption']> {
+  const { config } = context;
+  const named = namedOnCommand ?? config.defaultAccountId;
+  let ledger;
+  try {
+    ledger = context.ledgers().adoptions;
+  } catch (error: unknown) {
+    return { status: 'UNRECORDED', reason: codeOf(error) };
+  }
+  const key = `${config.network ?? 'unknown'}:${config.agentWallet ?? ''}`;
+  const record = ledger.get(key);
+  const now = context.now().toISOString();
+  if (record?.accountId === accountId) return { status: 'UNCHANGED', accountId };
+  if (record !== undefined && named !== accountId) {
+    return { status: 'CONFLICT', adopted: record.accountId, authorized: accountId };
+  }
+  const basis = named === accountId ? 'NAMED' : 'FIRST_SEEN';
+  const namedBy = basis === 'NAMED' ? (namedOnCommand === accountId ? 'COMMAND' : 'CONFIG') : undefined;
+  ledger.set(key, {
+    accountId,
+    ownerAddress,
+    adoptedAt: now,
+    basis,
+    ...(namedBy === undefined ? {} : { namedBy }),
+  });
+  context.ledgers().audit.append(
+    {
+      event: 'account.adopted',
+      key,
+      accountId,
+      basis,
+      ...(namedBy === undefined ? {} : { namedBy }),
+      ...(record === undefined ? {} : { previous: record.accountId }),
+    },
+    context.now(),
+  );
+  return { status: record === undefined ? 'ADOPTED_NOW' : 'SWITCHED_BY_NAME', accountId };
+}
+
 function describeAccount(account: AccountFact | undefined): unknown {
   if (account === undefined) return null;
   if ('failed' in account) return { status: 'UNREAD', reason: account.failed };
   return {
     status: 'READ',
-    blockers: account.limits.blockers,
-    effectiveBuyCapacity: account.limits.allowance?.effectiveBuyCapacity ?? null,
+    ...(account.limits === null
+      ? { mandate: 'NONE_IN_DIRECT_MODE', blockers: [], effectiveBuyCapacity: null, unsettledSource: 'LOCAL_INTENT_JOURNAL' }
+      : {
+          blockers: account.limits.blockers,
+          effectiveBuyCapacity: account.limits.allowance?.effectiveBuyCapacity ?? null,
+        }),
     unsettledExecutions: account.unsettled.map((execution) => ({
       executionId: execution.executionId,
       status: execution.status,
@@ -931,7 +1048,10 @@ export async function runtimeNext(context: CommandContext): Promise<unknown> {
             ? 'production'
             : (context.config.environment ?? null),
         baseUrl: context.config.baseUrl ?? null,
-        realFunds: context.config.baseUrl === PREDICT_AGENT_ENDPOINTS.production,
+        realFunds:
+          context.config.network === 'mainnet' || context.config.baseUrl === PREDICT_AGENT_ENDPOINTS.production,
+        mode: context.config.mode,
+        network: context.config.network ?? null,
       },
       agentWallet: context.config.agentWallet ?? null,
       policy: { mode: context.config.policy.mode, writes: facts.writes },
@@ -954,6 +1074,7 @@ export async function runtimeNext(context: CommandContext): Promise<unknown> {
             : { status: onboarding.status, accounts: onboarding.accounts.length },
       accountId: onboarding !== undefined && !('failed' in onboarding) ? (onboarding.account?.accountId ?? null) : null,
       account: describeAccount(facts.account),
+      ...(facts.adoption === undefined ? {} : { adoption: facts.adoption }),
       runner: facts.runner ?? null,
     },
     requirements: facts.requirements.map((requirement) => ({

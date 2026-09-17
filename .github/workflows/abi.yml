@@ -1,0 +1,22 @@
+name: contract shapes
+
+# Direct mode binds contract arguments by position (ADR-0015). A package
+# upgrade that moves one makes every order refuse — this finds it first, from
+# public chain reads only: no key, no WaterX API, nothing signed.
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+jobs:
+  abi:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @waterx/predict-agent-sdk abi:check

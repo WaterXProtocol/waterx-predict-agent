@@ -50,6 +50,13 @@ import type { StrategyPositionReader } from './positions.ts';
  * no instant at which to write.
  */
 export interface StrategyGateway extends StrategyPositionReader {
+  /**
+   * `NONE` in direct mode (ADR-0016): there is no server-side mandate, so
+   * `getEffectiveLimits` carries only the on-chain delegation, and preflight
+   * must not wait for a mandate that cannot exist. The job's own policy
+   * snapshot is the ceiling. Absent means `SERVER`.
+   */
+  readonly mandate?: 'SERVER' | 'NONE';
   getQuote(request: CreateQuoteRequestBody, signal?: AbortSignal): Promise<PredictQuote>;
   createExecution(
     request: CreateExecutionRequestBody,

@@ -28,6 +28,7 @@ import { randomUUID } from 'node:crypto';
 
 import type {
   CreateQuoteRequestBody,
+  DirectExecutionOutcome,
   ExecuteManyResult,
   ExecuteMarketOrderIntent,
   ExecuteMarketOrderOptions,
@@ -38,16 +39,17 @@ import type {
 } from '@waterx/predict-agent-sdk';
 import { toExecutionOutcome } from '@waterx/predict-agent-sdk';
 
-import { exitCodeForThrown } from '../client.ts';
+import { exitCodeForThrown, isDirectClient, toEnvelopeError } from '../client.ts';
 import type { CommandContext } from '../context.ts';
-import { estimateWorstAcceptablePrice } from '../decimal.ts';
+import { estimateWorstAcceptablePrice, parseDecimal } from '../decimal.ts';
 import { CliError, isCliError } from '../errors.ts';
 import { EXIT_CODES } from '../exit-codes.ts';
 import {
-  approvalToken,
   authorizeWrite,
-  batchApprovalToken,
+  batchIntentDigest,
+  intentDigest,
   normalizeLeg,
+  scopeDigest,
   type NormalizedLeg,
   type WriteAuthorization,
 } from '../policy.ts';
@@ -76,6 +78,21 @@ const RISK_LIMITS_NO_MANDATE = {
     'No owner has granted this agent a risk profile on this account. Absence is denial, not an unlimited default — an execution would be refused.',
   alternative:
     'The account owner must create the profile through the owner-authenticated surface (ADR-0003). An agent credential can never raise its own limits.',
+} as const;
+
+/**
+ * Direct mode has no server-side mandate at all (ADR-0013). The agent trades
+ * as the delegate the owner registered on-chain, so the ceiling on what it may
+ * do is the local execution policy plus that delegation — never a server
+ * figure this preview could report.
+ */
+export const RISK_LIMITS_DIRECT = {
+  available: false,
+  reason: 'DIRECT_MODE_NO_SERVER_MANDATE',
+  detail:
+    'Direct mode trades as the on-chain delegate without an agent API, so no server-side risk profile or allowance ledger exists. The spending ceiling is this CLI’s execution policy; the authority is the owner’s on-chain delegation.',
+  alternative:
+    'Bound spending with the execution policy — an approval per write under `interactive`, or `scope.maxBuyAmount` and `scope.maxCumulativeBuyAmount` under `delegated-auto` — and have the owner narrow or revoke the delegation on-chain.',
 } as const;
 
 const WRITE_CAVEATS: readonly string[] = [
@@ -249,6 +266,9 @@ async function readBuyCapacity(
   const buying = legs.find((leg) => leg.side === 'BUY');
   if (buying === undefined) return undefined;
   const client = await context.client();
+  // Direct mode has no allowance ledger (ADR-0013). The scope's own ceilings
+  // stay the bound, and the chain refuses a spend the account cannot cover.
+  if (isDirectClient(client)) return undefined;
   const allowance = await client.getAllowance(buying.accountId, context.signal());
   return allowance.effectiveBuyCapacity;
 }
@@ -265,11 +285,16 @@ async function readBuyCapacity(
  * `authorizeWrite` throws on denial, so there is no branch here in which an
  * unauthorized write continues.
  */
+interface Authorized extends WriteAuthorization {
+  /** The cumulative-budget reservation, released if nothing ends up signed. */
+  readonly spend: { readonly id: string; readonly total: string } | undefined;
+}
+
 async function authorize(
   context: CommandContext,
   command: string,
   legs: readonly NormalizedLeg[],
-): Promise<WriteAuthorization> {
+): Promise<Authorized> {
   const request = { command, legs, approval: context.approval, now: context.now() };
   const local = authorizeWrite(context.config.policy, request);
 
@@ -279,19 +304,93 @@ async function authorize(
       ? local
       : authorizeWrite(context.config.policy, { ...request, effectiveBuyCapacity });
 
+  // The durable half (ADR-0014), after every stateless check so that an order
+  // refused on its face spends neither an approval nor budget. The approval is
+  // spent before anything is signed: an execution that fails later needs a
+  // fresh preview, never a second use of this one.
+  if (authorization.approval !== undefined) {
+    // The dispatcher refuses `--approve` without `--approver`, so this is set.
+    const approvedBy = context.approver ?? '';
+    const ledgers = context.ledgers();
+    ledgers.approvals.consume(authorization.approval, authorization.intent, request.now, approvedBy);
+    ledgers.audit.append(
+      { event: 'approval.spent', token: authorization.approval, intent: authorization.intent, approvedBy, command },
+      request.now,
+    );
+  }
+  const scope = context.config.policy.scope;
+  let spend: { id: string; total: string } | undefined;
+  if (authorization.buyAmount !== undefined && scope !== undefined) {
+    const ledgers = context.ledgers();
+    const digest = scopeDigest(scope);
+    spend = ledgers.spend.reserve(digest, authorization.buyAmount, scope.maxCumulativeBuyAmount ?? '0', request.now);
+    ledgers.audit.append(
+      { event: 'spend.reserved', id: spend.id, scope: digest, amount: authorization.buyAmount, total: spend.total },
+      request.now,
+    );
+  }
+
   context.gate.grant(authorization);
-  return authorization;
+  return { ...authorization, spend };
+}
+
+/**
+ * Give back a budget reservation whose write signed nothing — so nothing can
+ * have been sent. Anything signed keeps its reservation, whatever happened next:
+ * a signed order whose fate is unknown must count against the budget.
+ */
+function settleSpend(context: CommandContext, authorization: Authorized): void {
+  if (authorization.spend !== undefined && context.gate.stats.used === 0) {
+    const ledgers = context.ledgers();
+    ledgers.spend.release(authorization.spend.id);
+    ledgers.audit.append({ event: 'spend.released', id: authorization.spend.id }, context.now());
+  }
+}
+
+/**
+ * What a write came to, for the audit log: the executions it produced, or the
+ * refusal that ended it. Written whether or not the write succeeded — a
+ * refused approved order is as much a fact as a placed one.
+ */
+function auditWrite(
+  context: CommandContext,
+  command: string,
+  authorization: Authorized,
+  executions: readonly { executionId: string; status: string }[],
+  refused?: unknown,
+): void {
+  context.ledgers().audit.append(
+    {
+      event: 'write.result',
+      command,
+      intent: authorization.intent,
+      ...(authorization.approval !== undefined && context.approver !== undefined ? { approvedBy: context.approver } : {}),
+      executions,
+      ...(refused === undefined ? {} : { refused: toEnvelopeError(refused, 0).code }),
+    },
+    context.now(),
+  );
 }
 
 /** What the result records about the decision. Never the approval's provenance. */
-const policyRecord = (context: CommandContext, authorization: WriteAuthorization): unknown => ({
+const policyRecord = (context: CommandContext, authorization: Authorized): unknown => ({
   mode: context.config.policy.mode,
   source: context.config.policy.source,
   basis: authorization.basis,
-  approvalToken: authorization.token,
+  intentDigest: authorization.intent,
+  ...(authorization.approval !== undefined ? { approvalToken: authorization.approval, approvalSpent: true } : {}),
   ...(authorization.checks.length > 0 ? { scopeChecks: authorization.checks } : {}),
+  ...(authorization.spend !== undefined
+    ? {
+        cumulativeBuy: {
+          authorizedUnderScope: authorization.spend.total,
+          ceiling: context.config.policy.scope?.maxCumulativeBuyAmount ?? null,
+          released: context.gate.stats.used === 0,
+        },
+      }
+    : {}),
   signatures: context.gate.stats,
-  note: 'An approval token binds one exact intent. It is not authentication and does not prove a person saw the order.',
+  note: 'An approval authorizes one exact intent, once, until it expires. It is not authentication and does not prove a person saw the order.',
 });
 
 /* ── order preview ─────────────────────────────────────────────────────────── */
@@ -301,6 +400,41 @@ const outcomeOf = (
   outcomeId: string,
 ): PredictMarketOutcome | undefined =>
   market.outcomes.find((outcome) => outcome.outcomeId === outcomeId);
+
+/**
+ * Issue the one approval this preview hands over (ADR-0014).
+ *
+ * Without a ledger there is nowhere to record it, and an approval that is not
+ * recorded could not be spent — so none is issued, and the preview says why
+ * rather than handing over a token every execution would refuse.
+ */
+function issueApproval(context: CommandContext, intent: string): Record<string, unknown> {
+  let record;
+  try {
+    const ledgers = context.ledgers();
+    record = ledgers.approvals.issue(intent, context.now());
+    ledgers.audit.append(
+      { event: 'approval.issued', token: record.token, intent, expiresAt: record.expiresAt },
+      context.now(),
+    );
+  } catch (error: unknown) {
+    if (!isCliError(error)) throw error;
+    return {
+      decision: 'APPROVAL_UNAVAILABLE',
+      reason: error.code,
+      detail: `No approval could be issued: ${error.message}`,
+    };
+  }
+  return {
+    decision: 'APPROVAL_REQUIRED',
+    approvalToken: record.token,
+    approveWith: `--approve ${record.token} --approver <name>`,
+    expiresAt: record.expiresAt,
+    detail:
+      'Pass the token back to `order execute`, with `--approver` naming who approved it, to authorize exactly this order, once, before it expires. Change the account, market, side, size, position or price protection and it no longer applies; a second execution needs a second preview.',
+    note: 'The token is not authentication. It proves a caller carried a value from this preview to an execution, not that a person read it.',
+  };
+}
 
 /**
  * The policy verdict, as a REPORT rather than a refusal.
@@ -313,11 +447,12 @@ const outcomeOf = (
 function previewPolicy(
   context: CommandContext,
   legs: readonly NormalizedLeg[],
-  token: string,
+  intent: string,
   effectiveBuyCapacity: string | undefined,
+  issue: boolean,
 ): unknown {
   const policy = context.config.policy;
-  const base = { mode: policy.mode, source: policy.source, approvalToken: token };
+  const base = { mode: policy.mode, source: policy.source, intentDigest: intent };
 
   if (policy.mode === 'read-only') {
     return {
@@ -330,14 +465,14 @@ function previewPolicy(
   }
 
   if (policy.mode === 'interactive') {
-    return {
-      ...base,
-      decision: 'APPROVAL_REQUIRED',
-      approveWith: `--approve ${token}`,
-      detail:
-        'Pass the token back to `order execute` to authorize exactly this order. Change the account, market, side, size, position or price protection and the token no longer matches.',
-      note: 'The token binds an intent; it is not authentication. It proves a caller carried a value from this preview to an execution, not that a person read it.',
-    };
+    if (!issue) {
+      return {
+        ...base,
+        decision: 'APPROVAL_REQUIRED',
+        detail: 'This leg is approved with the batch’s token, not on its own.',
+      };
+    }
+    return { ...base, ...issueApproval(context, intent) };
   }
 
   try {
@@ -351,6 +486,21 @@ function previewPolicy(
       ...(effectiveBuyCapacity !== undefined ? { effectiveBuyCapacity } : {}),
       now: context.now(),
     });
+    const scope = policy.scope;
+    if (authorization.buyAmount !== undefined && scope !== undefined) {
+      // The persisted half of the ceiling, reported as the write would apply it.
+      const already = context.ledgers().spend.total(scopeDigest(scope));
+      const ceiling = scope.maxCumulativeBuyAmount ?? '0';
+      const wouldBe = (parseDecimal(already) ?? 0n) + (parseDecimal(authorization.buyAmount) ?? 0n);
+      if (wouldBe > (parseDecimal(ceiling) ?? 0n)) {
+        return {
+          ...base,
+          decision: 'DENIED',
+          reason: 'POLICY_DENIED',
+          detail: `The scope has already authorized ${already} wxUSD of its ${ceiling} cumulative budget; this order would take it past that.`,
+        };
+      }
+    }
     return {
       ...base,
       decision: 'ALLOWED_BY_SCOPE',
@@ -380,12 +530,16 @@ function previewPolicy(
 function capacityAbsence(
   side: 'BUY' | 'SELL',
   facts: PredictEffectiveLimitsResponseBody | null,
+  direct: boolean,
 ): { reason: string; detail: string } {
   if (side === 'SELL') {
     return {
       reason: 'NOT_APPLICABLE_TO_SELL',
       detail: 'A SELL closes shares and does not spend the wxUSD allowance.',
     };
+  }
+  if (direct) {
+    return { reason: RISK_LIMITS_DIRECT.reason, detail: RISK_LIMITS_DIRECT.detail };
   }
   if (facts === null) {
     return {
@@ -412,14 +566,16 @@ function capacityAbsence(
  * always done, now reachable per leg so a batch can be previewed the same way a
  * single order is — see {@link orderPreview}.
  */
-async function previewOneLeg(context: CommandContext, leg: NormalizedLeg): Promise<unknown> {
+async function previewOneLeg(context: CommandContext, leg: NormalizedLeg, issue: boolean): Promise<unknown> {
   const client = await context.client();
 
   // One account read covers both halves of the policy picture — the allowance a
   // BUY spends and the mandate either side trades under — so a preview that
   // reports both still makes exactly one extra call. A read-only preview skips
   // it: it is pricing an order it has already refused to place.
-  const wantsFacts = context.config.policy.mode !== 'read-only';
+  // Direct mode has no account plane to read (ADR-0013).
+  const direct = isDirectClient(client);
+  const wantsFacts = context.config.policy.mode !== 'read-only' && !direct;
   const [market, quote, facts] = await Promise.all([
     client.getMarket(leg.marketId, context.signal()),
     client.getQuote(toQuoteRequest(leg), context.signal()),
@@ -431,7 +587,7 @@ async function previewOneLeg(context: CommandContext, leg: NormalizedLeg): Promi
   const allowance = leg.side === 'BUY' ? (facts?.allowance ?? null) : null;
 
   const outcome = outcomeOf(market.market, leg.outcomeId);
-  const token = approvalToken(leg);
+  const intent = intentDigest(leg);
   const estimate = estimateWorstAcceptablePrice({
     side: leg.side,
     referencePrice: quote.expectedPrice,
@@ -495,7 +651,7 @@ async function previewOneLeg(context: CommandContext, leg: NormalizedLeg): Promi
       allowance === null
         ? {
             available: false,
-            ...capacityAbsence(leg.side, facts),
+            ...capacityAbsence(leg.side, facts, direct),
           }
         : {
             available: true,
@@ -503,8 +659,9 @@ async function previewOneLeg(context: CommandContext, leg: NormalizedLeg): Promi
             accountSpendableBalance: allowance.accountSpendableBalance,
             effectiveBuyCapacity: allowance.effectiveBuyCapacity,
           },
-    riskLimits:
-      facts === null
+    riskLimits: direct
+      ? RISK_LIMITS_DIRECT
+      : facts === null
         ? RISK_LIMITS_NOT_READ
         : facts.limits === null
           ? RISK_LIMITS_NO_MANDATE
@@ -521,8 +678,9 @@ async function previewOneLeg(context: CommandContext, leg: NormalizedLeg): Promi
     policy: previewPolicy(
       context,
       [leg],
-      token,
+      intent,
       allowance === null ? undefined : allowance.effectiveBuyCapacity,
+      issue,
     ),
     nextStep: {
       command: 'order execute',
@@ -558,14 +716,16 @@ async function previewOneLeg(context: CommandContext, leg: NormalizedLeg): Promi
  */
 export async function orderPreview(context: CommandContext): Promise<unknown> {
   const orders = context.input['orders'];
-  if (orders === undefined) return await previewOneLeg(context, normalizeLeg(context.input));
+  if (orders === undefined) return await previewOneLeg(context, normalizeLeg(context.input), true);
 
   if (!Array.isArray(orders) || orders.length === 0) {
     throw new CliError('INVALID_INPUT', '`orders` must be a non-empty array of order intents.');
   }
   const legs = (orders as Record<string, unknown>[]).map((order) => normalizeLeg(order));
-  const previews = await Promise.all(legs.map((leg) => previewOneLeg(context, leg)));
-  const token = batchApprovalToken(legs);
+  // No leg is approved on its own: a batch preview issues the batch's approval
+  // and nothing else, so it cannot be spent one leg at a time.
+  const previews = await Promise.all(legs.map((leg) => previewOneLeg(context, leg, false)));
+  const intent = batchIntentDigest(legs);
   const mode = context.config.policy.mode;
 
   return {
@@ -575,11 +735,9 @@ export async function orderPreview(context: CommandContext): Promise<unknown> {
     policy: {
       mode,
       source: context.config.policy.source,
-      approvalToken: token,
-      ...(mode === 'interactive'
-        ? { decision: 'APPROVAL_REQUIRED', approveWith: `--approve ${token}` }
-        : {}),
-      note: 'One token approves the whole batch, in this order. Reordering the legs is a different intent and a different token, because a batch that stops on the first failure is not the same batch reversed.',
+      intentDigest: intent,
+      ...(mode === 'interactive' ? issueApproval(context, intent) : {}),
+      note: 'One approval authorizes the whole batch, in this order, once. Reordering the legs is a different intent, because a batch that stops on the first failure is not the same batch reversed.',
     },
     caveats: [
       'A preview places nothing and signs nothing. Every leg below is priced against a quote that has already begun expiring.',
@@ -607,10 +765,19 @@ export async function orderExecute(context: CommandContext): Promise<unknown> {
   const client = await context.client();
   // Minted and announced BEFORE the request, so a process that dies mid-write
   // leaves the key behind rather than taking it with it.
-  const result = await client.executeMarketOrder(
-    toIntent(leg, referenceQuoteId, idempotencyKeyFor(context.input, context)),
-    waitOptions(context),
-  );
+  let result;
+  try {
+    result = await client.executeMarketOrder(
+      toIntent(leg, referenceQuoteId, idempotencyKeyFor(context.input, context)),
+      waitOptions(context),
+    );
+  } catch (error: unknown) {
+    auditWrite(context, 'order.execute', authorization, [], error);
+    throw error;
+  } finally {
+    settleSpend(context, authorization);
+  }
+  auditWrite(context, 'order.execute', authorization, [{ executionId: result.executionId, status: result.status }]);
 
   if (result.timedOut) {
     context.exitAs(EXIT_CODES.AMBIGUOUS);
@@ -628,6 +795,7 @@ export async function orderExecute(context: CommandContext): Promise<unknown> {
      */
     executionId: result.executionId,
     idempotencyKey: result.idempotencyKey,
+    ...openOrderNotice(result as typeof result & Pick<DirectExecutionOutcome, 'openOrder'>),
     policy: policyRecord(context, authorization),
     ...(result.timedOut
       ? {
@@ -649,9 +817,45 @@ export async function orderExecute(context: CommandContext): Promise<unknown> {
 
 const executionIdOf = (context: CommandContext): string => String(context.input.executionId);
 
+/**
+ * What direct mode knows about an order that is still open in the registry
+ * (ADR-0013), and — once it can no longer fill — that its escrow is held until
+ * someone cancels it. Nothing here cancels: this agent is not granted to.
+ */
+function openOrderNotice(outcome: { status: string; openOrder?: DirectExecutionOutcome['openOrder'] }): Record<string, unknown> {
+  const open = outcome.openOrder;
+  if (open === undefined) return {};
+  return {
+    openOrder: open,
+    ...(outcome.status === 'EXPIRED'
+      ? {
+          refund: {
+            required: true,
+            reason: 'ORDER_EXPIRED_UNFILLED',
+            detail: `No fill can be reported for this order any more, and its ${open.escrow} wxUSD escrow is still held. It comes back to the account only when the order is cancelled, which is possible from ${open.cancellableAfter}.`,
+            who: 'The account owner, in the WaterX app — or a delegate the owner granted the cancel permission. This agent places no cancels.',
+          },
+        }
+      : {}),
+  };
+}
+
 /** One read of one execution. Places nothing, so it is always safe to repeat. */
 export async function orderGet(context: CommandContext): Promise<unknown> {
   const client = await context.client();
+  if (isDirectClient(client)) {
+    const outcome = await client.readExecution(executionIdOf(context), context.signal());
+    const { openOrder: _open, ...execution } = outcome;
+    return {
+      execution,
+      ...openOrderNotice(outcome),
+      caveats: [
+        'A non-terminal status means the order is still live. It is not a failure and it is not a fill.',
+        '`fee.available: false` with reason EMBEDDED_IN_PRICE means the published price is already fee-adjusted — not that the fee was zero.',
+        'Direct mode reads this from the chain where it can, and from the owner’s activity feed for the rest.',
+      ],
+    };
+  }
   const read = await client.getExecution(executionIdOf(context), context.signal());
   const outcome = toExecutionOutcome(read, false);
   return {
@@ -699,10 +903,12 @@ export async function orderReconcile(context: CommandContext): Promise<unknown> 
   });
 
   if (outcome.timedOut) context.exitAs(EXIT_CODES.AMBIGUOUS);
+  const { openOrder: _open, ...execution } = outcome as typeof outcome & Pick<DirectExecutionOutcome, 'openOrder'>;
 
   return {
-    execution: outcome,
+    execution,
     resolved: outcome.terminal,
+    ...openOrderNotice(outcome),
     ...(outcome.timedOut
       ? {
           reconciliation: {
@@ -829,17 +1035,33 @@ export async function orderExecuteMany(context: CommandContext): Promise<unknown
   const authorization = await authorize(context, 'order.execute-many', legs);
 
   const client = await context.client();
-  const results = await client.executeMany(
-    legs.map((leg, index) => toIntent(leg, quoteIds[index], keys[index])),
-    {
-      ...waitOptions(context),
-      ...(typeof context.input.concurrency === 'number'
-        ? { concurrency: context.input.concurrency }
-        : {}),
-      ...(context.input.failurePolicy === 'CONTINUE' || context.input.failurePolicy === 'STOP'
-        ? { failurePolicy: context.input.failurePolicy }
-        : {}),
-    },
+  let results;
+  try {
+    results = await client.executeMany(
+      legs.map((leg, index) => toIntent(leg, quoteIds[index], keys[index])),
+      {
+        ...waitOptions(context),
+        ...(typeof context.input.concurrency === 'number'
+          ? { concurrency: context.input.concurrency }
+          : {}),
+        ...(context.input.failurePolicy === 'CONTINUE' || context.input.failurePolicy === 'STOP'
+          ? { failurePolicy: context.input.failurePolicy }
+          : {}),
+      },
+    );
+  } catch (error: unknown) {
+    auditWrite(context, 'order.execute-many', authorization, [], error);
+    throw error;
+  } finally {
+    settleSpend(context, authorization);
+  }
+  auditWrite(
+    context,
+    'order.execute-many',
+    authorization,
+    results.flatMap((result) =>
+      result !== undefined && result.ok ? [{ executionId: result.result.executionId, status: result.result.status }] : [],
+    ),
   );
 
   const reports = legs.map((leg, index) => toLegReport(leg, results[index]));

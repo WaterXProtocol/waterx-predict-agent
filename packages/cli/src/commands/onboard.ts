@@ -70,6 +70,7 @@ function render(
   authorizationUrl: string,
   agentWallet: string,
   timedOut: boolean,
+  direct: boolean,
 ): unknown {
   const ready = state.status === 'READY';
   return {
@@ -94,9 +95,16 @@ function render(
       'This runtime cannot sign a delegation, write a risk profile or raise a limit. Those are owner-authenticated by construction (ADR-0003).',
       '`DELEGATION_UNKNOWN` means the on-chain read FAILED. It is not a refusal, and asking the owner to sign again would have them authorize an agent that may already be authorized.',
       'A timed-out wait is not a failure: the owner may sign a minute later. Run this again rather than starting over.',
+      ...(direct
+        ? [
+            'Direct mode (ADR-0013): the on-chain delegation is the whole grant. The page’s limits step writes to the agent API, which this mode does not use — if that step fails after the wallet signed, the agent is still authorized, and its spending ceiling is this runtime’s execution policy.',
+          ]
+        : []),
     ],
   };
 }
+
+const DIRECT_POLL_MS = 15_000;
 
 export async function runtimeOnboard(context: CommandContext): Promise<unknown> {
   const agentWallet = context.config.agentWallet;
@@ -123,7 +131,9 @@ export async function runtimeOnboard(context: CommandContext): Promise<unknown> 
   //
   // stdout stays one JSON document, which is why this goes to stderr.
   context.diagnostic(
-    `Authorize this agent by opening:\n  ${authorizationUrl}\nThe page asks the account owner to pick an account, set the limits and sign once.\n`,
+    context.config.mode === 'direct'
+      ? `Authorize this agent by opening:\n  ${authorizationUrl}\nThe account owner picks an account and signs the delegation once. That signature is the whole grant in direct mode.\n`
+      : `Authorize this agent by opening:\n  ${authorizationUrl}\nThe page asks the account owner to pick an account, set the limits and sign once.\n`,
   );
 
   // `--open`, and only ever on stderr. The outcome is a fact about this
@@ -147,23 +157,32 @@ export async function runtimeOnboard(context: CommandContext): Promise<unknown> 
 
   if (context.input.wait !== true) {
     const state = describeOnboarding(await client.listAuthorizedAccounts(context.signal()), scope);
-    return render(state, authorizationUrl, agentWallet, false);
+    return render(state, authorizationUrl, agentWallet, false, context.config.mode === 'direct');
   }
 
   const timeoutMs = typeof context.input.timeoutMs === 'number' ? context.input.timeoutMs : DEFAULT_WAIT_MS;
   const result = await waitForAuthorization(client, {
     ...scope,
     timeoutMs,
-    signal: context.signal(),
+    // The public delegation listing starts fresh chain reads on every call and
+    // allows 300 an hour per IP. Every 15 s stays inside it with room for the
+    // person running other commands.
+    ...(context.config.mode === 'direct' ? { pollIntervalMs: DIRECT_POLL_MS } : {}),
+    // Wide enough for the wait itself, plus one slow read at its end. The
+    // default request deadline would otherwise end a long wait early, as an
+    // error, while the owner was still signing.
+    signal: context.signal(timeoutMs + 30_000),
     // Progress on stderr as it changes, so a person watching a terminal is not
     // staring at nothing for ten minutes.
     onChange: (state) => {
       context.diagnostic(
         state.status === 'READY'
           ? 'Authorized. This agent may now trade on the account below.\n'
-          : `Waiting — ${state.status}: ${state.nextStep.action}\n`,
+          : context.config.mode === 'direct' && state.status === 'NOT_ONBOARDED'
+            ? 'Waiting — NOT_ONBOARDED: the owner opens the link, picks an account and signs the delegation.\n'
+            : `Waiting — ${state.status}: ${state.nextStep.action}\n`,
       );
     },
   });
-  return render(result, authorizationUrl, agentWallet, result.timedOut);
+  return render(result, authorizationUrl, agentWallet, result.timedOut, context.config.mode === 'direct');
 }

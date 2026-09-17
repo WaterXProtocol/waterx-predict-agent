@@ -46,6 +46,8 @@ const complete = (overrides: Readonly<Record<string, unknown>> = {}): RunnerEnv 
   [RUNNER_ENV_KEYS.baseUrl]: URL_,
   [RUNNER_ENV_KEYS.agentWallet]: WALLET,
   [RUNNER_ENV_KEYS.signerCommand]: '/opt/keystore/bin/waterx-sign',
+  // A host this build cannot name needs its network stated in direct mode.
+  [RUNNER_ENV_KEYS.network]: 'testnet',
   ...overrides,
 });
 
@@ -107,11 +109,34 @@ describe('all three or none', () => {
     const config = resolve(complete());
     expect(config.gaps).toEqual([]);
     expect(config.driver).toEqual({
+      mode: 'direct',
+      network: 'testnet',
       baseUrl: URL_,
       agentWallet: WALLET,
       signerCommand: ['/opt/keystore/bin/waterx-sign'],
       signerTimeoutMs: 15_000,
     });
+  });
+
+  it('trades in direct mode by default, and needs the network of a host it cannot name', () => {
+    const unnamed = { ...complete() } as Record<string, string | undefined>;
+    delete unnamed[RUNNER_ENV_KEYS.network];
+    const config = resolve(unnamed);
+    expect(config.gaps).toEqual(['network']);
+    expect(config.driver).toBeUndefined();
+
+    // A host this build knows carries its network.
+    const known = resolve({ ...unnamed, [RUNNER_ENV_KEYS.baseUrl]: 'https://api-testnet.waterx.app' });
+    expect(known.driver).toMatchObject({ mode: 'direct', network: 'testnet' });
+
+    // The Agent API mode needs no network.
+    const agentApi = resolve({ ...unnamed, [RUNNER_ENV_KEYS.mode]: 'agent-api' });
+    expect(agentApi.driver).toMatchObject({ mode: 'agent-api', network: undefined });
+  });
+
+  it('refuses a mode or network it does not know', () => {
+    expect(isRunnerConfigError(refusal(complete({ [RUNNER_ENV_KEYS.mode]: 'agent_api' })))).toBe(true);
+    expect(isRunnerConfigError(refusal(complete({ [RUNNER_ENV_KEYS.network]: 'devnet' })))).toBe(true);
   });
 
   it.each([
@@ -159,9 +184,12 @@ describe('precedence and file handling', () => {
         signerTimeoutMs: 30_000,
         tickIntervalMs: 500,
         maxJobs: 4,
+        mode: 'agent-api',
       }),
     });
     expect(config.driver).toEqual({
+      mode: 'agent-api',
+      network: undefined,
       baseUrl: URL_,
       agentWallet: WALLET,
       signerCommand: ['/opt/keystore/bin/waterx-sign', '--slot', '3'],

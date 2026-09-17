@@ -189,6 +189,8 @@ can read back, not by an argv nobody can recover after the terminal is gone.
 | `WATERX_RUNNER_DIR` | — | runtime directory (default `~/.waterx/runner`) |
 | `WATERX_RUNNER_STORE` | — | database path (default `<dir>/jobs.sqlite`) |
 | `WATERX_RUNNER_CONFIG` | — | the file itself (default `<dir>/runner.json`) |
+| `WATERX_RUNNER_MODE` | `mode` | `direct` (default, ADR-0016) or `agent-api` |
+| `WATERX_RUNNER_NETWORK` | `network` | `mainnet` / `testnet`; inferred for the two WaterX hosts |
 | `WATERX_RUNNER_BASE_URL` | `baseUrl` | the API this Runner trades against |
 | `WATERX_RUNNER_AGENT_WALLET` | `agentWallet` | the address it trades as |
 | `WATERX_RUNNER_SIGNER_COMMAND` | `signerCommand` | the keystore **argv** |
@@ -236,9 +238,21 @@ authenticates when the server comes back.
 
 The three driver settings are all-or-nothing. Missing any of them, `runnerd`
 starts, recovers, listens and reports `driving: false` with `driverGaps` naming
-exactly what to set (`base-url`, `agent-wallet`, `signer-command`). A `baseUrl`
+exactly what to set (`base-url`, `agent-wallet`, `signer-command`, and in
+direct mode `network` for a host this build cannot name). A `baseUrl`
 using plaintext `http://` to anything but loopback warns rather than refuses — a
 local mock is legitimate — and the warning is printed once, at start-up.
+
+**Direct mode (the default, ADR-0016).** The Runner trades the way the CLI does
+(ADR-0013): public routes, the agent as the owner's on-chain delegate, no
+session. A create builds and verifies the order (digest, contract shapes, every
+argument) and returns the bytes and an id naming their digest; the Runner's
+policy-bound signer signs them; the submit hands the signature to the sponsor.
+There is no server mandate, so preflight checks the on-chain delegation only and
+the job's policy is the ceiling. Prices are polled from the public board (at
+most once per 5 s per topic), and market titles and slugs come from the CLI's
+catalog under `$WATERX_PREDICT_STATE_DIR` or `~/.waterx-predict`. The token
+paragraph above applies to `agent-api` mode; direct mode opens no session.
 
 ## Talking to it
 

@@ -19,7 +19,9 @@ import {
   type PredictPagedListResponse,
 } from '@waterx/predict-agent-sdk';
 
+import { isDirectClient } from '../client.ts';
 import type { CommandContext } from '../context.ts';
+import { RISK_LIMITS_DIRECT } from './order.ts';
 
 const NO_MANDATE = {
   available: false,
@@ -250,6 +252,32 @@ function toRiskView(facts: PredictEffectiveLimitsResponseBody): Record<string, u
 export async function accountStatus(context: CommandContext): Promise<unknown> {
   const id = accountId(context);
   const client = await context.client();
+  if (isDirectClient(client)) {
+    // No account plane to read in direct mode (ADR-0013): exposure is the
+    // public positions feed, and the mandate is reported as absent by design.
+    const positions = await client.getPositions(id, pageOf(context), context.signal());
+    return {
+      accountId: id,
+      asOf: context.now().toISOString(),
+      mode: 'direct',
+      agentWallet: client.agentWallet,
+      limits: RISK_LIMITS_DIRECT,
+      capacity: null,
+      policy: {
+        mode: context.config.policy.mode,
+        ...(context.config.policy.scope !== undefined ? { scope: context.config.policy.scope } : {}),
+      },
+      exposure: {
+        openPositions: positions.positions.length,
+        positions: positions.positions,
+      },
+      caveats: [
+        'Direct mode has no server-side mandate, allowance or blocker list. The execution policy above is the only spending ceiling this runtime enforces: `interactive` binds each write to an approval, and `delegated-auto` bounds it by `scope` per invocation.',
+        'Positions come from the public feed for the main account only.',
+        ...RISK_CAVEATS,
+      ],
+    };
+  }
   const [facts, positions] = await Promise.all([
     client.getEffectiveLimits(id, context.signal()),
     client.getPositions(id, pageOf(context), context.signal()),

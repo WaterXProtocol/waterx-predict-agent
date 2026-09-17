@@ -48,6 +48,8 @@ waterx-predict describe
 # 2. Configure. The signer is an external command; no key enters this process.
 #    With no deployment named this CLI uses MAINNET (ADR-0011) and says so on
 #    every answer. To practise, name testnet.
+#    Direct mode is the default (ADR-0013): public routes, no login, no Agent
+#    API. WATERX_PREDICT_MODE=agent-api selects the authenticated Agent API.
 export WATERX_PREDICT_ENVIRONMENT=testnet   # or mainnet; unset means mainnet
 export WATERX_PREDICT_AGENT_WALLET='0x<64 hex>'
 export WATERX_PREDICT_SIGNER_COMMAND='/path/to/your-signer'
@@ -71,7 +73,7 @@ waterx-predict order preview --input '{
 }'
 
 # 7. Execute it, carrying the approval the preview published and a fresh quote.
-waterx-predict order execute --approve apv1_… --input '{ …, "referenceQuoteId": "…" }'
+waterx-predict order execute --approve apv2_… --approver "Alice" --input '{ …, "referenceQuoteId": "…" }'
 ```
 
 Steps 1 and 2 are in that order on purpose: discovery precedes setup, because a
@@ -321,7 +323,7 @@ not merely skip a check — it would run out of permits and refuse.
 
 ```sh
 waterx-predict order preview --input '{…}'   # → data.policy.approvalToken: "apv1_…"
-waterx-predict order execute --approve apv1_… --input '{…}'
+waterx-predict order execute --approve apv2_… --approver "Alice" --input '{…}'
 ```
 
 The token is a digest of the **normalized intent** — account, market, outcome,
@@ -523,6 +525,11 @@ Precedence, lowest first: config file, environment, flags.
 | Setting | Environment variable | Config key |
 | --- | --- | --- |
 | API base URL | `WATERX_PREDICT_BASE_URL` | `baseUrl` |
+| Mode: `direct` (default) or `agent-api` | `WATERX_PREDICT_MODE` | `mode` |
+| Sui network, for a host this build cannot name | `WATERX_PREDICT_NETWORK` | `network` |
+| Direct-mode state directory (intent journal, market ids) | `WATERX_PREDICT_STATE_DIR` | — *(default `~/.waterx-predict`)* |
+| Direct mode: deployment document, for a private deployment | `WATERX_PREDICT_DEPLOYMENT_URL` | `deploymentUrl` |
+| Direct mode: Sui GraphQL endpoint | `WATERX_PREDICT_SUI_GRAPHQL_URL` | `suiGraphqlUrl` |
 | Environment label | `WATERX_PREDICT_ENVIRONMENT` | `environment` |
 | Agent wallet | `WATERX_PREDICT_AGENT_WALLET` | `agentWallet` |
 | Default account | `WATERX_PREDICT_ACCOUNT_ID` | `defaultAccountId` |
@@ -538,6 +545,60 @@ The file is `--config <path>`, else `$WATERX_PREDICT_CONFIG`, else
 **A config file containing a credential-shaped key is refused**, and the refusal
 names the key path and never the value. An unknown key is refused too, rather
 than ignored — a typo that silently disables a setting is worse than a stop.
+
+## Direct mode (the default)
+
+ADR-0013. The CLI trades the way `waterx-agent` (perps) does: the public,
+unauthenticated WaterX routes, with the agent wallet as `delegateSender` on the
+owner's account, and the backend sponsoring gas. There is no login, no session
+token and no `/agent-api` request.
+
+- **The grant is the on-chain delegation.** `onboard` prints the same console
+  link; the owner picks an account and signs once. The page's limits step
+  writes to the Agent API, which this mode does not use — if it fails after the
+  wallet signed, the agent is still authorized.
+- **Nothing is signed unread.** The sponsored bytes are decoded and checked
+  against the intent: this wallet as sender, gas paid by someone else, only
+  WaterX prediction calls at the deployment's current packages
+  (`config.waterx.app`), the account, market, side, budget, price cap, share
+  floor and expiry this CLI asked for. A mismatch is `TRANSACTION_REFUSED`
+  (exit 10) and nothing is signed.
+- **The ceiling is the execution policy.** There is no server-side risk
+  profile, allowance or blocker list: `order preview` and `account status`
+  report `DIRECT_MODE_NO_SERVER_MANDATE`, and `delegated-auto` is bounded by its
+  scope alone.
+- **Idempotency is local.** The intent journal
+  (`~/.waterx-predict/direct-intents.json`, `0600`) records the transaction
+  digest *before* submitting. A replay with the same `idempotencyKey` reads the
+  order back; a new key is a new order. `next` holds on anything in that
+  journal that has not settled.
+- **Unavailable:** `account allowance`, `risk-limits`, `executions`, `fills`
+  and `performance` answer `CAPABILITY_UNAVAILABLE` — no public route serves
+  them. Positions cover the owner's main account only. Market ids are opaque
+  handles (`wxp1.…`) from `market list` / `search`; execution ids are `dx1.…`.
+- **Approvals name who gave them, and every decision is kept** (ADR-0018).
+  `--approve` requires `--approver <name>`; issued and spent approvals, budget
+  reservations, account adoptions and each write's executions are appended to
+  `~/.waterx-predict/write-audit.jsonl` (`0600`, never rewritten).
+  `doctor --probeWrite` also builds and verifies a close when a position is held.
+- **Approvals are issued, expire and are spent once** (ADR-0014).
+  `order preview` issues one into `~/.waterx-predict/write-ledger.json`
+  (`0600`); it lasts ten minutes and authorizes exactly one write. A
+  `delegated-auto` scope's `maxCumulativeBuyAmount` is counted in the same
+  ledger, across invocations.
+- **The chain is read first.** An order's state comes from the registry: an
+  order that can no longer fill is `EXPIRED`, with `refund` saying its escrow
+  waits for a cancel the owner makes. The deployed contract shapes are checked
+  against the ones the verifier binds before anything is signed
+  (`doctor` → `contract-shapes`); `doctor --probeWrite` has the backend build a
+  1 wxUSD order and verifies it without signing (ADR-0015).
+- **Accounts.** A grant the backend index has not listed is found from the
+  chain's grant events, and a named account (`WATERX_PREDICT_ACCOUNT_ID`) is
+  verified from its on-chain object. Once an account is in use, `next` never
+  switches to another unless it is named.
+- **Mainnet is read-only until the operator opts in** (ADR-0017). With no
+  policy configured, mainnet reads and previews and places nothing; set
+  `WATERX_PREDICT_POLICY=interactive` to allow approved orders.
 
 ## The signer
 

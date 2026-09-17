@@ -8,7 +8,11 @@
  *
  * Nothing here opens a socket, spawns a process or reads a real file.
  */
+import type { IntentStore, MarketCatalog } from '@waterx/predict-agent-sdk';
+
+import type { WriteLedgers } from '../src/context.ts';
 import { run, type CliIo } from '../src/index.ts';
+import { createMemoryLedgers } from '../src/ledgers.ts';
 import type { PathFacts, PathStat, RunnerSocket } from '../src/runner-ipc.ts';
 
 export interface Invocation {
@@ -84,7 +88,24 @@ export interface InvokeOptions {
   readonly nowIso?: string;
   /** Command names that resolve on PATH. Absent means none do. */
   readonly executables?: readonly string[];
+  /**
+   * Answers any request `routes` does not name. Direct mode needs it: its order
+   * builds are real transaction bytes, made per request, not canned bodies.
+   */
+  readonly fallbackFetch?: (url: URL, init: RequestInit | undefined) => Promise<Response>;
+  /** The durable seams direct mode writes through, shared across invocations. */
+  readonly intentStore?: IntentStore;
+  readonly marketCatalog?: MarketCatalog;
+  /**
+   * The approval and spend ledgers. Defaults to one shared by every invocation
+   * in the test file, as the file ledger is shared by every invocation on a
+   * machine — so a preview's approval can be spent by a later execute.
+   */
+  readonly ledgers?: WriteLedgers | null;
 }
+
+/** The ledgers every invocation shares unless a test brings its own. */
+export const SHARED_LEDGERS: WriteLedgers = createMemoryLedgers();
 
 /** A fake Runner: a handshake, and one canned answer per command. */
 export interface RunnerScript {
@@ -228,6 +249,9 @@ export const ACCOUNT_ID = `0x${'c'.repeat(63)}2`;
 
 /** The minimum a command needs to be allowed to reach the network. */
 export const CONFIGURED_ENV: Record<string, string> = {
+  // The Agent Trading API mode. Direct mode (the default) has its own suite and
+  // its own environment, `DIRECT_ENV`, in `direct.test.ts`.
+  WATERX_PREDICT_MODE: 'agent-api',
   WATERX_PREDICT_BASE_URL: BASE_URL,
   WATERX_PREDICT_AGENT_WALLET: AGENT_WALLET,
   WATERX_PREDICT_SIGNER_COMMAND: '/opt/waterx/sign',
@@ -317,7 +341,9 @@ export async function invoke(
 
   const io: CliIo = {
     argv,
-    env: options.env ?? {},
+    // The existing suites describe the Agent Trading API mode; a test of direct
+    // mode (the product default) says so by setting the variable itself.
+    env: { WATERX_PREDICT_MODE: 'agent-api', ...options.env },
     streams: {
       write: (text) => stdout.push(text),
       writeError: (text) => stderr.push(text),
@@ -342,6 +368,9 @@ export async function invoke(
       });
       const key = `${method} ${parsed.pathname}`;
       const route = routes[key];
+      if (route === undefined && options.fallbackFetch !== undefined) {
+        return await options.fallbackFetch(parsed, init);
+      }
       if (route === undefined) {
         throw new Error(`the test stubbed no route for ${key}`);
       }
@@ -389,6 +418,9 @@ export async function invoke(
       files[path] = contents;
     },
     ...(options.uid === undefined ? {} : { uid: options.uid }),
+    ...(options.intentStore === undefined ? {} : { intentStore: () => options.intentStore! }),
+    ...(options.ledgers === null ? {} : { ledgers: () => options.ledgers ?? SHARED_LEDGERS }),
+    ...(options.marketCatalog === undefined ? {} : { marketCatalog: () => options.marketCatalog! }),
     now: () => new Date(options.nowIso ?? '2026-08-12T00:00:00.000Z'),
     newRequestId: () => 'req-fixed-0001',
     nodeVersion: 'v20.19.0',

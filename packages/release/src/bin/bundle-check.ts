@@ -21,9 +21,16 @@
  *      LOCAL stub API                      keystore; AWAITING_OWNER, with a link
  *   6. the stub now lists a granted     → READY, suggesting market search and
  *      account                            order preview
+ *   7. `next` in direct mode (the       → no login at all; AWAITING_OWNER from
+ *      default), against the stub's       the public delegation listing
+ *      public routes
+ *   8. the owner delegates on chain     → READY, with no mandate and nothing
+ *                                          sent to the Agent API
  *
- * and finally verifies the login signature the stub received with the Sui SDK
- * the install brought, against the address the keystore printed.
+ * Steps 5–6 pin `WATERX_PREDICT_MODE=agent-api`, the mode with a login to
+ * check; 7–8 walk the default. It finally verifies the login signature the stub
+ * received with the Sui SDK the install brought, against the address the
+ * keystore printed.
  *
  * WHAT IT DOES NOT PROVE: anything about a real server. The API here is a stub
  * on 127.0.0.1 that answers five routes; the owner's grant is a canned response.
@@ -35,7 +42,7 @@
  * machine's configuration nor a real credential can make it pass.
  */
 import { execFileSync, spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -48,7 +55,7 @@ interface NextData {
   stop?: boolean;
   handOver?: { to?: string; authorizationUrl?: string; steps?: { run?: string }[] };
   suggestions?: { command?: string }[];
-  facts?: { signer?: { kind?: string; agent?: string } };
+  facts?: { signer?: { kind?: string; agent?: string }; session?: string };
 }
 
 interface Envelope {
@@ -111,17 +118,92 @@ async function next(walk: Walk, project: string, env: Record<string, string>, la
 const stepRuns = (data: NextData): string[] => (data.handOver?.steps ?? []).map((step) => step.run ?? '');
 
 /** The local API: five routes, and a record of the one request worth checking. */
-function startStub(): Promise<{ server: Server; url: string; auth: { body?: Record<string, unknown> }; grant(): void }> {
+interface Stub {
+  server: Server;
+  url: string;
+  auth: { body?: Record<string, unknown> };
+  grant(): void;
+  /** The owner delegates to `agent` on chain: the index lists it and the account object holds it. */
+  grantOnChain(agent: string): void;
+  /** Requests to `/agent-api` since the last reset. Direct mode must make none. */
+  agentApiCalls: number;
+}
+
+function startStub(): Promise<Stub> {
   const auth: { body?: Record<string, unknown> } = {};
   let granted = false;
+  let delegated: string | undefined;
+  // The deployment and the chain are local too: a direct-mode walk must not
+  // reach mainnet's config or GraphQL to finish.
+  const deployment = JSON.parse(
+    readFileSync(join(findRepoRoot(), 'packages/sdk/tests/fixtures/waterx-config-mainnet.json'), 'utf8'),
+  ) as { packages: Record<string, { original_id: string }> };
+  const counters = { agentApiCalls: 0 };
   const json = (status: number, body: unknown) => ({ status, body: JSON.stringify(body) });
   const readBody = async (request: IncomingMessage): Promise<string> => {
     const chunks: Buffer[] = [];
     for await (const chunk of request) chunks.push(chunk as Buffer);
     return Buffer.concat(chunks).toString('utf8');
   };
+  // The public routes direct mode reads, in their `{ success, data }` envelope.
+  const ok = (data: unknown) => json(200, { success: true, data });
   const route = async (request: IncomingMessage) => {
-    const path = new URL(request.url ?? '/', 'http://stub').pathname;
+    const url = new URL(request.url ?? '/', 'http://stub');
+    const path = url.pathname;
+    if (path.startsWith('/agent-api/')) counters.agentApiCalls += 1;
+    const owner = `0x${'e'.repeat(63)}4`;
+    if (request.method === 'GET' && path === '/deployment.json') return json(200, deployment);
+    if (request.method === 'POST' && path === '/graphql') {
+      const query = JSON.parse(await readBody(request)) as { query: string; variables: Record<string, string> };
+      if (query.query.includes('events(')) {
+        return json(200, { data: { events: { nodes: [], pageInfo: { hasPreviousPage: false, startCursor: null } } } });
+      }
+      if (query.query.includes('object(') && query.variables['a'] === ACCOUNT_ID && delegated !== undefined) {
+        const packages = deployment.packages;
+        return json(200, {
+          data: {
+            object: {
+              asMoveObject: {
+                contents: {
+                  type: { repr: `${packages['waterx_account']!.original_id}::account::Account` },
+                  json: {
+                    owner_address: owner,
+                    delegates: [
+                      {
+                        delegate_address: delegated,
+                        protocol_permissions: {
+                          contents: [
+                            { key: `${packages['waterx_prediction']!.original_id.slice(2)}::account_data::WaterXPrediction`, value: 9 },
+                          ],
+                        },
+                        expires_at_ms: null,
+                      },
+                    ],
+                  },
+                },
+              },
+            },
+          },
+        });
+      }
+      return json(200, { data: { object: null, transaction: null } });
+    }
+    if (request.method === 'GET' && path === '/account/delegated') {
+      const delegate = url.searchParams.get('delegate') ?? '';
+      return ok({
+        accounts: delegated !== undefined
+          ? [{ accountId: ACCOUNT_ID, ownerAddress: owner, delegate: { delegateAddress: delegate, predictPermissions: 9, expiresAtMs: null } }]
+          : [],
+        unverifiedAccounts: [],
+        truncated: false,
+      });
+    }
+    if (request.method === 'GET' && path === '/account') {
+      return ok([{ accountId: ACCOUNT_ID, owner, accountIndex: 0, isMainAccount: true }]);
+    }
+    if (request.method === 'GET' && path === '/predict/bets/me') {
+      return ok({ bets: [], nextCursor: null });
+    }
     if (request.method === 'POST' && path === '/agent-api/v1/auth') {
       auth.body = JSON.parse(await readBody(request)) as Record<string, unknown>;
       return json(200, { token: 'stub-session-token-0123456789', expiresIn: 900 });
@@ -177,7 +259,23 @@ function startStub(): Promise<{ server: Server; url: string; auth: { body?: Reco
     server.listen(0, '127.0.0.1', () => {
       const address = server.address();
       const port = typeof address === 'object' && address !== null ? address.port : 0;
-      resolve({ server, url: `http://127.0.0.1:${String(port)}`, auth, grant: () => { granted = true; } });
+      resolve({
+        server,
+        url: `http://127.0.0.1:${String(port)}`,
+        auth,
+        grant: () => {
+          granted = true;
+        },
+        grantOnChain: (agent) => {
+          delegated = agent;
+        },
+        get agentApiCalls() {
+          return counters.agentApiCalls;
+        },
+        set agentApiCalls(value: number) {
+          counters.agentApiCalls = value;
+        },
+      });
     });
   });
 }
@@ -199,7 +297,7 @@ async function main(argv: readonly string[]): Promise<number> {
   const keystoreDir = mkdtempSync('/tmp/wxk-');
   const walk = new Walk();
   let agent: ChildProcess | undefined;
-  let stub: Awaited<ReturnType<typeof startStub>> | undefined;
+  let stub: Stub | undefined;
 
   try {
     const bundle = buildBundle(findRepoRoot(), join(staging, 'out'));
@@ -282,6 +380,7 @@ async function main(argv: readonly string[]): Promise<number> {
     stub = await startStub();
     const configured = {
       ...bare,
+      WATERX_PREDICT_MODE: 'agent-api',
       WATERX_PREDICT_BASE_URL: stub.url,
       WATERX_PREDICT_CONSOLE_URL: `${stub.url}/console`,
       WATERX_PREDICT_AGENT_WALLET: address,
@@ -305,6 +404,35 @@ async function main(argv: readonly string[]): Promise<number> {
       commands.includes('market.search') && commands.includes('order.preview'),
       `granted: suggested ${JSON.stringify(commands)}`,
     );
+
+    // 7. The default: direct mode. A private host names its network.
+    const direct = {
+      ...bare,
+      WATERX_PREDICT_NETWORK: 'mainnet',
+      WATERX_PREDICT_BASE_URL: stub.url,
+      WATERX_PREDICT_DEPLOYMENT_URL: `${stub.url}/deployment.json`,
+      WATERX_PREDICT_SUI_GRAPHQL_URL: `${stub.url}/graphql`,
+      WATERX_PREDICT_CONSOLE_URL: `${stub.url}/console`,
+      WATERX_PREDICT_AGENT_WALLET: address,
+      WATERX_PREDICT_SIGNER_COMMAND: '["waterx-predict-keystore","sign"]',
+    };
+    stub.agentApiCalls = 0;
+    const fifth = await next(walk, project, direct, 'direct');
+    walk.expect(
+      fifth.state === 'AWAITING_OWNER' && fifth.handOver?.to === 'ACCOUNT_OWNER',
+      `direct: answered ${String(fifth.state)}`,
+    );
+    walk.expect(
+      (fifth.handOver?.authorizationUrl ?? '').includes(`agent=${address}`),
+      'direct: the authorization link does not name the agent wallet',
+    );
+
+    // 8. The owner delegates on chain; that alone is the grant.
+    stub.grantOnChain(address);
+    const sixth = await next(walk, project, direct, 'direct granted');
+    walk.expect(sixth.state === 'READY', `direct granted: answered ${String(sixth.state)}`);
+    walk.expect(sixth.facts?.session === 'OPEN', `direct granted: session ${String(sixth.facts?.session)}`);
+    walk.expect(stub.agentApiCalls === 0, `direct: ${String(stub.agentApiCalls)} request(s) reached the Agent API`);
 
     // The login the stub received was signed by the key the keystore holds.
     const body = stub.auth.body;
@@ -335,7 +463,7 @@ async function main(argv: readonly string[]): Promise<number> {
       return 1;
     }
     process.stderr.write(
-      '\nInstalled with npm alone and scripts off; followed `next` from SETUP_INCOMPLETE through keystore init and agent to AWAITING_OWNER and READY against a local stub, with the login signed by the keystore and verified.\n',
+      '\nInstalled with npm alone and scripts off; followed `next` from SETUP_INCOMPLETE through keystore init and agent to AWAITING_OWNER and READY against a local stub — with the Agent API login signed by the keystore and verified, and again in direct mode with no login and no Agent API request.\n',
     );
     return 0;
   } finally {

@@ -89,7 +89,13 @@ export function resolveRequirements(
     },
   };
 
-  return AGENT_REQUIREMENTS.map((requirement) => {
+  // Direct mode has no server-side mandate (ADR-0013). The requirement does not
+  // exist there, so it is left out rather than reported as missing.
+  const applicable =
+    config.mode === 'direct'
+      ? AGENT_REQUIREMENTS.filter((requirement) => requirement.id !== 'riskProfile')
+      : AGENT_REQUIREMENTS;
+  return applicable.map((requirement) => {
     const known = local[requirement.id];
     if (known !== undefined) {
       return settled(requirement, known.supplied ? 'SATISFIED' : 'MISSING', known.evidence);

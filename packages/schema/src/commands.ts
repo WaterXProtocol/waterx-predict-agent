@@ -790,7 +790,7 @@ const runtimeDoctor: AgentCommandSpec = {
   cli: 'doctor',
   summary: 'Check configuration, signer, reachability and authentication.',
   description:
-    'Diagnostics, not a trade. The authentication check signs the login challenge as a PERSONAL MESSAGE, which moves no funds and is not a transaction signature; no other check signs anything. Checks that cannot run without configuration are reported as skipped rather than passed. Pass accountId to include the allowance check when no default account is configured.',
+    'Diagnostics, not a trade. The authentication check signs the login challenge as a PERSONAL MESSAGE, which moves no funds and is not a transaction signature; no other check signs anything. Checks that cannot run without configuration are reported as skipped rather than passed. Pass accountId to include the allowance check when no default account is configured. In direct mode, probeWrite has the backend BUILD a 1 wxUSD order on the account and verifies it exactly as an order is verified — digest, contract shapes, every argument — and then signs nothing and submits nothing; it opens a sponsor session that expires unused.',
   sideEffects: ['AUTHENTICATES'],
   implementation: {
     kind: 'runtime',
@@ -799,11 +799,20 @@ const runtimeDoctor: AgentCommandSpec = {
   input: {
     type: 'object',
     additionalProperties: false,
-    properties: { accountId: { $ref: '#/$defs/accountId' } },
+    properties: {
+      accountId: { $ref: '#/$defs/accountId' },
+      probeWrite: {
+        title: 'Probe the write path',
+        description:
+          'Direct mode only: have the backend build a 1 wxUSD order on the account and verify it, without signing or submitting anything.',
+        type: 'boolean',
+      },
+    },
   },
   examples: [
     { title: 'Check the runtime', input: {} },
     { title: 'Include the allowance check', input: { accountId: EXAMPLE_ACCOUNT_ID } },
+    { title: 'Verify the write path without trading', input: { accountId: EXAMPLE_ACCOUNT_ID, probeWrite: true } },
   ],
 };
 

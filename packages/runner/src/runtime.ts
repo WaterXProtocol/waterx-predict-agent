@@ -46,12 +46,22 @@
  * process that will not exit after Ctrl-C — which, for a Runner whose whole
  * disclosure is "this stops when you stop it", is the wrong impression to give.
  */
-import { PredictAgentClient, type QuoteStreamConnector } from '@waterx/predict-agent-sdk';
+import { homedir } from 'node:os';
+
+import {
+  FileMarketCatalog,
+  PredictAgentClient,
+  PredictDirectClient,
+  PredictAgentTransportError,
+  type MarketCatalog,
+  type PredictEffectiveLimitsResponseBody,
+  type QuoteStreamConnector,
+} from '@waterx/predict-agent-sdk';
 
 import type { Clock } from './clock.ts';
 import { systemClock } from './clock.ts';
 import type { RunnerDriverConfig } from './config.ts';
-import { QuoteStreamPriceObserver } from './prices.ts';
+import { PollingPriceObserver, QuoteStreamPriceObserver, type PriceTopicStatus } from './prices.ts';
 import type { SchedulerDriver } from './scheduler.ts';
 import {
   createExternalCommandAuthSigner,
@@ -81,6 +91,11 @@ export interface BuildRunnerDriverOptions {
    * global. `runnerd` leaves it unset.
    */
   readonly fetch?: typeof globalThis.fetch;
+  /**
+   * Direct mode: where market titles and slugs are remembered, shared with the
+   * CLI that resolved the markets. Defaults to the CLI's own file.
+   */
+  readonly marketCatalog?: MarketCatalog;
 }
 
 export interface RunnerDriverBundle {
@@ -90,7 +105,7 @@ export interface RunnerDriverBundle {
    * permanently quiet under `DEGRADED` otherwise looks exactly like a market
    * nobody is trading.
    */
-  readonly prices: QuoteStreamPriceObserver;
+  readonly prices: { topics(): readonly PriceTopicStatus[] };
   /** Releases the subscriptions and the socket. Idempotent. */
   close(): void;
 }
@@ -192,11 +207,90 @@ const watching = (
   },
 });
 
+/**
+ * Direct mode (ADR-0016): the public routes, the agent as the owner's on-chain
+ * delegate, no session. The client never signs — `createExecution` hands back
+ * verified bytes, the Runner's policy-bound signer signs them, and
+ * `submitExecution` passes the signature on.
+ */
+const buildDirectDriver = (config: RunnerDriverConfig, options: BuildRunnerDriverOptions, now: Clock): RunnerDriverBundle => {
+  const refuse = (): Promise<never> =>
+    Promise.reject(new Error('the direct-mode gateway signs nothing; the Runner signer signs under the job policy'));
+  const client = new PredictDirectClient({
+    baseUrl: config.baseUrl,
+    network: config.network!,
+    signer: {
+      toSuiAddress: () => config.agentWallet,
+      signTransaction: refuse,
+      signPersonalMessage: refuse,
+    },
+    catalog: options.marketCatalog ?? new FileMarketCatalog(defaultCatalogPath()),
+    ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+  });
+  const gateway: StrategyGateway = {
+    mandate: 'NONE',
+    getQuote: (request, signal) => client.getQuote(request, signal),
+    createExecution: (request, callOptions) => client.createExecution(request, callOptions),
+    submitExecution: (executionId, signature, signal) => client.submitExecution(executionId, signature, signal),
+    getExecution: (executionId, signal) => client.getExecution(executionId, signal),
+    getMarket: (marketId, signal) => client.getMarket(marketId, signal),
+    getPositions: (accountId, page, signal) => client.getPositions(accountId, page, signal),
+    // Only the delegation is real here; preflight is told (`mandate: 'NONE'`)
+    // not to read the rest as a missing mandate.
+    getEffectiveLimits: async (accountId, signal): Promise<PredictEffectiveLimitsResponseBody> => {
+      const delegation = await client.getDelegation(accountId, signal);
+      if (delegation.mayPlaceOrder === null) {
+        throw new PredictAgentTransportError('the on-chain delegation could not be read', undefined);
+      }
+      return {
+        accountId,
+        agentWallet: config.agentWallet,
+        limits: null,
+        allowance: null,
+        usage: { windowSeconds: 0, ordersInWindow: 0, notionalInWindow: '0', inFlightExecutions: 0 },
+        delegation,
+        blockers: [],
+        asOf: delegation.checkedAt,
+      };
+    },
+  };
+  const prices = new PollingPriceObserver({
+    source: client,
+    now,
+    ...(options.priceIdleMs === undefined ? {} : { idleMs: options.priceIdleMs }),
+    ...(options.onDiagnostic === undefined ? {} : { onDiagnostic: options.onDiagnostic }),
+  });
+  const signer = createExternalCommandSigner({
+    command: config.signerCommand,
+    agentWallet: config.agentWallet,
+    run: options.run,
+    timeoutMs: config.signerTimeoutMs,
+    now,
+    ...(options.onDiagnostic === undefined ? {} : { onDiagnostic: options.onDiagnostic }),
+  });
+  return {
+    driver: { gateway, signer, prices },
+    prices,
+    close: () => {
+      prices.close();
+      client.close();
+    },
+  };
+};
+
+/** The CLI's catalog: `WATERX_PREDICT_STATE_DIR`, else `~/.waterx-predict`. */
+const defaultCatalogPath = (): string => {
+  const named = process.env['WATERX_PREDICT_STATE_DIR'];
+  const dir = named !== undefined && named.trim() !== '' ? named : `${homedir()}/.waterx-predict`;
+  return `${dir}/direct-markets.json`;
+};
+
 export const buildRunnerDriver = (
   config: RunnerDriverConfig,
   options: BuildRunnerDriverOptions,
 ): RunnerDriverBundle => {
   const now = options.now ?? systemClock;
+  if (config.mode === 'direct') return buildDirectDriver(config, options, now);
 
   const client = new PredictAgentClient({
     baseUrl: config.baseUrl,

@@ -22,6 +22,7 @@ import type {
   PredictAgentAccountSummary,
   PredictAgentDeployment,
 } from './contract.ts';
+import { isPredictAgentApiError, PredictAgentTransportError } from './errors.ts';
 import { sleep } from './sleep.ts';
 
 /**
@@ -245,6 +246,8 @@ export interface AuthorizationWaitResult extends OnboardingState {
 
 const DEFAULT_AUTHORIZATION_TIMEOUT_MS = 30 * 60 * 1_000;
 const DEFAULT_AUTHORIZATION_POLL_MS = 3_000;
+/** The ceiling a rate-limited poll backs off to. */
+const MAX_AUTHORIZATION_BACKOFF_MS = 60_000;
 
 /**
  * Poll until the owner's grants land, then report what to trade on.
@@ -266,13 +269,38 @@ export async function waitForAuthorization(
   const describeOptions =
     options.accountId === undefined ? {} : { accountId: options.accountId };
   let previous: OnboardingStatus | undefined;
+  let last: OnboardingState | undefined;
+  let backoff = interval;
 
   for (;;) {
     options.signal?.throwIfAborted();
-    const state = describeOnboarding(
-      await client.listAuthorizedAccounts(options.signal),
-      describeOptions,
-    );
+    let listing: ListAgentAccountsResponseBody;
+    try {
+      listing = await client.listAuthorizedAccounts(options.signal);
+    } catch (error: unknown) {
+      // A poll exists to ride out the transient. A rate limit or a dropped
+      // read backs off and tries again; only a refusal that retrying cannot
+      // change ends the wait. Nothing read yet means nothing to time out with.
+      const transient =
+        error instanceof PredictAgentTransportError || (isPredictAgentApiError(error) && error.retryable);
+      if (!transient || options.signal?.aborted === true) throw error;
+      if (Date.now() >= deadline) {
+        if (last === undefined) throw error;
+        return { ...last, timedOut: true };
+      }
+      // The server's own `retryAfterMs`, when it names one, is the earliest a
+      // read can succeed; asking sooner only spends the quota again.
+      const asked = isPredictAgentApiError(error) ? error.details?.['retryAfterMs'] : undefined;
+      backoff = Math.max(
+        Math.min(backoff * 2, MAX_AUTHORIZATION_BACKOFF_MS),
+        typeof asked === 'number' ? asked : 0,
+      );
+      await sleep(Math.max(0, Math.min(backoff, deadline - Date.now())), options.signal);
+      continue;
+    }
+    backoff = interval;
+    const state = describeOnboarding(listing, describeOptions);
+    last = state;
     if (state.status !== previous) {
       previous = state.status;
       options.onChange?.(state);

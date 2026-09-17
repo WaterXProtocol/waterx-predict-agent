@@ -110,7 +110,7 @@ const STEPS: readonly AgentSkillStep[] = [
     id: 'PREVIEW_THEN_HAND_OVER',
     title: 'Preview the order, then hand the approval to a person',
     body: [
-      '`order preview` resolves, prices and policy-checks the order without placing it, and publishes the approval token for that exact intent. Show the user what it would do — market, side, size, worst price, the bound — and give them the `waterx-predict order execute --approve <token> --input …` line to run.',
+      '`order preview` resolves, prices and policy-checks the order without placing it, and publishes the approval token for that exact intent. Show the user what it would do — market, side, size, worst price, the bound — and give them the `waterx-predict order execute --approve <token> --approver <their name> --input …` line to run. The approval expires in ten minutes and authorizes that one order once.',
       'Through a tool adapter the write itself will be refused with `POLICY_DENIED`. That is the design, not a fault to route around; relay the refusal and the approval it expected. It is also specific to that surface — `POLICY_DENIED` is not an API error code, and a library caller whose delegation permits the order is not refused by it.',
     ],
   },

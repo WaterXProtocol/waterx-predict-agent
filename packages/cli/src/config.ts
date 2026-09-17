@@ -35,6 +35,17 @@ export interface ResolvedConfig {
    * envelope says so in `meta.warnings`.
    */
   readonly deploymentSource: 'URL' | 'NAMED' | 'DEFAULT' | 'NONE';
+  /**
+   * How this runtime reaches WaterX (ADR-0013). `direct` — the default — uses
+   * the public routes the web app uses and signs as a delegate; `agent-api`
+   * uses the Agent Trading API and its session.
+   */
+  readonly mode: 'direct' | 'agent-api';
+  /**
+   * The Sui network, for direct mode's deployment config and chain reads.
+   * Derived from the deployment; a custom host must name it.
+   */
+  readonly network: 'mainnet' | 'testnet' | undefined;
   readonly agentWallet: string | undefined;
   /**
    * The web console an OWNER opens to authorize this agent.
@@ -45,6 +56,10 @@ export interface ResolvedConfig {
    * that cannot grant anything.
    */
   readonly consoleUrl: string | undefined;
+  /** Direct mode: the deployment document, when not the network's own. */
+  readonly deploymentUrl: string | undefined;
+  /** Direct mode: the Sui GraphQL endpoint, when not the network's public one. */
+  readonly suiGraphqlUrl: string | undefined;
   readonly defaultAccountId: string | undefined;
   /** argv for the external signer process. Never a key. */
   readonly signerCommand: readonly string[] | undefined;
@@ -91,10 +106,14 @@ const KNOWN_FILE_KEYS = new Set([
   'environment',
   'agentWallet',
   'consoleUrl',
+  'deploymentUrl',
+  'suiGraphqlUrl',
   'defaultAccountId',
   'signerCommand',
   'policy',
   'timeoutMs',
+  'mode',
+  'network',
 ]);
 
 export const ENV_KEYS = {
@@ -103,11 +122,15 @@ export const ENV_KEYS = {
   environment: 'WATERX_PREDICT_ENVIRONMENT',
   agentWallet: 'WATERX_PREDICT_AGENT_WALLET',
   consoleUrl: 'WATERX_PREDICT_CONSOLE_URL',
+  deploymentUrl: 'WATERX_PREDICT_DEPLOYMENT_URL',
+  suiGraphqlUrl: 'WATERX_PREDICT_SUI_GRAPHQL_URL',
   accountId: 'WATERX_PREDICT_ACCOUNT_ID',
   signerCommand: 'WATERX_PREDICT_SIGNER_COMMAND',
   policy: 'WATERX_PREDICT_POLICY',
   timeoutMs: 'WATERX_PREDICT_TIMEOUT_MS',
   token: 'WATERX_PREDICT_TOKEN',
+  mode: 'WATERX_PREDICT_MODE',
+  network: 'WATERX_PREDICT_NETWORK',
 } as const;
 
 export type EnvReader = Readonly<Record<string, string | undefined>>;
@@ -127,10 +150,14 @@ export interface ConfigSources {
 }
 
 interface FileConfig {
+  mode?: unknown;
+  network?: unknown;
   baseUrl?: unknown;
   environment?: unknown;
   agentWallet?: unknown;
   consoleUrl?: unknown;
+  deploymentUrl?: unknown;
+  suiGraphqlUrl?: unknown;
   defaultAccountId?: unknown;
   signerCommand?: unknown;
   policy?: unknown;
@@ -361,12 +388,39 @@ export function loadConfig(sources: ConfigSources): ResolvedConfig {
   const warning = plaintextWarning(baseUrl);
   if (warning !== null) warnings.push(warning);
 
+  const modeText =
+    asString(env[ENV_KEYS.mode], ENV_KEYS.mode, 'the environment') ?? asString(config.mode, 'mode', where) ?? 'direct';
+  if (modeText !== 'direct' && modeText !== 'agent-api') {
+    throw new CliError('CONFIG_INVALID', `\`mode\` is \`direct\` or \`agent-api\`, not \`${modeText}\`.`, { key: 'mode' });
+  }
+  const networkText =
+    asString(env[ENV_KEYS.network], ENV_KEYS.network, 'the environment') ?? asString(config.network, 'network', where);
+  if (networkText !== undefined && networkText !== 'mainnet' && networkText !== 'testnet') {
+    throw new CliError('CONFIG_INVALID', `\`network\` is \`mainnet\` or \`testnet\`, not \`${networkText}\`.`, { key: 'network' });
+  }
+  const trimmedBase = baseUrl?.replace(/\/+$/u, '');
+  const network: 'mainnet' | 'testnet' | undefined =
+    networkText ??
+    (trimmedBase === PREDICT_AGENT_ENDPOINTS.production
+      ? 'mainnet'
+      : trimmedBase === PREDICT_AGENT_ENDPOINTS.testnet
+        ? 'testnet'
+        : undefined);
+
   const policy = parseExecutionPolicy({
     file: config.policy,
     env: env[ENV_KEYS.policy],
     flag: sources.policy,
     where,
+    // Real funds are opt-in (ADR-0017): on mainnet a runtime nobody configured
+    // reads and previews, and places nothing until the operator says it may.
+    defaultMode: network === 'mainnet' ? 'read-only' : 'interactive',
   });
+  if (policy.source === 'DEFAULT' && policy.mode === 'read-only') {
+    warnings.push(
+      'The execution policy defaults to read-only on mainnet: reads and previews work, and no order is placed. Set WATERX_PREDICT_POLICY=interactive (or `policy.mode` in the config file) to allow approved orders with real funds.',
+    );
+  }
   if (policy.mode === 'delegated-auto') {
     // Loud on purpose. An unattended write policy is the one setting an operator
     // must never discover by reading a trade confirmation.
@@ -376,12 +430,20 @@ export function loadConfig(sources: ConfigSources): ResolvedConfig {
   }
 
   return {
-    baseUrl: baseUrl?.replace(/\/+$/u, ''),
+    baseUrl: trimmedBase,
     environment,
     deploymentSource,
+    mode: modeText,
+    network,
     agentWallet:
       asString(env[ENV_KEYS.agentWallet], ENV_KEYS.agentWallet, 'the environment') ??
       asString(config.agentWallet, 'agentWallet', where),
+    deploymentUrl:
+      asString(env[ENV_KEYS.deploymentUrl], ENV_KEYS.deploymentUrl, 'the environment') ??
+      asString(config.deploymentUrl, 'deploymentUrl', where),
+    suiGraphqlUrl:
+      asString(env[ENV_KEYS.suiGraphqlUrl], ENV_KEYS.suiGraphqlUrl, 'the environment') ??
+      asString(config.suiGraphqlUrl, 'suiGraphqlUrl', where),
     consoleUrl: (
       asString(env[ENV_KEYS.consoleUrl], ENV_KEYS.consoleUrl, 'the environment') ??
       asString(config.consoleUrl, 'consoleUrl', where)
