@@ -3,8 +3,10 @@
  * Trading API.
  *
  * Global `fetch` for HTTP, `node:crypto` for idempotency keys, and a structural
- * signer interface a Sui `Keypair` already satisfies. Nothing here touches the
- * chain — the backend builds every PTB.
+ * signer interface a Sui `Keypair` already satisfies. The backend builds every
+ * PTB. Two ways to reach it: `PredictAgentClient` (the Agent Trading API) and
+ * `PredictDirectClient` (the public routes the web app uses, ADR-0013), which
+ * decodes and checks every transaction before it is signed.
  *
  * ONE runtime dependency, `socket.io-client`, used only by the two streams. It is
  * imported lazily, so a caller that never streams never loads it — see
@@ -166,6 +168,55 @@ export {
   type SignatureWithBytes,
 } from './signer.ts';
 export type { RetryOptions, TransportOptions } from './transport.ts';
+export {
+  type CatalogEntry,
+  decodeExecutionId as decodeDirectExecutionId,
+  type DirectExecutionOutcome,
+  DirectCapabilityUnavailable,
+  type DirectExecuteIntent,
+  type DirectExecuteManyResult,
+  type DirectExecuteOptions,
+  type DirectExecuteResult,
+  InMemoryMarketCatalog,
+  isDirectCapabilityUnavailable,
+  type MarketCatalog,
+  PredictDirectClient,
+  type PredictDirectClientOptions,
+} from './direct/client.ts';
+export {
+  type ChainReader,
+  type LandingStatus,
+  SUI_GRAPHQL_URLS,
+  SuiGraphqlChainReader,
+} from './direct/chain.ts';
+export {
+  type DeploymentSource,
+  type DirectDeployment,
+  DirectDeploymentError,
+  type DirectNetwork,
+  FetchedDeployment,
+  parseDeployment,
+  WATERX_CONFIG_URLS,
+} from './direct/deployment.ts';
+export { decodeMarketHandle, isMarketHandle, type MarketHandle } from './direct/handle.ts';
+export {
+  type DirectExpectation,
+  DirectVerificationError,
+  type PlaceExpectation,
+  type SellExpectation,
+  type VerifiedTransaction,
+  verifyDirectTransaction,
+} from './direct/verify.ts';
+export { decodeSuiTransaction, SuiTransactionDecodeError, type SuiTransaction } from './sui-tx.ts';
+export { suiTransactionDigest } from './sui-digest.ts';
+export { FileMarketCatalog } from './direct/catalog-file.ts';
+export {
+  BOUND_FUNCTIONS,
+  findAbiMismatches,
+  type AbiMismatch,
+  type FunctionReader,
+  type FunctionShape,
+} from './direct/abi.ts';
 export type * from './contract.ts';
 /**
  * The contract's runtime values, exported separately because `export type *`

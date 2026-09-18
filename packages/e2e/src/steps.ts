@@ -118,6 +118,12 @@ export const emptyLedger = (): Ledger => ({
   runnerInstanceId: null,
 });
 
+/**
+ * Who the audit log records as approving the harness's writes (ADR-0018). The
+ * harness approves only what the operator opted into, so it is named as itself.
+ */
+const E2E_APPROVER = 'e2e-harness';
+
 export interface StepContext {
   readonly facts: RuntimeFacts;
   readonly options: HarnessOptions;
@@ -394,7 +400,7 @@ export const STEPS: readonly Step[] = [
       'execute',
       ...(context.ledger.approvalToken === null
         ? []
-        : ['--approve', context.ledger.approvalToken]),
+        : ['--approve', context.ledger.approvalToken, '--approver', E2E_APPROVER]),
       '--input',
       JSON.stringify({
         accountId: context.facts.defaultAccountId,
@@ -667,7 +673,7 @@ export const STEPS: readonly Step[] = [
         'execute-many',
         ...(context.ledger.batchApprovalToken === null
           ? []
-          : ['--approve', context.ledger.batchApprovalToken]),
+          : ['--approve', context.ledger.batchApprovalToken, '--approver', E2E_APPROVER]),
         '--input',
         JSON.stringify({
           orders: [

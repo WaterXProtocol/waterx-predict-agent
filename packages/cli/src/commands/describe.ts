@@ -40,16 +40,26 @@ function describePolicy(config: ResolvedConfig): unknown {
       mode === 'interactive'
         ? {
             required: true,
-            how: 'Run `order preview`, then pass its `policy.approvalToken` back as `--approve <token>` on `order execute`.',
+            how: 'Run `order preview`, then pass its `policy.approvalToken` back as `--approve <token> --approver <name>` on `order execute`. The name is recorded with the approval in the write audit log (ADR-0018).',
             binds:
               'One exact intent: account, market, outcome, side, size unit and amount, position, slippage, absolute bound, strategy and client order id.',
+            lifetime:
+              'Issued by the preview and recorded on this machine (ADR-0014). It expires after ten minutes and is spent by the one write it authorizes; a second order needs a second preview.',
             isNotAuthentication:
-              'The token is a digest of the intent, computable by anything that can run a preview. It proves a caller carried a value from a preview into an execution — not that a person saw the order. A human-in-the-loop host puts the human at that seam.',
+              'Anything that can run a preview can obtain one. It proves a caller carried a value from a preview into an execution — not that a person saw the order. A human-in-the-loop host puts the human at that seam.',
           }
         : { required: false },
-    ...(scope !== undefined ? { scope } : {}),
+    ...(scope !== undefined
+      ? {
+          scope,
+          cumulativeBudget:
+            'maxCumulativeBuyAmount counts every BUY this exact scope authorized, across invocations, until notAfter (ADR-0014). A reservation is returned only when nothing was signed.',
+        }
+      : {}),
     cannotWiden:
-      'Local policy only ever narrows. The owner’s risk profile is enforced server-side (ADR-0003) and this runtime cannot read or raise it; a delegated-auto BUY is additionally checked against the server’s own effectiveBuyCapacity.',
+      config.mode === 'direct'
+        ? 'Local policy only ever narrows. In direct mode (ADR-0013) there is no server-side risk profile: this policy is the only spending ceiling, and the owner’s on-chain delegation is the only authority. Every transaction the backend builds is decoded and checked against the intent before it is signed.'
+        : 'Local policy only ever narrows. The owner’s risk profile is enforced server-side (ADR-0003) and this runtime cannot read or raise it; a delegated-auto BUY is additionally checked against the server’s own effectiveBuyCapacity.',
     narrowWith: '--policy read-only (the flag may narrow the configured policy, never widen it)',
   };
 }
@@ -79,6 +89,13 @@ export function describeRuntime(config: ResolvedConfig, nodeVersion: string): un
       /** `DEFAULT`: nothing was named and this is production — mainnet (ADR-0011). */
       deploymentSource: config.deploymentSource,
       configured: config.baseUrl !== undefined,
+      /**
+       * `direct` (default): the public WaterX routes, as the owner's on-chain
+       * delegate, with no agent API and no JWT (ADR-0013). `agent-api`: the
+       * authenticated Predict Agent API.
+       */
+      mode: config.mode,
+      network: config.network ?? null,
     },
     identity: {
       agentWallet: config.agentWallet ?? null,
@@ -113,7 +130,20 @@ export function describeRuntime(config: ResolvedConfig, nodeVersion: string): un
       marketHistory: false,
       cursorPagination: true,
       sizeAwareQuotes: false,
-      agentReadableRiskLimits: true,
+      agentReadableRiskLimits: config.mode !== 'direct',
+      ...(config.mode === 'direct'
+        ? {
+            unavailableInDirectMode: [
+              'account.allowance',
+              'account.risk-limits',
+              'account.executions',
+              'account.fills',
+              'account.performance',
+            ],
+            directModeNote:
+              'No public route serves these. They answer CAPABILITY_UNAVAILABLE rather than an empty list. Read an order back with `order get`; positions come from the owner’s public feed and cover the main account only.',
+          }
+        : {}),
     },
     limitations: [
       'An order cannot be cancelled. These are market orders: once submitted, a keeper fills or rejects them, and the API exposes nothing that recalls one.',

@@ -5,6 +5,8 @@
 - Plan IDs: D-01, D-02, D-03, D-04, D-06, D-07, D-08, D-09, D-10, D-11, D-12,
   D-14, D-15, D-16, D-17, D-19, D-20, D-21
 - Affects: `waterx-predict-agent-sdk`, `bucket-backend-mono`
+- Amended by: [ADR-0013](0013-direct-mode.md) — the CLI reaches WaterX through
+  the public routes by default; the Agent API is opt-in for it
 
 ## Context
 

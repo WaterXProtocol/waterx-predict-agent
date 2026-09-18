@@ -29,6 +29,7 @@ export const GLOBAL_FLAGS = new Set([
   // carries assent to an order that was already previewed, and `--policy` can
   // only narrow what the configuration already allows.
   'approve',
+  'approver',
   'policy',
   // Opens the authorization link. Dispatcher-owned rather than an input field
   // on purpose: a model host reaches this CLI through `--input <json>` and the

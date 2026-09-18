@@ -19,6 +19,7 @@ import {
   type OnboardingActor,
   type OnboardingState,
   type ResolvedRequirement,
+  type PredictDirectClient,
 } from '@waterx/predict-agent-sdk';
 
 import type { ResolvedConfig } from '../config.ts';
@@ -28,6 +29,7 @@ import type { EnvelopeError } from '../envelope.ts';
 import { isCliError, isCliErrorCode } from '../errors.ts';
 import { exitCodeForCliError, exitCodeForServerError, type ExitCode } from '../exit-codes.ts';
 import { describeSigner } from '../signer.ts';
+import { isDirectClient, toEnvelopeError } from '../client.ts';
 
 export type CheckStatus = 'PASS' | 'FAIL' | 'SKIP';
 
@@ -62,7 +64,11 @@ export interface DoctorReport {
 const failureCode = (error: unknown): string => {
   if (isCliError(error)) return error.code;
   if (isPredictAgentApiError(error)) return error.code;
-  return 'TRANSPORT_FAILED';
+  // Direct mode's own refusals (a transaction that is not the order, a
+  // deployment that could not be read) carry their CLI code; only what the
+  // shared mapping cannot name is a transport failure.
+  const mapped = toEnvelopeError(error, 0).code;
+  return mapped === 'INTERNAL' ? 'TRANSPORT_FAILED' : mapped;
 };
 
 const failureMessage = (error: unknown): string =>
@@ -116,8 +122,132 @@ function writePlaneCheck(config: ResolvedConfig, now: Date): DoctorCheck {
     status: 'SKIP',
     summary: 'Not attempted: the policy is interactive, so a write needs an explicit approval.',
     detail:
-      'Run `order preview` and pass its `policy.approvalToken` back as `--approve <token>`. The only proof that the write path works is a real order, and `doctor` will not place one.',
+      'Run `order preview` and pass its `policy.approvalToken` back as `--approve <token> --approver <name>`. The only proof that the write path works is a real order, and `doctor` will not place one.',
   };
+}
+
+/**
+ * Whether the deployed packages still have the call shapes the verifier binds
+ * (ADR-0015). A FAIL here means every order would be refused before signing —
+ * found by a read, not by a refused trade.
+ */
+async function contractShapes(client: PredictDirectClient, context: CommandContext): Promise<DoctorCheck> {
+  try {
+    const mismatches = await client.checkAbi(context.signal());
+    if (mismatches === undefined) {
+      return { id: 'contract-shapes', status: 'SKIP', summary: 'This chain reader cannot read contract functions.' };
+    }
+    if (mismatches.length === 0) {
+      return {
+        id: 'contract-shapes',
+        status: 'PASS',
+        summary: 'Every contract call the verifier binds has the shape this build was written against.',
+      };
+    }
+    return {
+      id: 'contract-shapes',
+      status: 'FAIL',
+      code: 'TRANSACTION_REFUSED',
+      summary: 'The deployed packages changed shape; this build refuses every order until it is updated.',
+      detail: mismatches.map((mismatch) => mismatch.function).join(', '),
+    };
+  } catch (error: unknown) {
+    return {
+      id: 'contract-shapes',
+      status: 'FAIL',
+      code: 'DEPLOYMENT_UNAVAILABLE',
+      summary: 'Could not read the contract shapes from the chain, so no order would be signed right now.',
+      detail: failureMessage(error),
+    };
+  }
+}
+
+/**
+ * Build an order and verify it, and sign nothing (ADR-0015).
+ *
+ * The one check that exercises the path an order takes up to its signature:
+ * the delegation the backend pre-checks, its build, and every check this build
+ * runs on the bytes. A refusal here is the refusal an order would meet.
+ */
+async function writeProbe(context: CommandContext, accountId: string): Promise<DoctorCheck> {
+  const client = await context.client();
+  if (!isDirectClient(client)) {
+    return { id: 'write-probe', status: 'SKIP', summary: 'Only direct mode builds orders locally to probe.' };
+  }
+  try {
+    const listing = await client.getMarkets({ limit: 20, tradeable: true }, context.signal());
+    const market = listing.markets.find(
+      (candidate) => candidate.tradeable && candidate.outcomes.some((o) => o.outcomeId === 'YES' && o.indicativeAsk !== null),
+    );
+    if (market === undefined) {
+      return { id: 'write-probe', status: 'SKIP', summary: 'No tradeable market to build a probe order on.' };
+    }
+    const probe = await client.probeOrder(
+      { accountId, marketId: market.marketId, outcomeId: 'YES', side: 'BUY', size: { buyAmount: '1' }, maxSlippageBps: 100 },
+      context.signal(),
+    );
+    return {
+      id: 'write-probe',
+      status: 'PASS',
+      summary: `The backend built a 1 wxUSD BUY on “${market.title}” and every check an order runs passed. Nothing was signed or submitted.`,
+      detail: `call ${probe.call}, enforced worst price ${probe.enforcedWorstPrice}, ${String(probe.consolidationLegs)} deposit leg(s) folded in`,
+    };
+  } catch (error: unknown) {
+    return {
+      id: 'write-probe',
+      status: 'FAIL',
+      code: failureCode(error),
+      summary:
+        'Building or verifying a probe order failed, so an order would fail the same way. Nothing was signed. A backend refusal that the transaction would fail on chain usually means the account cannot cover 1 wxUSD.',
+      detail: failureMessage(error),
+    };
+  }
+}
+
+/**
+ * The close side of the probe: a close of at most one share of a position the
+ * account holds, built and verified, never signed. Skipped when nothing is held
+ * — there is nothing a SELL could name.
+ */
+async function sellProbe(context: CommandContext, accountId: string): Promise<DoctorCheck> {
+  const client = await context.client();
+  if (!isDirectClient(client)) {
+    return { id: 'write-probe-sell', status: 'SKIP', summary: 'Only direct mode builds orders locally to probe.' };
+  }
+  try {
+    const { positions } = await client.getPositions(accountId, { limit: 20 }, context.signal());
+    const position = positions.find((row) => row.shares !== null && Number(row.shares) > 0);
+    if (position === undefined || position.shares === null) {
+      return { id: 'write-probe-sell', status: 'SKIP', summary: 'The account holds no position a close could name.' };
+    }
+    const shares = Number(position.shares) > 1 ? '1' : position.shares;
+    const probe = await client.probeOrder(
+      {
+        accountId,
+        marketId: position.marketId,
+        outcomeId: position.outcomeId,
+        side: 'SELL',
+        size: { sellShares: shares },
+        positionId: position.positionId,
+        maxSlippageBps: 500,
+      },
+      context.signal(),
+    );
+    return {
+      id: 'write-probe-sell',
+      status: 'PASS',
+      summary: `The backend built a close of ${shares} share(s) of position ${position.positionId} and every check a sell runs passed, the floor included. Nothing was signed or submitted.`,
+      detail: `call ${probe.call}, enforced worst price ${probe.enforcedWorstPrice}`,
+    };
+  } catch (error: unknown) {
+    return {
+      id: 'write-probe-sell',
+      status: 'FAIL',
+      code: failureCode(error),
+      summary: 'Building or verifying a probe close failed, so a sell would fail the same way. Nothing was signed.',
+      detail: failureMessage(error),
+    };
+  }
 }
 
 export async function runDoctor(context: CommandContext): Promise<DoctorReport> {
@@ -191,35 +321,69 @@ export async function runDoctor(context: CommandContext): Promise<DoctorReport> 
       // checks. With a supplied token nothing is sent, and both are reported as
       // not-attempted rather than as passing on no evidence — the catalog read
       // below is what actually exercises that token.
-      await context.client();
+      const opened = await context.client();
       sessionOpen = true;
-      const probed = config.token === undefined;
-      checks.push(
-        probed
-          ? { id: 'api-reachable', status: 'PASS', summary: `Reached ${config.baseUrl ?? ''}.` }
-          : {
-              id: 'api-reachable',
-              status: 'SKIP',
-              summary: 'Not attempted here: a token was supplied, so no handshake was sent.',
-              detail: 'The catalog check below is the first request, and it proves reachability.',
-            },
-      );
-      checks.push(
-        probed
-          ? {
-              id: 'authentication',
-              status: 'PASS',
-              summary: 'Signed the login challenge as a personal message and received a session.',
-              detail: 'The token is held in memory for this invocation only and is never printed.',
-            }
-          : {
-              id: 'authentication',
-              status: 'SKIP',
-              summary: 'Not attempted: a token was supplied, so no challenge was signed.',
-              detail:
-                'Whether that token is still valid is decided by the catalog check below, not here.',
-            },
-      );
+      if (isDirectClient(opened)) {
+        // Direct mode (ADR-0013) opens no session and signs no challenge: each
+        // order carries its own signature. Saying "authenticated" here would be a
+        // check that passed on something that never happened.
+        checks.push({
+          id: 'api-reachable',
+          status: 'SKIP',
+          summary: 'Not probed separately in direct mode: the catalog read below is the first request.',
+        });
+        checks.push({
+          id: 'authentication',
+          status: 'SKIP',
+          summary: 'Not applicable: direct mode opens no session. The signer is exercised by each order.',
+        });
+        try {
+          const deployment = await opened.loadDeployment(context.signal());
+          checks.push({
+            id: 'deployment-config',
+            status: 'PASS',
+            summary: `Read the ${deployment.network} deployment config every transaction is checked against.`,
+            detail: `waterx_prediction ${deployment.callable.prediction}`,
+          });
+          checks.push(await contractShapes(opened, context));
+        } catch (error: unknown) {
+          checks.push({
+            id: 'deployment-config',
+            status: 'FAIL',
+            code: 'DEPLOYMENT_UNAVAILABLE',
+            summary: 'Could not read the deployment config, so no order could be verified or placed.',
+            detail: failureMessage(error),
+          });
+        }
+      } else {
+        const probed = config.token === undefined;
+        checks.push(
+          probed
+            ? { id: 'api-reachable', status: 'PASS', summary: `Reached ${config.baseUrl ?? ''}.` }
+            : {
+                id: 'api-reachable',
+                status: 'SKIP',
+                summary: 'Not attempted here: a token was supplied, so no handshake was sent.',
+                detail: 'The catalog check below is the first request, and it proves reachability.',
+              },
+        );
+        checks.push(
+          probed
+            ? {
+                id: 'authentication',
+                status: 'PASS',
+                summary: 'Signed the login challenge as a personal message and received a session.',
+                detail: 'The token is held in memory for this invocation only and is never printed.',
+              }
+            : {
+                id: 'authentication',
+                status: 'SKIP',
+                summary: 'Not attempted: a token was supplied, so no challenge was signed.',
+                detail:
+                  'Whether that token is still valid is decided by the catalog check below, not here.',
+              },
+        );
+      }
     } catch (error: unknown) {
       const code = failureCode(error);
       const reached = isPredictAgentApiError(error);
@@ -332,11 +496,24 @@ export async function runDoctor(context: CommandContext): Promise<DoctorReport> 
         onboarding === undefined
           ? 'Not attempted: the authorized-account listing was not read.'
           : `No account resolved (${onboarding.status}).`,
-      detail: onboarding?.nextStep.action ?? unknownBecause ?? '',
+      detail:
+        context.config.mode === 'direct' && onboarding?.status === 'NOT_ONBOARDED'
+          ? 'Open the authorization link; the owner picks an account and signs the delegation. In direct mode that signature is the whole grant. Nothing here can do it for them.'
+          : (onboarding?.nextStep.action ?? unknownBecause ?? ''),
     });
   }
 
-  if (!canCallApi || accountId === undefined) {
+  if (config.mode === 'direct' && canCallApi && accountId !== undefined) {
+    checks.push({
+      id: 'account-allowance',
+      status: 'SKIP',
+      summary: 'Not applicable: direct mode has no server-side allowance. Spending is bounded by the execution policy here, and authority by the on-chain delegation.',
+    });
+    if (context.input.probeWrite === true) {
+      checks.push(await writeProbe(context, accountId));
+      checks.push(await sellProbe(context, accountId));
+    }
+  } else if (!canCallApi || accountId === undefined) {
     checks.push({
       id: 'account-allowance',
       status: 'SKIP',

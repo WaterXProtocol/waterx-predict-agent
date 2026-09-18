@@ -15,7 +15,10 @@
  */
 import { describe, expect, it } from 'vitest';
 
+import type { WriteLedgers } from '../src/context.ts';
 import { EXIT_CODES } from '../src/index.ts';
+import { createMemoryLedgers } from '../src/ledgers.ts';
+import { parseExecutionPolicy, scopeDigest, type DelegatedScope } from '../src/policy.ts';
 import {
   ACCOUNT_ID,
   AGENT_WALLET,
@@ -167,6 +170,11 @@ const SCOPE = {
   notAfter: '2026-08-13T00:00:00.000Z',
 };
 
+/** The scope as the CLI parses it — the shape its cumulative count is keyed by. */
+const parsedScope = (): DelegatedScope =>
+  parseExecutionPolicy({ file: { mode: 'delegated-auto', scope: SCOPE }, env: undefined, flag: undefined, where: 'test' })
+    .scope!;
+
 /** Requests the signer received, split by what was being signed. */
 const signatures = (runs: readonly { input: string }[]) =>
   runs.map((run) => (JSON.parse(run.input) as { type: string }).type);
@@ -251,7 +259,7 @@ describe('order preview', () => {
     expect(data.priceProtection.estimate.effective).toBe('0.505');
     expect(data.priceProtection.estimate.binding).toBe('SLIPPAGE');
     expect(data.policy.decision).toBe('APPROVAL_REQUIRED');
-    expect(data.policy.approveWith).toBe(`--approve ${data.policy.approvalToken}`);
+    expect(data.policy.approveWith).toBe(`--approve ${data.policy.approvalToken} --approver <name>`);
     // The mandate is a server read now, not a refusal — and it is reported as the
     // server stated it, with the policy version that produced it.
     expect(data.capacity.effectiveBuyCapacity).toBe('480.00');
@@ -266,15 +274,19 @@ describe('order preview', () => {
     expect(signatures(result.signerRuns)).toEqual(['PERSONAL_MESSAGE']);
   });
 
-  it('binds its token to the exact intent, so it cannot be carried onto another', async () => {
+  it('issues a token that names the exact intent, and a fresh one on every preview', async () => {
     const fifty = await previewToken();
     const hundred = await previewToken({ size: { buyAmount: '100' } });
     const looser = await previewToken({ maxSlippageBps: 300 });
+    const again = await previewToken();
 
-    expect(fifty).not.toBe(hundred);
-    expect(fifty).not.toBe(looser);
-    // Reproducible: the same intent previews to the same token every time.
-    expect(await previewToken()).toBe(fifty);
+    const intentOf = (token: string) => token.split('_')[1];
+    expect(intentOf(fifty)).not.toBe(intentOf(hundred));
+    expect(intentOf(fifty)).not.toBe(intentOf(looser));
+    // The same intent names the same digest — and still gets its own approval,
+    // because an approval authorizes one write, not an intent forever.
+    expect(intentOf(again)).toBe(intentOf(fifty));
+    expect(again).not.toBe(fifty);
   });
 
   it('still answers under a read-only policy, and reports the refusal instead of throwing', async () => {
@@ -316,9 +328,10 @@ describe('order execute under the interactive policy', () => {
 
     expect(result.envelope.error?.code).toBe('POLICY_DENIED');
     expect(result.exit).toBe(EXIT_CODES.POLICY);
-    // The message carries the token that WOULD authorize it, so the caller has
-    // somewhere to go without a second round trip.
-    expect(result.envelope.error?.message).toMatch(/--approve apv1_/u);
+    // The message says where an approval comes from. It carries none: an
+    // approval is issued by a preview, never computed by whoever is refused.
+    expect(result.envelope.error?.message).toMatch(/order preview/u);
+    expect(result.envelope.error?.message).not.toMatch(/apv2_/u);
     expect(result.fetches.some((call) => call.url.endsWith('/executions'))).toBe(false);
     expect(signatures(result.signerRuns)).not.toContain('TRANSACTION');
   });
@@ -326,13 +339,103 @@ describe('order execute under the interactive policy', () => {
   it('refuses an approval that names a different order', async () => {
     const otherIntent = await previewToken({ size: { buyAmount: '100' } });
     const result = await invoke(
-      ['order', 'execute', '--approve', otherIntent, '--input', input({ referenceQuoteId: QUOTE_ID })],
+      ['order', 'execute', '--approve', otherIntent, '--approver', 'tester', '--input', input({ referenceQuoteId: QUOTE_ID })],
       { env: CONFIGURED_ENV, routes: WRITE_ROUTES },
     );
 
     expect(result.envelope.error?.code).toBe('POLICY_DENIED');
-    expect(result.envelope.error?.message).toMatch(/does not match this intent/u);
+    expect(result.envelope.error?.message).toMatch(/does not name this intent/u);
     expect(result.fetches.some((call) => call.url.endsWith('/executions'))).toBe(false);
+  });
+
+  it('refuses an approval that does not say who gave it, before anything is read', async () => {
+    const token = await previewToken();
+    const unnamed = await invoke(['order', 'execute', '--approve', token, '--input', input({ referenceQuoteId: QUOTE_ID })], {
+      env: CONFIGURED_ENV,
+      routes: WRITE_ROUTES,
+    });
+    expect(unnamed.envelope.error).toMatchObject({ code: 'USAGE' });
+    expect(unnamed.envelope.error?.message).toMatch(/--approver/u);
+    expect(unnamed.fetches).toHaveLength(0);
+
+    const orphan = await invoke(['order', 'execute', '--approver', 'tester', '--input', input({ referenceQuoteId: QUOTE_ID })], {
+      env: CONFIGURED_ENV,
+      routes: WRITE_ROUTES,
+    });
+    expect(orphan.envelope.error).toMatchObject({ code: 'USAGE' });
+
+    const odd = await invoke(
+      ['order', 'execute', '--approve', token, '--approver', 'x\u0000y', '--input', input({ referenceQuoteId: QUOTE_ID })],
+      { env: CONFIGURED_ENV, routes: WRITE_ROUTES },
+    );
+    expect(odd.envelope.error).toMatchObject({ code: 'USAGE' });
+  });
+
+  it('writes who approved what, and what it came to, to the audit log', async () => {
+    const ledgers = createMemoryLedgers();
+    const preview = await invoke(['order', 'preview', '--input', input()], { env: CONFIGURED_ENV, routes: READ_ROUTES, ledgers });
+    const token = (preview.envelope.data as { policy: { approvalToken: string } }).policy.approvalToken;
+    const placed = await invoke(
+      ['order', 'execute', '--approve', token, '--approver', 'Alice Ops', '--input', input({ referenceQuoteId: QUOTE_ID })],
+      { env: CONFIGURED_ENV, routes: WRITE_ROUTES, ledgers },
+    );
+    expect(placed.envelope.ok).toBe(true);
+    expect(ledgers.audit.events.map((e) => e.event)).toEqual(['approval.issued', 'approval.spent', 'write.result']);
+    expect(ledgers.audit.events[1]).toMatchObject({ token, approvedBy: 'Alice Ops', command: 'order.execute' });
+    expect(ledgers.audit.events[2]).toMatchObject({
+      approvedBy: 'Alice Ops',
+      executions: [{ executionId: EXECUTION_ID, status: 'SUBMITTED' }],
+    });
+    // Nothing secret is written: no signature, no bytes, no session.
+    const text = JSON.stringify(ledgers.audit.events);
+    expect(text).not.toMatch(/c3BvbnNvcmVkLWJ5dGVz|fake-personal-message-signature|session-token/u);
+  });
+
+  it('spends an approval on one write: the same token cannot place a second order', async () => {
+    const token = await previewToken();
+    const execute = () =>
+      invoke(['order', 'execute', '--approve', token, '--approver', 'tester', '--input', input({ referenceQuoteId: QUOTE_ID })], {
+        env: CONFIGURED_ENV,
+        routes: WRITE_ROUTES,
+      });
+    const first = await execute();
+    expect(first.envelope.ok).toBe(true);
+
+    const second = await execute();
+    expect(second.envelope.error?.code).toBe('POLICY_DENIED');
+    expect(second.envelope.error?.details).toMatchObject({ reason: 'APPROVAL_SPENT' });
+    expect(second.fetches.some((call) => call.url.endsWith('/executions'))).toBe(false);
+    expect(signatures(second.signerRuns)).not.toContain('TRANSACTION');
+  });
+
+  it('refuses an approval once it has expired, and one this machine never issued', async () => {
+    const token = await previewToken();
+    const late = await invoke(['order', 'execute', '--approve', token, '--approver', 'tester', '--input', input({ referenceQuoteId: QUOTE_ID })], {
+      env: CONFIGURED_ENV,
+      routes: WRITE_ROUTES,
+      nowIso: '2026-08-12T00:10:00.000Z',
+    });
+    expect(late.envelope.error?.details).toMatchObject({ reason: 'APPROVAL_EXPIRED' });
+
+    // Right shape, right intent, never issued: a token is not something to compute.
+    const forged = `${token.slice(0, 22)}${'0'.repeat(16)}`;
+    const unknown = await invoke(['order', 'execute', '--approve', forged, '--approver', 'tester', '--input', input({ referenceQuoteId: QUOTE_ID })], {
+      env: CONFIGURED_ENV,
+      routes: WRITE_ROUTES,
+    });
+    expect(unknown.envelope.error?.details).toMatchObject({ reason: 'UNKNOWN_APPROVAL' });
+    expect(signatures(unknown.signerRuns)).not.toContain('TRANSACTION');
+  });
+
+  it('issues no approval where there is nowhere to keep it, and says so', async () => {
+    const result = await invoke(['order', 'preview', '--input', input()], {
+      env: CONFIGURED_ENV,
+      routes: READ_ROUTES,
+      ledgers: null,
+    });
+    const policy = (result.envelope.data as { policy: Record<string, unknown> }).policy;
+    expect(policy).toMatchObject({ decision: 'APPROVAL_UNAVAILABLE', reason: 'NOT_CONFIGURED' });
+    expect(policy).not.toHaveProperty('approvalToken');
   });
 
   it('places the order the approval names, and signs exactly one transaction', async () => {
@@ -343,6 +446,8 @@ describe('order execute under the interactive policy', () => {
         'execute',
         '--approve',
         token,
+        '--approver',
+        'tester',
         '--input',
         input({ referenceQuoteId: QUOTE_ID, idempotencyKey: 'idem-1' }),
       ],
@@ -392,6 +497,8 @@ describe('order execute under the interactive policy', () => {
         'read-only',
         '--approve',
         token,
+        '--approver',
+        'tester',
         '--input',
         input({ referenceQuoteId: QUOTE_ID }),
       ],
@@ -438,9 +545,50 @@ describe('--policy may only narrow', () => {
 });
 
 describe('order execute under a delegated-auto scope', () => {
+  // A fresh ledger per invocation unless a test shares one on purpose: the
+  // cumulative count is exactly the state that must not leak between tests.
   const delegated = (extra: Record<string, unknown> = {}, scope: unknown = SCOPE) => ({
     ...withPolicy({ mode: 'delegated-auto', scope }),
     routes: { ...WRITE_ROUTES, ...(extra.routes as object | undefined) },
+    ledgers: (extra.ledgers as WriteLedgers | undefined) ?? createMemoryLedgers(),
+  });
+
+  it('counts the cumulative ceiling across invocations, not per process', async () => {
+    const ledgers = createMemoryLedgers();
+    // Ceiling 150: two 50s and a 50 fit; the fourth does not, in a new process.
+    for (let order = 0; order < 3; order += 1) {
+      const placed = await invoke(['order', 'execute', '--input', input({ referenceQuoteId: QUOTE_ID })], delegated({ ledgers }));
+      expect(placed.envelope.ok, `order ${String(order)}`).toBe(true);
+    }
+    const fourth = await invoke(['order', 'execute', '--input', input({ referenceQuoteId: QUOTE_ID })], delegated({ ledgers }));
+    expect(fourth.envelope.error?.code).toBe('POLICY_DENIED');
+    expect(fourth.envelope.error?.details).toMatchObject({ alreadyAuthorized: '150', requested: '50' });
+    expect(signatures(fourth.signerRuns)).not.toContain('TRANSACTION');
+
+    // A preview reports the same refusal before anything is tried.
+    const preview = await invoke(['order', 'preview', '--input', input()], {
+      ...delegated({ ledgers }),
+      routes: READ_ROUTES,
+    });
+    expect((preview.envelope.data as { policy: { decision: string } }).policy.decision).toBe('DENIED');
+  });
+
+  it('gives the budget back when nothing was signed', async () => {
+    const ledgers = createMemoryLedgers();
+    const refused = await invoke(['order', 'execute', '--input', input({ referenceQuoteId: QUOTE_ID })], delegated({
+      ledgers,
+      routes: {
+        [`POST ${EXECUTIONS_PATH}`]: {
+          status: 409,
+          body: { error: { code: 'QUOTE_EXPIRED', message: 'gone', retryable: true } },
+        },
+      },
+    }));
+    expect(refused.envelope.ok).toBe(false);
+    expect(signatures(refused.signerRuns)).not.toContain('TRANSACTION');
+    expect(ledgers.spend.total(scopeDigest(parsedScope()))).toBe('0');
+    expect(ledgers.audit.events.map((e) => e.event)).toEqual(['spend.reserved', 'write.result', 'spend.released']);
+    expect(ledgers.audit.events[1]).toMatchObject({ executions: [], refused: 'QUOTE_EXPIRED' });
   });
 
   it('places an in-scope order with no per-order approval', async () => {
@@ -567,6 +715,8 @@ describe('a wait that runs out is ambiguous, not failed', () => {
         'execute',
         '--approve',
         token,
+        '--approver',
+        'tester',
         '--input',
         input({ referenceQuoteId: QUOTE_ID, waitFor: 'TERMINAL', timeoutMs: 1_000 }),
       ],
@@ -614,6 +764,8 @@ describe('a wait that runs out is ambiguous, not failed', () => {
         'execute',
         '--approve',
         token,
+        '--approver',
+        'tester',
         '--input',
         input({ referenceQuoteId: QUOTE_ID, waitFor: 'TERMINAL', timeoutMs: 1_000 }),
       ],
@@ -781,7 +933,7 @@ describe('previewing a batch', () => {
     expect(data.atomic).toBe(false);
     expect(data.legs).toHaveLength(2);
     expect(data.policy.decision).toBe('APPROVAL_REQUIRED');
-    expect(data.policy.approveWith).toBe(`--approve ${data.policy.approvalToken}`);
+    expect(data.policy.approveWith).toBe(`--approve ${data.policy.approvalToken} --approver <name>`);
     // Nothing was placed to earn that token.
     expect(preview.fetches.some((call) => call.url.endsWith('/executions'))).toBe(false);
 
@@ -793,6 +945,8 @@ describe('previewing a batch', () => {
         JSON.stringify(batch()),
         '--approve',
         data.policy.approvalToken,
+        '--approver',
+        'tester',
       ],
       {
         ...withPolicy({ mode: 'interactive' }),
@@ -975,7 +1129,7 @@ describe('the write plane keeps its secrets', () => {
   it('prints no session token and no signature on either stream', async () => {
     const token = await previewToken();
     const result = await invoke(
-      ['order', 'execute', '--approve', token, '--input', input({ referenceQuoteId: QUOTE_ID })],
+      ['order', 'execute', '--approve', token, '--approver', 'tester', '--input', input({ referenceQuoteId: QUOTE_ID })],
       { env: CONFIGURED_ENV, routes: WRITE_ROUTES },
     );
 
@@ -1006,7 +1160,7 @@ describe('order execute: the idempotency key survives the failure', () => {
     // re-run mints a different one, which is how one intent becomes two orders.
     const token = await previewToken();
     const result = await invoke(
-      ['order', 'execute', '--approve', token, '--input', input({ referenceQuoteId: QUOTE_ID })],
+      ['order', 'execute', '--approve', token, '--approver', 'tester', '--input', input({ referenceQuoteId: QUOTE_ID })],
       { env: CONFIGURED_ENV, routes: WRITE_ROUTES },
     );
 
@@ -1030,6 +1184,8 @@ describe('order execute: the idempotency key survives the failure', () => {
         'execute',
         '--approve',
         token,
+        '--approver',
+        'tester',
         '--input',
         input({ referenceQuoteId: QUOTE_ID, idempotencyKey: 'idem-mine' }),
       ],
@@ -1046,7 +1202,7 @@ describe('order execute: the idempotency key survives the failure', () => {
     // operator the same handle.
     const token = await previewToken();
     const result = await invoke(
-      ['order', 'execute', '--approve', token, '--input', input({ referenceQuoteId: QUOTE_ID })],
+      ['order', 'execute', '--approve', token, '--approver', 'tester', '--input', input({ referenceQuoteId: QUOTE_ID })],
       {
         env: CONFIGURED_ENV,
         routes: { ...READ_ROUTES, [`POST ${EXECUTIONS_PATH}`]: { throws: new Error('socket hang up') } },

@@ -1,6 +1,7 @@
 # ADR-0011 — The CLI uses mainnet when no deployment is named
 
 - Status: Accepted
+- Amended by: [ADR-0017](0017-mainnet-writes-are-opt-in.md) — with no policy configured, mainnet is read-only
 - Date: 2026-09-16
 - Decides: what `waterx-predict` connects to when neither
   `WATERX_PREDICT_ENVIRONMENT` nor `WATERX_PREDICT_BASE_URL` (nor their config

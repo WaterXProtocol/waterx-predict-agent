@@ -80,6 +80,8 @@ export const RUNNER_ENV_KEYS = {
   tickIntervalMs: 'WATERX_RUNNER_TICK_INTERVAL_MS',
   maxJobs: 'WATERX_RUNNER_MAX_JOBS',
   policyMode: 'WATERX_RUNNER_POLICY_MODE',
+  mode: 'WATERX_RUNNER_MODE',
+  network: 'WATERX_RUNNER_NETWORK',
 } as const;
 
 /** The settings the JSON file may carry. Anything else is a refusal, not a warning. */
@@ -91,6 +93,8 @@ export const RUNNER_FILE_KEYS: readonly string[] = [
   'tickIntervalMs',
   'maxJobs',
   'policy',
+  'mode',
+  'network',
 ];
 
 /** The keys inside `policy`. Closed for the same reason the top level is. */
@@ -174,9 +178,28 @@ export type RunnerDriverGap =
   /** No agent wallet, so nothing can be authenticated or refused as another agent's. */
   | 'agent-wallet'
   /** No keystore command, so nothing can authorize an order. */
-  | 'signer-command';
+  | 'signer-command'
+  /** Direct mode on a host this build cannot name, with no network stated. */
+  | 'network';
+
+/**
+ * How the Runner reaches WaterX (ADR-0016). `direct`, the default like the
+ * CLI's (ADR-0013): public routes, the agent as the owner's on-chain delegate,
+ * no session. `agent-api`: the authenticated Predict Agent API.
+ */
+export type RunnerMode = 'direct' | 'agent-api';
+export type RunnerNetwork = 'mainnet' | 'testnet';
+
+/** The hosts whose network is known without being told. */
+const KNOWN_NETWORKS: Readonly<Record<string, RunnerNetwork>> = {
+  'https://api.waterx.app': 'mainnet',
+  'https://api-testnet.waterx.app': 'testnet',
+};
 
 export interface RunnerDriverConfig {
+  readonly mode: RunnerMode;
+  /** Present in direct mode, which checks transactions against this network's deployment. */
+  readonly network: RunnerNetwork | undefined;
   readonly baseUrl: string;
   readonly agentWallet: string;
   /** argv, run without a shell. Nothing in it is ever interpreted. */
@@ -206,6 +229,8 @@ export interface RunnerConfig {
    * this took effect", which sends them to fix the wrong line.
    */
   readonly resolved: {
+    readonly mode: RunnerMode;
+    readonly network: RunnerNetwork | undefined;
     readonly baseUrl: string | undefined;
     readonly agentWallet: string | undefined;
     readonly signerCommand: readonly string[] | undefined;
@@ -272,6 +297,8 @@ const configPathFor = (sources: RunnerConfigSources, runtimeDir: string): string
 };
 
 interface FileConfig {
+  mode?: unknown;
+  network?: unknown;
   baseUrl?: unknown;
   agentWallet?: unknown;
   signerCommand?: unknown;
@@ -553,12 +580,32 @@ export const resolveRunnerConfig = (sources: RunnerConfigSources): RunnerConfig 
   const warning = plaintextWarning(baseUrl);
   if (warning !== null) warnings.push(warning);
 
+  const modeNamed =
+    asString(env[RUNNER_ENV_KEYS.mode], RUNNER_ENV_KEYS.mode, 'the environment') ?? asString(config.mode, 'mode', where);
+  if (modeNamed !== undefined && modeNamed !== 'direct' && modeNamed !== 'agent-api') {
+    throw new RunnerConfigError('CONFIG_INVALID', `mode \`${modeNamed}\` is not one this build knows; known modes: direct, agent-api`, {
+      key: 'mode',
+    });
+  }
+  const mode: RunnerMode = (modeNamed as RunnerMode | undefined) ?? 'direct';
+  const networkNamed =
+    asString(env[RUNNER_ENV_KEYS.network], RUNNER_ENV_KEYS.network, 'the environment') ??
+    asString(config.network, 'network', where);
+  if (networkNamed !== undefined && networkNamed !== 'mainnet' && networkNamed !== 'testnet') {
+    throw new RunnerConfigError('CONFIG_INVALID', `network \`${networkNamed}\` is not one this build knows; known networks: mainnet, testnet`, {
+      key: 'network',
+    });
+  }
+  const network =
+    (networkNamed as RunnerNetwork | undefined) ?? (baseUrl === undefined ? undefined : KNOWN_NETWORKS[baseUrl]);
+
   // Ordered, and computed from the same values the driver is built from, so a
   // diagnostic and a `driverGaps` reply can never disagree about what is missing.
   const gaps: RunnerDriverGap[] = [];
   if (baseUrl === undefined) gaps.push('base-url');
   if (agentWallet === undefined) gaps.push('agent-wallet');
   if (signerCommand === undefined) gaps.push('signer-command');
+  if (mode === 'direct' && baseUrl !== undefined && network === undefined) gaps.push('network');
 
   return {
     runtimeDir,
@@ -566,11 +613,11 @@ export const resolveRunnerConfig = (sources: RunnerConfigSources): RunnerConfig 
     configPath: path,
     // All three or none. There is no half-driver: see this file's header.
     driver:
-      baseUrl === undefined || agentWallet === undefined || signerCommand === undefined
+      gaps.length > 0 || baseUrl === undefined || agentWallet === undefined || signerCommand === undefined
         ? undefined
-        : { baseUrl, agentWallet, signerCommand, signerTimeoutMs },
+        : { mode, network, baseUrl, agentWallet, signerCommand, signerTimeoutMs },
     gaps,
-    resolved: { baseUrl, agentWallet, signerCommand },
+    resolved: { mode, network, baseUrl, agentWallet, signerCommand },
     tickIntervalMs:
       asInteger(
         env[RUNNER_ENV_KEYS.tickIntervalMs],
@@ -600,6 +647,8 @@ export interface RunnerConfigDiagnostics {
   readonly runtimeDir: string;
   readonly storePath: string;
   readonly configPath: string | null;
+  readonly mode: RunnerMode;
+  readonly network: RunnerNetwork | null;
   readonly baseUrl: string | null;
   readonly agentWallet: string | null;
   /** The executable's base name, never the argv. `null` when none is configured. */
@@ -624,6 +673,8 @@ export const describeRunnerConfig = (config: RunnerConfig): RunnerConfigDiagnost
     runtimeDir: config.runtimeDir,
     storePath: config.storePath,
     configPath: config.configPath,
+    mode: config.resolved.mode,
+    network: config.resolved.network ?? null,
     baseUrl: config.resolved.baseUrl ?? null,
     agentWallet: config.resolved.agentWallet ?? null,
     signerExecutable: executable === undefined ? null : (executable.split('/').pop() ?? executable),

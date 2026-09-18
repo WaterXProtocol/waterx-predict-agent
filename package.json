@@ -1,10 +1,13 @@
 {
   "name": "waterx-predict-agent-runtime",
+  "version": "0.1.0",
   "private": true,
   "description": "Workspace root for the WaterX Predict agent runtime: SDK, command schema, CLI, Runner and optional adapters.",
   "license": "MIT",
   "type": "module",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "packageManager": "pnpm@10.34.5",
   "scripts": {
     "typecheck": "tsc -p tsconfig.json && pnpm -r typecheck",
@@ -20,11 +23,29 @@
     "consumer:registry": "pnpm --filter @waterx/predict-agent-release run registry --",
     "consumer:check": "pnpm --filter @waterx/predict-agent-release run check --",
     "cli:bundle": "pnpm --filter @waterx/predict-agent-release run bundle --",
-    "cli:bundle:check": "pnpm --filter @waterx/predict-agent-release run bundle:check --"
+    "cli:bundle:check": "pnpm --filter @waterx/predict-agent-release run bundle:check --",
+    "install:assemble": "node --experimental-strip-types --no-warnings packages/release/src/bin/assemble-install.ts",
+    "install:check": "pnpm --filter @waterx/predict-agent-release run install:check --",
+    "prepare": "node scripts/prepare-git-install.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.12.0",
     "typescript": "^5.9.3",
     "vitest": "^4.1.6"
+  },
+  "bin": {
+    "waterx-predict": "bin/waterx-predict.mjs",
+    "waterx-predict-keystore": "bin/waterx-predict-keystore.mjs"
+  },
+  "files": [
+    "bin",
+    "dist/install",
+    "README.md",
+    "agent-instructions",
+    "docs/adr/README.md"
+  ],
+  "dependencies": {
+    "@mysten/sui": "^2.26.2",
+    "socket.io-client": "^4.8.3"
   }
 }

@@ -23,6 +23,13 @@ wins and the plan should be corrected.
 | [0010](0010-operator-cli-bundle.md) | The CLI ships as one self-contained release tarball | Accepted | amends D-28 |
 | [0011](0011-cli-defaults-to-mainnet.md) | The CLI uses mainnet when no deployment is named | Accepted | — |
 | [0012](0012-operator-keystore-signer.md) | The keystore signer ships beside the CLI | Accepted | amends D-28, ADR-0010 |
+| [0013](0013-direct-mode.md) | Direct mode: the CLI trades the way the perp agent does | Accepted | amends ADR-0001 §1–4 for the CLI |
+| [0014](0014-durable-write-controls.md) | Write controls that outlive one invocation, and settlement from the chain | Accepted | amends ADR-0001 §6.6, ADR-0013 |
+| [0015](0015-direct-mode-verification-and-discovery.md) | Direct mode: pinned contract shapes, chain-side discovery, adoption, write probe | Accepted | amends ADR-0013 |
+| [0016](0016-runner-direct-mode.md) | The Runner trades in direct mode too | Accepted | amends ADR-0013, ADR-0001 §8 |
+| [0017](0017-mainnet-writes-are-opt-in.md) | On mainnet, placing orders is something the operator turns on | Accepted | amends ADR-0011 |
+| [0018](0018-approval-audit.md) | An approval names who gave it, and every write decision is kept | Accepted | amends ADR-0014, ADR-0015 |
+| [0019](0019-git-install.md) | The repository installs with npm, as one sentence | Accepted | amends ADR-0010, ADR-0012 |
 
 ## Status vocabulary
 

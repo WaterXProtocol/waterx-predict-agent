@@ -32,6 +32,8 @@ import { T0 } from './harness.ts';
 const SIGNATURE = 'dGhlLXNpZ25hdHVyZQ==';
 const WALLET = '0xagent';
 const CONFIG: RunnerDriverConfig = {
+  mode: 'agent-api',
+  network: undefined,
   baseUrl: 'https://predict.test/api',
   agentWallet: WALLET,
   signerCommand: ['/opt/keystore/bin/waterx-sign', '--slot', '3'],

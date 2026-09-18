@@ -15,9 +15,11 @@
   },
   "main": "dist/src/index.js",
   "types": "dist/src/index.d.ts",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
-    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json && node -e \"for (const f of ['preflight','kit','registry','check','bundle','bundle-check']) require('node:fs').chmodSync('dist/src/bin/'+f+'.js',0o755)\"",
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json && node -e \"for (const f of ['preflight','kit','registry','check','bundle','bundle-check','assemble-install','install-check']) require('node:fs').chmodSync('dist/src/bin/'+f+'.js',0o755)\"",
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -28,7 +30,8 @@
     "registry": "pnpm run build && node dist/src/bin/registry.js",
     "check": "pnpm run build && node dist/src/bin/check.js",
     "bundle": "pnpm run build && node dist/src/bin/bundle.js",
-    "bundle:check": "pnpm run build && node dist/src/bin/bundle-check.js"
+    "bundle:check": "pnpm run build && node dist/src/bin/bundle-check.js",
+    "install:check": "pnpm run build && node dist/src/bin/install-check.js"
   },
   "devDependencies": {
     "@types/node": "^24.12.0",

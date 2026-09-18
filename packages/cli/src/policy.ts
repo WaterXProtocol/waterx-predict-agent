@@ -13,16 +13,18 @@
  *                  scope does not name is refused, and an unscoped delegated-auto
  *                  is a configuration error rather than a blank cheque.
  *
- * WHAT AN APPROVAL TOKEN IS, AND IS NOT. It is a digest of the normalized intent:
- * change the account, market, side, size, position or price protection and the
- * token stops matching. That makes an approval BINDING on one specific trade, so
- * an approval obtained for a small buy cannot be replayed onto a large one. It is
- * NOT authentication and it does not prove a human saw anything: any caller that
- * can run `order preview` can compute it. Its job is to make a write impossible
- * as the incidental side effect of a single call — the host has to carry a value
- * from the preview to the execution, and a human-in-the-loop host puts the human
- * at exactly that seam. This is stated plainly wherever the token is reported,
- * because a policy that is believed to be stronger than it is, is worse than none.
+ * WHAT AN APPROVAL TOKEN IS, AND IS NOT. `order preview` ISSUES one (ADR-0014):
+ * it names the digest of the normalized intent — change the account, market,
+ * side, size, position or price protection and it stops matching — and carries
+ * a random part nothing can derive. It expires, and the one write it names
+ * SPENDS it, so an approval obtained for a small buy cannot be replayed onto a
+ * large one, nor onto the same order twice. It is NOT authentication and it
+ * does not prove a human saw anything: any caller that can run `order preview`
+ * can obtain one. Its job is to make a write impossible as the incidental side
+ * effect of a single call — the host has to carry a value from the preview to
+ * the execution, and a human-in-the-loop host puts the human at exactly that
+ * seam. This is stated plainly wherever the token is reported, because a policy
+ * that is believed to be stronger than it is, is worse than none.
  *
  * WHAT LOCAL POLICY CANNOT DO. It can only ever narrow. The backend's risk profile
  * is owner-authenticated (ADR-0003) and an agent credential cannot read it on this
@@ -36,6 +38,7 @@ import { createHash } from 'node:crypto';
 
 import { CliError } from './errors.ts';
 import { formatDecimal, parseDecimal } from './decimal.ts';
+import { approvalIntent } from './ledgers.ts';
 
 export type PolicyMode = 'read-only' | 'interactive' | 'delegated-auto';
 
@@ -64,7 +67,10 @@ export interface DelegatedScope {
   readonly sides: readonly ('BUY' | 'SELL')[];
   /** Per-order wxUSD budget ceiling. Required when BUY is allowed. */
   readonly maxBuyAmount: string | undefined;
-  /** Cumulative wxUSD budget ceiling across one invocation. Required with BUY. */
+  /**
+   * Cumulative wxUSD budget ceiling. Counted across invocations, for as long as
+   * this exact scope is configured (ADR-0014). Required with BUY.
+   */
   readonly maxCumulativeBuyAmount: string | undefined;
   /** Per-order share ceiling. Required when SELL is allowed. */
   readonly maxSellShares: string | undefined;
@@ -183,19 +189,30 @@ function canonical(leg: NormalizedLeg): string {
 const digest = (material: string): string =>
   `apv1_${createHash('sha256').update(material).digest('hex').slice(0, 16)}`;
 
-/** The token that approves exactly this one order and no other. */
-export const approvalToken = (leg: NormalizedLeg): string => digest(canonical(leg));
+/** The digest of exactly this one order. An approval names it; it approves nothing by itself. */
+export const intentDigest = (leg: NormalizedLeg): string => digest(canonical(leg));
 
 /**
- * The token that approves one whole batch.
+ * The digest of one whole batch.
  *
- * Derived from the per-leg tokens, in order, so it is reproducible: a caller can
- * preview each leg, collect its token, and arrive at the same batch token this
- * runtime computed. Reordering the legs changes it, because a batch that stops on
- * the first failure is a different intent when its order changes.
+ * Derived from the per-leg digests, in order. Reordering the legs changes it,
+ * because a batch that stops on the first failure is a different intent when
+ * its order changes.
  */
-export const batchApprovalToken = (legs: readonly NormalizedLeg[]): string =>
-  digest(legs.map(approvalToken).join('|'));
+export const batchIntentDigest = (legs: readonly NormalizedLeg[]): string =>
+  digest(legs.map(intentDigest).join('|'));
+
+/** The digest of what `legs` asks for: one order, or a batch. */
+export const writeIntentDigest = (legs: readonly NormalizedLeg[]): string =>
+  legs.length === 1 && legs[0] !== undefined ? intentDigest(legs[0]) : batchIntentDigest(legs);
+
+/**
+ * What a delegated-auto scope's cumulative budget is counted under: the scope
+ * itself. Any change to it is a new scope with a new count — the operator who
+ * can edit the scope could raise the ceiling anyway, so this hides nothing.
+ */
+export const scopeDigest = (scope: DelegatedScope): string =>
+  `scope1_${createHash('sha256').update(JSON.stringify(scope)).digest('hex').slice(0, 24)}`;
 
 /* ── Authorization ─────────────────────────────────────────────────────────── */
 
@@ -214,8 +231,15 @@ export interface WriteAuthorization {
   /** How many transaction signatures this authorization permits. */
   readonly permits: number;
   readonly basis: 'INTERACTIVE_APPROVAL' | 'DELEGATED_AUTO';
-  /** The token that was required, echoed so a result can record what was approved. */
-  readonly token: string;
+  /** The digest of what was authorized. */
+  readonly intent: string;
+  /**
+   * The approval that authorized it, under interactive. It still has to be
+   * SPENT in the approval ledger before any permit is granted.
+   */
+  readonly approval: string | undefined;
+  /** The BUY budget this write adds to the scope's cumulative count, under delegated-auto. */
+  readonly buyAmount: string | undefined;
   /** Scope constraints that were checked, for the record. Empty under interactive. */
   readonly checks: readonly string[];
 }
@@ -236,12 +260,12 @@ const denyApproval = (request: WriteRequest, expected: string): CliError =>
   new CliError(
     'POLICY_DENIED',
     request.approval === undefined
-      ? `\`${request.command}\` is a write and the policy is interactive, so it needs one explicit approval. Nothing was sent. Re-run with \`--approve ${expected}\`.`
-      : `The approval \`${request.approval}\` does not match this intent. An approval names one exact order — account, market, side, size, position and price protection — so it cannot be carried onto a different one. Nothing was sent.`,
+      ? `\`${request.command}\` is a write and the policy is interactive, so it needs one explicit approval. Nothing was sent. Run \`order preview\` with this exact input and re-run with the \`--approve <token> --approver <name>\` it issues.`
+      : `The approval \`${request.approval}\` does not name this intent. An approval names one exact order — account, market, side, size, position and price protection — so it cannot be carried onto a different one. Nothing was sent.`,
     {
       policy: 'interactive',
       command: request.command,
-      expectedApproval: expected,
+      intentDigest: expected,
       ...(request.approval !== undefined ? { suppliedApproval: request.approval } : {}),
       intent: request.legs,
       note: 'An approval token binds one intent. It is not authentication: it proves the caller carried a value from a preview to an execution, not that a person saw it.',
@@ -268,17 +292,18 @@ export function authorizeWrite(
 ): WriteAuthorization {
   if (policy.mode === 'read-only') throw denyReadOnly(request.command);
 
-  const expected =
-    request.legs.length === 1 && request.legs[0] !== undefined
-      ? approvalToken(request.legs[0])
-      : batchApprovalToken(request.legs);
+  const expected = writeIntentDigest(request.legs);
 
   if (policy.mode === 'interactive') {
-    if (request.approval !== expected) throw denyApproval(request, expected);
+    if (request.approval === undefined || approvalIntent(request.approval) !== expected) {
+      throw denyApproval(request, expected);
+    }
     return {
       permits: request.legs.length,
       basis: 'INTERACTIVE_APPROVAL',
-      token: expected,
+      intent: expected,
+      approval: request.approval,
+      buyAmount: undefined,
       checks: [],
     };
   }
@@ -410,7 +435,14 @@ export function authorizeWrite(
     }
   }
 
-  return { permits: request.legs.length, basis: 'DELEGATED_AUTO', token: expected, checks };
+  return {
+    permits: request.legs.length,
+    basis: 'DELEGATED_AUTO',
+    intent: expected,
+    approval: undefined,
+    buyAmount: cumulativeBuy > 0n ? formatDecimal(cumulativeBuy) : undefined,
+    checks,
+  };
 }
 
 /* ── Configuration ─────────────────────────────────────────────────────────── */
@@ -424,6 +456,8 @@ export interface PolicySources {
   readonly flag: string | undefined;
   /** The config file path, for error messages. */
   readonly where: string;
+  /** The mode when nothing names one: read-only on mainnet (ADR-0017). */
+  readonly defaultMode?: PolicyMode;
 }
 
 const SCOPE_KEYS = new Set([
@@ -553,7 +587,7 @@ function parseDelegatedScope(raw: unknown, where: string): DelegatedScope {
  * delegated-auto machine is a genuinely useful safety belt.
  */
 export function parseExecutionPolicy(sources: PolicySources): ExecutionPolicy {
-  let mode: PolicyMode = DEFAULT_POLICY.mode;
+  let mode: PolicyMode = sources.defaultMode ?? DEFAULT_POLICY.mode;
   let source: ExecutionPolicy['source'] = 'DEFAULT';
   let rawScope: unknown;
 

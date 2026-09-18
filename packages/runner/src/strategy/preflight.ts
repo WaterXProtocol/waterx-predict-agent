@@ -169,7 +169,7 @@ export const preflight = async (input: PreflightInput): Promise<PreflightVerdict
   if (local !== undefined) return local;
 
   const limits = await input.gateway.getEffectiveLimits(job.accountId, input.signal);
-  const authorization = classifyAuthorization(limits, permissionsNeeded(job.intent));
+  const authorization = classifyAuthorization(limits, permissionsNeeded(job.intent), input.gateway.mandate ?? 'SERVER');
   if (authorization !== undefined) return authorization;
 
   const markets = await checkMarkets(input);
@@ -252,6 +252,7 @@ export const permissionsNeeded = (legs: readonly JobLegIntent[]): PermissionsNee
 export const classifyAuthorization = (
   limits: PredictEffectiveLimitsResponseBody,
   needs: PermissionsNeeded,
+  mandate: 'SERVER' | 'NONE' = 'SERVER',
 ): PreflightVerdict | undefined => {
   const { delegation } = limits;
   const required = [
@@ -275,6 +276,10 @@ export const classifyAuthorization = (
       detail: { unreadable, checkedAt: delegation.checkedAt },
     };
   }
+
+  // Direct mode has no server-side mandate to wait for (ADR-0016): the
+  // delegation above is the whole grant, and the job's policy is the ceiling.
+  if (mandate === 'NONE') return undefined;
 
   if (limits.limits === null) {
     // Absence is denial for the purpose of writing, and recoverable for the

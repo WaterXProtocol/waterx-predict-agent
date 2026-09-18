@@ -8,6 +8,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ListAgentAccountsResponseBody, PredictAgentAccountSummary } from '../src/contract.ts';
+import { PredictAgentApiError } from '../src/errors.ts';
 import {
   buildAuthorizationUrl,
   describeOnboarding,
@@ -172,6 +173,46 @@ describe('waitForAuthorization', () => {
     const result = await waitForAuthorization({ listAuthorizedAccounts }, { pollIntervalMs: 1 });
 
     expect(result.status).toBe('READY');
+  });
+
+  it('backs off through a rate limit instead of ending the wait', async () => {
+    const limited = new PredictAgentApiError(429, { code: 'RATE_LIMITED', message: 'slow down', retryable: true });
+    const listAuthorizedAccounts = vi
+      .fn()
+      .mockResolvedValueOnce(listing())
+      .mockRejectedValueOnce(limited)
+      .mockResolvedValueOnce(listing(account()));
+
+    const result = await waitForAuthorization({ listAuthorizedAccounts }, { pollIntervalMs: 1 });
+
+    expect(result.status).toBe('READY');
+    expect(listAuthorizedAccounts).toHaveBeenCalledTimes(3);
+  });
+
+  it('waits at least as long as a rate limit asks before reading again', async () => {
+    const limited = new PredictAgentApiError(429, {
+      code: 'RATE_LIMITED',
+      message: 'slow down',
+      retryable: true,
+      details: { retryAfterMs: 60 },
+    });
+    const times: number[] = [];
+    const listAuthorizedAccounts = vi.fn().mockImplementation(() => {
+      times.push(Date.now());
+      return times.length === 1 ? Promise.reject(limited) : Promise.resolve(listing(account()));
+    });
+
+    await waitForAuthorization({ listAuthorizedAccounts }, { pollIntervalMs: 1 });
+
+    expect(times[1]! - times[0]!).toBeGreaterThanOrEqual(55);
+  });
+
+  it('ends the wait on a refusal that retrying cannot change', async () => {
+    const refused = new PredictAgentApiError(401, { code: 'INVALID_REQUEST', message: 'no', retryable: false });
+    const listAuthorizedAccounts = vi.fn().mockRejectedValue(refused);
+
+    await expect(waitForAuthorization({ listAuthorizedAccounts }, { pollIntervalMs: 1 })).rejects.toBe(refused);
+    expect(listAuthorizedAccounts).toHaveBeenCalledTimes(1);
   });
 
   it('stops on AMBIGUOUS, which more waiting cannot resolve', async () => {

@@ -45,7 +45,9 @@ const READ_ONLY_ENV = { ...CONFIGURED_ENV, WATERX_PREDICT_POLICY: 'read-only' };
 const authorization = (permits: number): WriteAuthorization => ({
   permits,
   basis: 'INTERACTIVE_APPROVAL',
-  token: 'apv1_test',
+  intent: 'apv1_0000000000000000',
+  approval: 'apv2_0000000000000000_0000000000000000',
+  buyAmount: undefined,
   checks: [],
 });
 

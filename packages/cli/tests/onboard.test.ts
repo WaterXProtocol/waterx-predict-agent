@@ -31,6 +31,16 @@ const account = (overrides: Record<string, unknown> = {}) => ({
 });
 
 describe('onboard', () => {
+  it('waits for as long as it was asked to, not for the request deadline', async () => {
+    const result = await invoke(['onboard', '--wait', '--timeoutMs', '1600'], {
+      env: { ...CONSOLE_ENV, WATERX_PREDICT_TIMEOUT_MS: '1000' },
+      routes: { 'POST /agent-api/v1/auth': AUTH_OK, [ACCOUNTS_PATH]: { status: 200, body: { accounts: [] } } },
+    });
+
+    expect(result.envelope.error).toBeUndefined();
+    expect(result.envelope.data).toMatchObject({ status: 'NOT_ONBOARDED', timedOut: true });
+  });
+
   it('prints a link that names the agent and authorizes nothing', async () => {
     const result = await invoke(['onboard', '--label', 'momentum-bot'], {
       env: CONSOLE_ENV,

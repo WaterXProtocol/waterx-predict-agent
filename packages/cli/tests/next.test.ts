@@ -232,6 +232,8 @@ describe('next, before anything is configured', () => {
       name: 'production',
       baseUrl: 'https://api.waterx.app',
       realFunds: true,
+      mode: 'agent-api',
+      network: 'mainnet',
     });
     expect(result.envelope.meta?.warnings?.join(' ')).toMatch(/mainnet/u);
     expect(answer.suggestions[0]?.argv).toEqual(['next']);

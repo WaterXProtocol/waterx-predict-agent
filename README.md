@@ -121,6 +121,16 @@ Node.js 20+ and ESM. macOS and Linux; Windows is not verified (ADR-0002).
 An agent host needs one instruction:
 
 ```
+Run `npm install github:WaterXProtocol/waterx-predict-agent`, then `npx --no waterx-predict next --json`, and do what it says.
+```
+
+That installs both binaries from this repository (ADR-0019): npm clones it,
+the root `prepare` builds the workspace with pnpm and assembles what the two
+binaries run, and npm installs the result. It needs a git that can read this
+private repository, and about a minute to build. The release artifacts stay the
+other way in, for an operator who wants a pinned, prebuilt tarball and its SBOM:
+
+```
 Run `npm install <cli.tgz-url> <keystore.tgz-url>`, then `npx --no waterx-predict next --json`, and do what it says.
 ```
 
@@ -131,10 +141,22 @@ first half is the two operator artifacts (`pnpm cli:bundle`): the CLI, and the
 keystore signer it needs, whose `init` / `agent` steps `next` hands to the
 operator as commands. Both are built and walked to READY against a local stub
 in CI. ADR-0010 and ADR-0012 are Accepted, so a release may carry them;
-**none has been made yet**, and the agent API on mainnet is deployed but not
-yet switched on (backlog 3.12), so a mainnet setup currently stops at the
-login with the server saying so. `npm install github:…` is not an installation
+**none has been made yet**. `npm install github:…` is not an installation
 path — the repository root is a private workspace with no binary.
+
+**The CLI trades in direct mode by default** (ADR-0013), the way the perp
+agent does: the public WaterX routes, the agent wallet as the owner's
+on-chain delegate, sponsored gas, and no login, no JWT and no Agent API. The
+owner's delegation is the whole grant; every transaction the backend builds is
+decoded and checked against the intent before it is signed; and the spending
+ceiling is the CLI's execution policy, because there is no server-side risk
+profile in this mode. Set `WATERX_PREDICT_MODE=agent-api` for the
+authenticated Agent API, which on mainnet is deployed but not yet switched on
+(backlog 3.12). The Runner trades in direct mode too (ADR-0016). Approvals are
+issued, expire and are spent once, a `delegated-auto` budget is counted across
+invocations, and an order's state is read from the chain (ADR-0014). On
+mainnet, with no policy configured, the CLI is read-only until the operator
+sets `WATERX_PREDICT_POLICY=interactive` (ADR-0017).
 
 **The CLI uses mainnet unless told otherwise** (ADR-0011): with no
 `WATERX_PREDICT_ENVIRONMENT` or `WATERX_PREDICT_BASE_URL` it connects to

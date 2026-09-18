@@ -205,6 +205,20 @@ signatures, or anything derived from a key.
 Local logs are not telemetry. They stay local, and no secret is written to a log
 line or an error body.
 
+## Installing from the repository
+
+ADR-0019. `npm install github:WaterXProtocol/waterx-predict-agent` installs
+both binaries: npm clones, the root `prepare` builds the workspace with pnpm
+and assembles `dist/install/`, and npm packs what `files` names. It needs a git
+credential for this private repository and about a minute on the host.
+`pnpm install:check` walks exactly that shape — pack (which runs `prepare`),
+install with scripts off, `describe`, `next`, `keystore init`, `next` — and CI
+runs it on every push.
+
+It is not a replacement for the bundle below: a git install resolves its
+dependencies by range at install time and builds on the host, while the release
+artifacts are pinned, prebuilt and carry an SBOM each.
+
 ## The operator CLI bundle
 
 ADR-0010 and ADR-0012 (both **Accepted**; nothing released yet). The CLI and its keystore signer

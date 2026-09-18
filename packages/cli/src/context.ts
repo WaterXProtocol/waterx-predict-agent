@@ -12,11 +12,12 @@
  * The result is memoized per invocation, so two concurrent reads share one
  * session rather than racing to mint two.
  */
-import type { PredictAgentClient } from '@waterx/predict-agent-sdk';
+import type { TradingClient } from './client.ts';
 
 import type { ResolvedConfig } from './config.ts';
 import type { ExitCode } from './exit-codes.ts';
 import type { KeystoreProbe } from './keystore-probe.ts';
+import type { AdoptionLedger, ApprovalLedger, AuditLog, SpendLedger } from './ledgers.ts';
 import type { SigningGate } from './policy.ts';
 import type { RunnerSession } from './runner-ipc.ts';
 
@@ -31,6 +32,12 @@ export interface CommandContext {
    * one generated JSON document both propose and approve a trade.
    */
   readonly approval: string | undefined;
+  /**
+   * `--approver <name>`: who gave that approval. Required with `--approve`, and
+   * recorded with it (ADR-0018). A dispatcher flag for the same reason as
+   * `--approve`: it is a person's statement, not part of the intent.
+   */
+  readonly approver: string | undefined;
   /**
    * Hands the authorization link to this machine's browser, when `--open` was
    * given and this host can. Absent otherwise, which a command reports rather
@@ -52,7 +59,7 @@ export interface CommandContext {
    * An authenticated client. Rejects with a CliError naming exactly what is
    * missing, or with the server's own error when the challenge is refused.
    */
-  client(): Promise<PredictAgentClient>;
+  client(): Promise<TradingClient>;
   /**
    * A handshaken session with the local Runner, for the strategy family.
    *
@@ -92,6 +99,19 @@ export interface CommandContext {
    * only. `undefined` when a different signer is configured.
    */
   probeKeystore(): KeystoreProbe | undefined;
+  /**
+   * The approval and spend ledgers (ADR-0014). Throws NOT_CONFIGURED where this
+   * machine has nowhere to keep them — and then no approval is issued and no
+   * delegated-auto BUY is authorized.
+   */
+  ledgers(): WriteLedgers;
+}
+
+export interface WriteLedgers {
+  readonly approvals: ApprovalLedger;
+  readonly spend: SpendLedger;
+  readonly adoptions: AdoptionLedger;
+  readonly audit: AuditLog;
 }
 
 export type CommandHandler = (context: CommandContext) => Promise<unknown>;

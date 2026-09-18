@@ -39,7 +39,9 @@
  */
 import {
   streamTriggerPrice,
+  type GetMarketResponseBody,
   type PredictOutcomeId,
+  type PriceString,
   type PredictQuoteStreamFrame,
   type QuoteStream,
   type QuoteStreamEvent,
@@ -216,6 +218,132 @@ export class QuoteStreamPriceObserver implements PriceObserver {
         this.topics_.delete(key);
         topic.release();
       }
+    }
+  }
+}
+
+/* ── Direct mode: public prices, polled ────────────────────────────────────── */
+
+/** The one read a polling observer makes. `PredictDirectClient` satisfies it. */
+export interface MarketPriceSource {
+  getMarket(marketId: string, signal?: AbortSignal): Promise<GetMarketResponseBody>;
+}
+
+export interface PollingPriceObserverOptions {
+  readonly source: MarketPriceSource;
+  readonly now: Clock;
+  /** A price younger than this is answered from memory. Default 5 s. */
+  readonly minPollMs?: number;
+  /** A topic not asked about for this long is forgotten. See {@link DEFAULT_IDLE_MS}. */
+  readonly idleMs?: number;
+  readonly onDiagnostic?: (text: string) => void;
+}
+
+interface PolledTopic {
+  readonly marketId: string;
+  readonly outcomeId: PredictOutcomeId;
+  readonly subscribedAt: string;
+  lastAskedAt: string;
+  lastReadAt: number | undefined;
+  lastObservedAt: string | undefined;
+  unavailable: QuoteUnavailableReason | undefined;
+  bid: string | null;
+  ask: string | null;
+}
+
+/**
+ * Direct mode's price source (ADR-0016): the public board behind
+ * `getMarket`, read at most once per `minPollMs` per market and outcome.
+ *
+ * Same contract as the stream observer: an indicative price for the watched
+ * side, or `null` when nothing current was observed — a failed read, a closed
+ * market and a missing side are all "no opinion", never a price that failed
+ * the trigger. The order itself is still priced from a fresh quote.
+ */
+export class PollingPriceObserver implements PriceObserver {
+  private readonly options: PollingPriceObserverOptions;
+  private readonly topics_ = new Map<string, PolledTopic>();
+  private closed = false;
+
+  constructor(options: PollingPriceObserverOptions) {
+    this.options = options;
+  }
+
+  async observe(watch: WatchKey, signal?: AbortSignal): Promise<PriceString | null> {
+    if (this.closed) return null;
+    const at = this.options.now();
+    const nowMs = Date.parse(at);
+    this.expire(nowMs);
+    const key = topicKey(watch);
+    let topic = this.topics_.get(key);
+    if (topic === undefined) {
+      topic = {
+        marketId: watch.marketId,
+        outcomeId: watch.outcomeId,
+        subscribedAt: at,
+        lastAskedAt: at,
+        lastReadAt: undefined,
+        lastObservedAt: undefined,
+        unavailable: undefined,
+        bid: null,
+        ask: null,
+      };
+      this.topics_.set(key, topic);
+    }
+    topic.lastAskedAt = at;
+    const fresh = topic.lastReadAt !== undefined && nowMs - topic.lastReadAt < (this.options.minPollMs ?? 5_000);
+    if (!fresh) {
+      topic.lastReadAt = nowMs;
+      try {
+        const { market } = await this.options.source.getMarket(watch.marketId, signal);
+        const outcome = market.outcomes.find((entry) => entry.outcomeId === watch.outcomeId);
+        if (!market.tradeable || outcome === undefined) {
+          topic.unavailable = !market.tradeable ? 'MARKET_CLOSED' : 'NOT_QUOTABLE';
+          topic.bid = null;
+          topic.ask = null;
+        } else {
+          topic.unavailable = undefined;
+          topic.bid = outcome.indicativeBid;
+          topic.ask = outcome.indicativeAsk;
+          topic.lastObservedAt = at;
+        }
+      } catch (error: unknown) {
+        // A read that failed says nothing about the market.
+        topic.unavailable = 'DISCONNECTED';
+        topic.bid = null;
+        topic.ask = null;
+        this.options.onDiagnostic?.(
+          `could not read prices for ${watch.marketId}: ${error instanceof Error ? error.message : 'read failed'}`,
+        );
+      }
+    }
+    return (watch.side === 'BUY' ? topic.ask : topic.bid) ?? null;
+  }
+
+  /** What is watched and what each topic last said. Never a price. */
+  topics(): readonly PriceTopicStatus[] {
+    return [...this.topics_.values()]
+      .map((topic) => ({
+        marketId: topic.marketId,
+        outcomeId: topic.outcomeId,
+        subscribedAt: topic.subscribedAt,
+        lastObservedAt: topic.lastObservedAt,
+        lastAskedAt: topic.lastAskedAt,
+        unavailable: topic.unavailable,
+        gapped: false,
+      }))
+      .sort((a, b) => topicKey(a).localeCompare(topicKey(b)));
+  }
+
+  close(): void {
+    this.closed = true;
+    this.topics_.clear();
+  }
+
+  private expire(nowMs: number): void {
+    const idle = this.options.idleMs ?? DEFAULT_IDLE_MS;
+    for (const [key, topic] of this.topics_) {
+      if (nowMs - Date.parse(topic.lastAskedAt) > idle) this.topics_.delete(key);
     }
   }
 }

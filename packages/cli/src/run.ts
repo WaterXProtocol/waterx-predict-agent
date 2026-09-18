@@ -17,11 +17,19 @@ import { connect } from 'node:net';
 import { homedir } from 'node:os';
 
 import { AGENT_COMMANDS, type AgentCommandSpec } from '@waterx/predict-agent-schema';
-import type { PredictAgentClient } from '@waterx/predict-agent-sdk';
+import {
+  createFileIntentStore,
+  FileMarketCatalog,
+  InMemoryMarketCatalog,
+  PredictAgentClient,
+  type CatalogEntry,
+  type IntentStore,
+  type MarketCatalog,
+} from '@waterx/predict-agent-sdk';
 
 import { CAPABILITIES, getCapability, type Capability } from './capabilities.ts';
 import { resolveOpener } from './browser.ts';
-import { createClient, deadline, toEnvelopeError } from './client.ts';
+import { createClient, deadline, toEnvelopeError, type TradingClient } from './client.ts';
 import { readCachedSession, writeCachedSession, type SessionCacheIo } from './session-cache.ts';
 import {
   accountAllowance,
@@ -54,9 +62,9 @@ import {
   strategyList,
 } from './commands/strategy.ts';
 import { loadConfig, type ResolvedConfig } from './config.ts';
-import type { CommandContext, CommandHandler } from './context.ts';
+import type { CommandContext, CommandHandler, WriteLedgers } from './context.ts';
 import { errorEnvelope, successEnvelope, type EnvelopeMeta } from './envelope.ts';
-import { CliError, isCliError } from './errors.ts';
+import { CliError, isCliError, isCliErrorCode } from './errors.ts';
 import {
   EXIT_CODES,
   exitCodeForCliError,
@@ -84,6 +92,7 @@ import {
   type RunnerSession,
 } from './runner-ipc.ts';
 import { probeKeystore } from './keystore-probe.ts';
+import { createFileLedgers } from './ledgers.ts';
 import { createNodeSignerRunner, type SignerRunner } from './signer.ts';
 import { CLI_NAME, CLI_VERSION } from './version.ts';
 
@@ -129,6 +138,19 @@ export interface CliIo {
    * uses it to tell an operator whether the keystore signer is already there.
    */
   findExecutable?(name: string): string | null;
+  /**
+   * Direct mode's durable submission record (ADR-0013). Absent means this host
+   * cannot keep one, and direct mode then refuses to trade rather than risk a
+   * second order after a lost answer.
+   */
+  intentStore?(): IntentStore;
+  /** Direct mode's memory of market titles and schedules. Absent: this process only. */
+  marketCatalog?(): MarketCatalog;
+  /**
+   * The approval and spend ledgers (ADR-0014). Absent: no approval can be
+   * issued and no delegated-auto BUY authorized on this machine.
+   */
+  ledgers?(): WriteLedgers;
   /** This process's uid, for the cache's ownership check. Absent disables it. */
   readonly uid?: number | undefined;
   /** Injected so an envelope is reproducible in a test. */
@@ -191,7 +213,7 @@ const USAGE = [
   '',
   "Input:  --input '<json>' | --file <path> | --stdin, plus typed --flags per the command schema.",
   'Output: one JSON document on stdout. Diagnostics on stderr. Exit codes: see `describe`.',
-  'Policy: writes need the interactive approval from `order preview` (--approve <token>), or a',
+  'Policy: writes need the interactive approval from `order preview` (--approve <token> --approver <name>), or a',
   '        configured delegated-auto scope. --policy read-only narrows any configuration.',
 ].join('\n');
 
@@ -363,6 +385,7 @@ export async function run(io: CliIo): Promise<number> {
 
     const invocation = createContext(io, config, built.input, diagnostic, {
       approval: requireFlagValue(parsed.flags, 'approve'),
+      approver: approverOf(parsed),
       // Always a function when asked for, never a silent absence: a host with no
       // opener has to be able to SAY so, and `undefined` here would be
       // indistinguishable from the flag not being passed at all.
@@ -415,6 +438,8 @@ export async function run(io: CliIo): Promise<number> {
 
 function resolveExit(error: unknown, source: string, code: string): ExitCode {
   if (isCliError(error)) return exitCodeForCliError(error.code);
+  // Direct mode's refusals are mapped to CLI codes without being CliErrors.
+  if (source === 'CLI' && isCliErrorCode(code)) return exitCodeForCliError(code);
   if (source === 'SERVER') return exitCodeForServerError(code);
   if (source === 'RUNNER') return exitCodeForRunnerError(code);
   if (source === 'TRANSPORT') return EXIT_CODES.TRANSPORT;
@@ -445,6 +470,31 @@ function buildMeta(
   return Object.keys(meta).length > 0 ? meta : undefined;
 }
 
+/**
+ * `--approver`, checked where it is read. It is required with `--approve`
+ * (ADR-0018): an approval that does not say who gave it cannot be audited.
+ */
+function approverOf(parsed: ParsedArgv): string | undefined {
+  const approver = requireFlagValue(parsed.flags, 'approver');
+  const approval = parsed.flags.get('approve');
+  if (approval !== undefined && approver === undefined) {
+    throw new CliError(
+      'USAGE',
+      '`--approve` needs `--approver <name>`: who is giving this approval. It is recorded with the approval in the write audit log.',
+    );
+  }
+  if (approver !== undefined && approval === undefined) {
+    throw new CliError('USAGE', '`--approver` names who gave an approval, so it goes with `--approve`.');
+  }
+  if (approver !== undefined && !/^[\p{L}\p{N}][\p{L}\p{N} ._@-]{0,63}$/u.test(approver)) {
+    throw new CliError(
+      'USAGE',
+      '`--approver` is a name of up to 64 letters, digits, spaces and `._@-`, starting with a letter or digit.',
+    );
+  }
+  return approver;
+}
+
 function createContext(
   io: CliIo,
   config: ResolvedConfig,
@@ -452,13 +502,14 @@ function createContext(
   diagnostic: (text: string) => void,
   options: {
     approval: string | undefined;
+    approver: string | undefined;
     openInBrowser: ((url: string) => void) | undefined;
     runnerDir: string | undefined;
     exitAs: (code: ExitCode) => void;
     onSecret: (secret: string) => void;
   },
 ): { context: CommandContext; close: () => void } {
-  let session: Promise<PredictAgentClient> | undefined;
+  let session: Promise<TradingClient> | undefined;
   let runner: Promise<RunnerSession> | undefined;
   // One gate per invocation, created before any client exists so that every
   // signer this run builds shares it. A command that never authorizes a write
@@ -504,7 +555,33 @@ function createContext(
    * PROMISE rather than as a client, so `account status`'s two concurrent reads
    * sign one challenge between them instead of one each.
    */
-  const open = async (): Promise<PredictAgentClient> => {
+  const open = async (): Promise<TradingClient> => {
+    // Direct mode has no session: nothing is signed to open it, nothing is
+    // cached, and every write carries its own signature instead.
+    if (config.mode === 'direct') {
+      return createClient({
+        config,
+        fetch: io.fetch,
+        runSigner: io.runSigner,
+        onDiagnostic: diagnostic,
+        gate,
+        // Absent (no home, no state dir) is not fatal for a read: direct mode
+        // refuses only the write that would need it, and says why.
+        intentStore: (() => {
+          try {
+            return io.intentStore?.();
+          } catch {
+            return undefined;
+          }
+        })(),
+        marketCatalog: io.marketCatalog?.() ?? new InMemoryMarketCatalog(),
+        // The account the operator named, by config or on this command. The
+        // client checks it against the chain; naming one grants nothing.
+        accountHints: [config.defaultAccountId, input['accountId']].filter(
+          (id): id is string => typeof id === 'string' && id !== '',
+        ),
+      });
+    }
     // A cached session is tried before a signature is asked for. Registered with
     // the redactor the moment it is read, because from here on it is a live
     // credential this process holds and nothing it prints may carry it back out.
@@ -518,7 +595,7 @@ function createContext(
       gate,
       ...(cached === undefined ? {} : { token: cached }),
     });
-    if (config.token === undefined && cached === undefined) {
+    if (config.token === undefined && cached === undefined && client instanceof PredictAgentClient) {
       const session = await client.authenticate();
       options.onSecret(session.token);
       cache.write(session);
@@ -553,11 +630,13 @@ function createContext(
       onSecret: options.onSecret,
     });
 
+  let ledgers: WriteLedgers | undefined;
   return {
     context: {
       input,
       config,
       approval: options.approval,
+      approver: options.approver,
       openInBrowser: options.openInBrowser,
       gate,
       client: () => (session ??= open()),
@@ -567,6 +646,15 @@ function createContext(
       diagnostic,
       nodeVersion: io.nodeVersion,
       now: io.now,
+      ledgers: () => {
+        if (io.ledgers === undefined) {
+          throw new CliError(
+            'NOT_CONFIGURED',
+            'This machine has nowhere to keep approvals and spend, so no write can be authorized. Set WATERX_PREDICT_STATE_DIR, or run with a home directory.',
+          );
+        }
+        return (ledgers ??= io.ledgers());
+      },
       probeKeystore: () =>
         probeKeystore(config, {
           env: io.env,
@@ -592,6 +680,17 @@ const noop = (): void => {
 };
 
 /* ── Node bindings ───────────────────────────────────────────────────────── */
+
+function stateDir(): string | null {
+  const named = process.env['WATERX_PREDICT_STATE_DIR'];
+  if (named !== undefined && named.trim() !== '') return named;
+  try {
+    const home = homedir();
+    return home === '' ? null : `${home}/.waterx-predict`;
+  } catch {
+    return null;
+  }
+}
 
 function readFileOrNull(path: string): string | null {
   try {
@@ -653,6 +752,27 @@ export function createNodeIo(overrides: Partial<CliIo> = {}): CliIo {
         }
       }
       return null;
+    },
+    // Direct mode's submission record and market memory (ADR-0013). Beside the
+    // session cache, private to this user; `WATERX_PREDICT_STATE_DIR` moves both.
+    intentStore: () => {
+      const dir = stateDir();
+      if (dir === null) throw new CliError('NOT_CONFIGURED', 'No home directory, so direct mode has nowhere to keep its submission record. Set WATERX_PREDICT_STATE_DIR.');
+      return createFileIntentStore(`${dir}/direct-intents.json`, { mode: 0o600 });
+    },
+    ledgers: () => {
+      const dir = stateDir();
+      if (dir === null) {
+        throw new CliError(
+          'NOT_CONFIGURED',
+          'No home directory, so there is nowhere to keep approvals and spend. Set WATERX_PREDICT_STATE_DIR.',
+        );
+      }
+      return createFileLedgers(`${dir}/write-ledger.json`);
+    },
+    marketCatalog: () => {
+      const dir = stateDir();
+      return dir === null ? new InMemoryMarketCatalog() : new FileMarketCatalog(`${dir}/direct-markets.json`);
     },
     dialRunner: createNodeRunnerDialer(connect),
     pathStat: createNodePathStat(statSync),

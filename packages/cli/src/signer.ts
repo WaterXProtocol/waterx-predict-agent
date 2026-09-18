@@ -183,7 +183,11 @@ export function describeSigner(config: ResolvedConfig): SignerDescription {
     policy,
     executable: baseName(first),
     note:
-      policy === 'read-only'
+      config.mode === 'direct'
+        ? policy === 'read-only'
+          ? 'Direct mode signs no login. Transaction signing is refused locally before the command is spawned.'
+          : 'Direct mode signs no login: only the sponsored transaction bytes of an order the execution policy has already authorized, after they are checked against the intent. An unauthorized transaction signature is refused before the command is spawned.'
+        : policy === 'read-only'
         ? 'Signs the login challenge as a personal message by writing a request to an external command. Transaction signing is refused locally before the command is spawned.'
         : 'Signs the login challenge as a personal message, and sponsored transaction bytes for an order the execution policy has already authorized. An unauthorized transaction signature is refused before the command is spawned.',
     providers: SIGNER_PROVIDERS,

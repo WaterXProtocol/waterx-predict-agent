@@ -40,13 +40,16 @@
     "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json && node -e \"require('node:fs').chmodSync('dist/src/bin/describe.js',0o755)\"",
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "abi:check": "node --experimental-strip-types --no-warnings scripts/check-abi.ts"
   },
   "dependencies": {
     "socket.io-client": "^4.8.3"
   },
   "devDependencies": {
+    "@mysten/sui": "^2.26.2",
     "@types/node": "^24.12.0",
+    "@waterx/sdk": "^5.0.0",
     "typescript": "^5.9.3",
     "vitest": "^4.1.6"
   }
