@@ -46,6 +46,23 @@ npm warns that the root `prepare` script is not covered by `allowScripts`. That
 script is what builds this workspace, so an install that skips it leaves nothing
 to run — approve it, or use the release artifacts, which need no install script.
 
+`next` answers with two lists. `handOver.steps` are a person's — installing
+software, unlocking a sealed keystore, choosing a network, the owner's grant.
+`agentSteps` are the ones a host may run itself, and on a fresh machine they are
+the whole rest of the setup (ADR-0020):
+
+```sh
+npx --no waterx-predict-keystore init --no-passphrase  # a NEW, empty agent wallet
+npx --no waterx-predict configure --fromKeystore       # persist which wallet, and who signs
+npx --no waterx-predict next --json                    # → AWAITING_OWNER: now a person
+```
+
+`configure` is the only command that writes settings, and it writes exactly two:
+the agent wallet and the signer command. It will not write the network, the
+policy or the account — those decide whether real money moves. It writes a file
+rather than suggesting `export` because a tool host runs every command in its own
+process, where an exported variable is gone by the next call.
+
 From a checkout, build and alias instead:
 
 ```sh
@@ -66,6 +83,8 @@ waterx-predict describe
 export WATERX_PREDICT_ENVIRONMENT=testnet   # or mainnet; unset means mainnet
 export WATERX_PREDICT_AGENT_WALLET='0x<64 hex>'
 export WATERX_PREDICT_SIGNER_COMMAND='/path/to/your-signer'
+#    …or persist the last two, which is what an unattended host does:
+#    waterx-predict configure --agentWallet 0x<64 hex> --signerCommand '["/path/to/your-signer"]'
 
 # 3. Get authorized. Prints the link an OWNER opens; --wait polls until they sign.
 waterx-predict onboard --label momentum-bot --wait

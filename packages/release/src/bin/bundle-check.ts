@@ -54,6 +54,7 @@ interface NextData {
   state?: string;
   stop?: boolean;
   handOver?: { to?: string; authorizationUrl?: string; steps?: { run?: string }[] };
+  agentSteps?: { run?: string }[];
   suggestions?: { command?: string }[];
   facts?: { signer?: { kind?: string; agent?: string }; session?: string };
 }
@@ -116,6 +117,8 @@ async function next(walk: Walk, project: string, env: Record<string, string>, la
 }
 
 const stepRuns = (data: NextData): string[] => (data.handOver?.steps ?? []).map((step) => step.run ?? '');
+/** The steps the agent may run itself, which are a different list on purpose (ADR-0020). */
+const agentRuns = (data: NextData): string[] => (data.agentSteps ?? []).map((step) => step.run ?? '');
 
 /** The local API: five routes, and a record of the one request worth checking. */
 interface Stub {
@@ -334,10 +337,15 @@ async function main(argv: readonly string[]): Promise<number> {
 
     // 1. A bare machine.
     const first = await next(walk, project, bare, 'bare');
-    walk.expect(first.state === 'SETUP_INCOMPLETE' && first.stop === true, `bare: answered ${String(first.state)}`);
+    // Not a hand-over any more: with both binaries installed, every remaining
+    // local step is the agent's own (ADR-0020), so the loop does not stop.
     walk.expect(
-      stepRuns(first)[0] === 'npx --no waterx-predict-keystore init',
-      `bare: the first step was ${JSON.stringify(stepRuns(first)[0])}, not keystore init — the installed signer was not found`,
+      first.state === 'SETUP_INCOMPLETE' && first.stop === false,
+      `bare: answered ${String(first.state)}, stop=${String(first.stop)}`,
+    );
+    walk.expect(
+      agentRuns(first)[0] === 'npx --no waterx-predict-keystore init --no-passphrase',
+      `bare: the first step the agent may run was ${JSON.stringify(agentRuns(first)[0])}, not keystore init — the installed signer was not found`,
     );
 
     const describe = await run(project, bare, ['waterx-predict', 'describe']);
@@ -354,16 +362,17 @@ async function main(argv: readonly string[]): Promise<number> {
     }
     walk.expect(/^0x[0-9a-f]{64}$/u.test(address), `keystore init printed ${JSON.stringify(address)}`);
 
-    // 3. `next` now knows the address and wants the agent started.
+    // 3. `next` now knows the address. A SEALED keystore still needs a person to
+    //    unlock it — that step stays the operator's — while the settings that
+    //    name the wallet are the agent's to write (ADR-0020).
     const second = await next(walk, project, bare, 'after init');
     walk.expect(
-      JSON.stringify(stepRuns(second)) ===
-        JSON.stringify([
-          'npx --no waterx-predict-keystore agent',
-          `export WATERX_PREDICT_AGENT_WALLET=${address}`,
-          `export WATERX_PREDICT_SIGNER_COMMAND='["waterx-predict-keystore","sign"]'`,
-        ]),
-      `after init: steps were ${JSON.stringify(stepRuns(second))}`,
+      JSON.stringify(stepRuns(second)) === JSON.stringify(['npx --no waterx-predict-keystore agent']),
+      `after init: the operator's steps were ${JSON.stringify(stepRuns(second))}`,
+    );
+    walk.expect(
+      JSON.stringify(agentRuns(second)) === JSON.stringify(['waterx-predict configure --fromKeystore']),
+      `after init: the agent's steps were ${JSON.stringify(agentRuns(second))}`,
     );
 
     // 4. The operator starts the agent, once, and leaves it.

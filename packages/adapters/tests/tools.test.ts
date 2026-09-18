@@ -134,7 +134,7 @@ describe('the MCP hints', () => {
     expect(cancel?.annotations.destructiveHint).toBe(false);
   });
 
-  it('closes the open-world hint for exactly the two local commands', () => {
+  it('closes the open-world hint for exactly the three local commands', () => {
     // Derived from the contract's `Local only:` marker rather than a list kept
     // here. This test is what makes that marker load-bearing: a command that
     // stops saying it, or starts, changes this set and fails.
@@ -142,7 +142,13 @@ describe('the MCP hints', () => {
       .filter((tool) => !tool.annotations.openWorldHint)
       .map((tool) => tool.name);
     expect(local.sort()).toEqual(
-      [toolNameFor('runtime.describe'), toolNameFor('runtime.command-schema')].sort(),
+      [
+        toolNameFor('runtime.describe'),
+        toolNameFor('runtime.command-schema'),
+        // Local AND a write: it rewrites this machine's config file and reaches
+        // nothing outside it (ADR-0020).
+        toolNameFor('runtime.configure'),
+      ].sort(),
     );
   });
 });
