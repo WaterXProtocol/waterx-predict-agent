@@ -52,6 +52,7 @@ interface Answer {
     authorizationUrl?: string;
     settings?: { requirement: string; supplyWith: string[] }[];
   };
+  agentSteps?: { run: string; command?: string; why: string; safeBecause: string }[];
   suggestions: Suggestion[];
   facts: {
     deployment: { source: string; name: string | null; baseUrl: string | null; realFunds: boolean };
@@ -301,19 +302,27 @@ describe('next, walking an operator through the keystore signer', () => {
     WATERX_PREDICT_SIGNER_COMMAND: SIGNER,
   });
   const runs = (answer: Answer): string[] => (answer.handOver?.steps ?? []).map((step) => step.run);
+  /** The steps the agent may run itself — a separate list, deliberately (ADR-0020). */
+  const own = (answer: Answer): string[] => (answer.agentSteps ?? []).map((step) => step.run);
 
-  it('starts from nothing: install, init, agent, then wire both settings in', async () => {
+  it('starts from nothing: the operator installs, and the agent does the rest itself', async () => {
     const { result, answer } = await next({ env: {}, homeDir: HOME });
     expect(answer.state).toBe('SETUP_INCOMPLETE');
+    // Installing software on someone's machine is theirs. Everything after it
+    // creates an empty wallet and writes a local file, so it is the agent's.
     expect(runs(answer)).toEqual([
       'npm install github:WaterXProtocol/waterx-predict-agent   # or <release-asset-url>/waterx-predict-agent-signer-keystore-0.1.0.tgz',
-      'npx --no waterx-predict-keystore init',
-      'npx --no waterx-predict-keystore agent',
-      'export WATERX_PREDICT_AGENT_WALLET=<the address init printed>',
-      `export WATERX_PREDICT_SIGNER_COMMAND='${SIGNER}'`,
     ]);
+    expect(own(answer)).toEqual([
+      'npx --no waterx-predict-keystore init --no-passphrase',
+      'waterx-predict configure --fromKeystore',
+    ]);
+    // A person's list and the agent's are never merged, and the agent's says
+    // why each step is one it may take.
+    expect(answer.agentSteps?.[0]?.safeBecause).toMatch(/holds no funds/u);
     // The owner's key is the one thing an operator must not put there.
-    expect(answer.handOver?.steps?.[1]?.why).toMatch(/Never import the account owner's key/u);
+    expect(answer.agentSteps?.[0]?.why).toMatch(/perp agent/u);
+    expect(answer.agentSteps?.[0]?.safeBecause).toMatch(/Never import an existing key/u);
     expect(answer.facts.signer).toMatchObject({ kind: 'KEYSTORE', installed: false, configured: false, agent: 'NO_SOCKET' });
     expect(result.fetches).toEqual([]);
     assertBounded(answer);
@@ -326,11 +335,10 @@ describe('next, walking an operator through the keystore signer', () => {
       executables: ['waterx-predict-keystore'],
       files: KEYSTORE_FILE,
     });
-    expect(runs(answer)).toEqual([
-      'npx --no waterx-predict-keystore agent',
-      `export WATERX_PREDICT_AGENT_WALLET=${KEYSTORE_ADDRESS}`,
-      `export WATERX_PREDICT_SIGNER_COMMAND='${SIGNER}'`,
-    ]);
+    // The sealed keystore still needs a person to unlock it; the settings do not.
+    expect(runs(answer)).toEqual(['npx --no waterx-predict-keystore agent']);
+    expect(own(answer)).toEqual(['waterx-predict configure --fromKeystore']);
+    expect(answer.agentSteps?.[0]?.why).toContain(KEYSTORE_ADDRESS);
     // Only the public address is read; nothing sealed ever reaches an output.
     expect(result.stdout).not.toContain('secret-bits');
     expect(result.stderr).not.toContain('secret-bits');
@@ -343,7 +351,8 @@ describe('next, walking an operator through the keystore signer', () => {
       executables: ['waterx-predict-keystore'],
       files: { '/srv/ks/keystore.json': JSON.stringify({ address: KEYSTORE_ADDRESS }) },
     });
-    expect(runs(answer)).toContain(`export WATERX_PREDICT_AGENT_WALLET=${KEYSTORE_ADDRESS}`);
+    expect(own(answer)).toContain('waterx-predict configure --fromKeystore');
+    expect(answer.agentSteps?.[0]?.why).toContain(KEYSTORE_ADDRESS);
   });
 
   it('will not sign while the agent is not running', async () => {
@@ -374,10 +383,10 @@ describe('next, walking an operator through the keystore signer', () => {
     expect(answer.state).toBe('SETUP_INCOMPLETE');
     expect(answer.headline).toContain(`but the keystore holds ${KEYSTORE_ADDRESS}`);
     // The agent step rides along: a socket file is not proof one is running.
-    expect(runs(answer)).toEqual([
-      'npx --no waterx-predict-keystore agent',
-      `export WATERX_PREDICT_AGENT_WALLET=${KEYSTORE_ADDRESS}`,
-    ]);
+    expect(runs(answer)).toEqual(['npx --no waterx-predict-keystore agent']);
+    // `--replace`, because the wrong wallet is already configured and a write
+    // that silently repointed a runtime would be the more dangerous default.
+    expect(own(answer)).toEqual(['waterx-predict configure --fromKeystore --replace']);
     expect(result.signerRuns).toEqual([]);
   });
 
@@ -390,7 +399,7 @@ describe('next, walking an operator through the keystore signer', () => {
     });
     expect(answer.headline).toContain('cannot be read');
     expect(runs(answer)[0]).toMatch(/^mv .*keystore\.json .*\.unreadable$/u);
-    expect(runs(answer)).toContain('npx --no waterx-predict-keystore init');
+    expect(own(answer)).toContain('npx --no waterx-predict-keystore init --no-passphrase');
   });
 
   it('sends a signer that did not answer back to the operator, not to doctor alone', async () => {

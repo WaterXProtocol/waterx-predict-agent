@@ -45,6 +45,7 @@ import { commandSchema } from './commands/command-schema.ts';
 import { describeRuntime } from './commands/describe.ts';
 import { doctorFailure, runDoctor } from './commands/doctor.ts';
 import { marketGet, marketList, marketQuote, marketSearch } from './commands/market.ts';
+import { runtimeConfigure } from './commands/configure.ts';
 import { runtimeNext } from './commands/next.ts';
 import { runtimeOnboard } from './commands/onboard.ts';
 import {
@@ -61,7 +62,7 @@ import {
   strategyGet,
   strategyList,
 } from './commands/strategy.ts';
-import { loadConfig, type ResolvedConfig } from './config.ts';
+import { candidateConfigPaths, loadConfig, type ResolvedConfig } from './config.ts';
 import type { CommandContext, CommandHandler, WriteLedgers } from './context.ts';
 import { errorEnvelope, successEnvelope, type EnvelopeMeta } from './envelope.ts';
 import { CliError, isCliError, isCliErrorCode } from './errors.ts';
@@ -166,6 +167,7 @@ const HANDLERS: Readonly<Record<string, CommandHandler>> = {
   'runtime.describe': (context) =>
     Promise.resolve(describeRuntime(context.config, context.nodeVersion)),
   'runtime.command-schema': (context) => Promise.resolve(commandSchema(context.input)),
+  'runtime.configure': runtimeConfigure,
   'market.list': marketList,
   'market.search': marketSearch,
   'market.get': marketGet,
@@ -495,6 +497,35 @@ function approverOf(parsed: ParsedArgv): string | undefined {
   return approver;
 }
 
+/**
+ * Where `configure` may write, and how.
+ *
+ * The path is the file that was read, or — when nothing is configured yet — the
+ * first place `loadConfig` would look, because a host with no configuration is
+ * precisely the caller that needs to create one. Written through the same 0600
+ * seam the session cache uses: the file holds no secret today, and the mode
+ * costs nothing and is what keeps that true if it ever holds an account id
+ * somebody would rather not share.
+ */
+function configFileSeam(
+  io: CliIo,
+  config: ResolvedConfig,
+): CommandContext['configFile'] {
+  const write = io.writeSecretFile;
+  if (write === undefined) return undefined;
+  const path =
+    config.configPath ??
+    candidateConfigPaths({ env: io.env, readFile: io.readFile, homeDir: io.homeDir })[0];
+  if (path === undefined) return undefined;
+  return {
+    path,
+    read: () => io.readFile(path),
+    write: (contents) => {
+      write(path, contents);
+    },
+  };
+}
+
 function createContext(
   io: CliIo,
   config: ResolvedConfig,
@@ -655,6 +686,7 @@ function createContext(
         }
         return (ledgers ??= io.ledgers());
       },
+      configFile: configFileSeam(io, config),
       probeKeystore: () =>
         probeKeystore(config, {
           env: io.env,

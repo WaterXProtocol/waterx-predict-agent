@@ -100,6 +100,19 @@ export interface CommandContext {
    */
   probeKeystore(): KeystoreProbe | undefined;
   /**
+   * The settings file this runtime reads, and the seam that rewrites it.
+   *
+   * `path` is the file that WAS read, or the first candidate location when none
+   * exists yet — `configure` has to be able to create one, since a host with
+   * nothing configured is exactly who needs it. Absent when this machine has
+   * nowhere to put one, and then `configure` refuses rather than inventing a
+   * path. Nothing but `configure` may use it: every other command treats the
+   * configuration as given (ADR-0020).
+   */
+  readonly configFile:
+    | { readonly path: string; read(): string | null; write(contents: string): void }
+    | undefined;
+  /**
    * The approval and spend ledgers (ADR-0014). Throws NOT_CONFIGURED where this
    * machine has nowhere to keep them — and then no approval is issued and no
    * delegated-auto BUY is authorized.

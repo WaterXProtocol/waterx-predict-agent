@@ -15,7 +15,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { answer, createAgentServer, type HeldKey } from '../src/agent.ts';
 import { askAgent } from '../src/client.ts';
-import { KeystoreError, openKeystore, sealKeystore } from '../src/keystore.ts';
+import {
+  isPlainKeystore,
+  KeystoreError,
+  openKeystore,
+  PLAINTEXT_WARNING,
+  plainKeystore,
+  sealKeystore,
+} from '../src/keystore.ts';
 import type { SignerRequest } from '../src/protocol.ts';
 
 const ADDRESS = `0x${'a'.repeat(63)}1`;
@@ -73,6 +80,45 @@ describe('the keystore file', () => {
     expect(() => sealKeystore({ secretKey: SECRET, address: ADDRESS, passphrase: 'short', kdf: FAST })).toThrow(
       KeystoreError,
     );
+  });
+});
+
+describe('a keystore with no passphrase', () => {
+  it('gives the key back, and says in the file what it is', () => {
+    const file = plainKeystore({ secretKey: SECRET, address: ADDRESS });
+    expect(file.protection).toBe('NONE');
+    expect(file.warning).toBe(PLAINTEXT_WARNING);
+    // The point of the variant, stated: the key IS in the document. Anything
+    // that can read the file has the key, which is why the file says so.
+    expect(JSON.stringify(file)).toContain(Buffer.from(SECRET).toString('base64'));
+    expect(Buffer.from(openKeystore(file, ''))).toEqual(Buffer.from(SECRET));
+  });
+
+  it('ignores whatever passphrase it is handed, rather than pretending to check one', () => {
+    const file = plainKeystore({ secretKey: SECRET, address: ADDRESS });
+    expect(Buffer.from(openKeystore(file, 'anything at all'))).toEqual(Buffer.from(SECRET));
+  });
+
+  it('is told apart from a sealed one by the file, not by a missing field', () => {
+    const sealed = sealKeystore({ secretKey: SECRET, address: ADDRESS, passphrase: PASSPHRASE, kdf: FAST });
+    expect(sealed.protection).toBe('SCRYPT_AES_GCM');
+    expect(isPlainKeystore(sealed)).toBe(false);
+    expect(isPlainKeystore(plainKeystore({ secretKey: SECRET, address: ADDRESS }))).toBe(true);
+    // A file written before plaintext existed carries no `protection` at all,
+    // and is still sealed — that is what keeps old keystores opening.
+    const { protection: _dropped, ...older } = sealed;
+    expect(isPlainKeystore(older)).toBe(false);
+    expect(Buffer.from(openKeystore(older, PASSPHRASE))).toEqual(Buffer.from(SECRET));
+  });
+
+  it('refuses a plaintext file with nothing in it', () => {
+    const file = { ...plainKeystore({ secretKey: SECRET, address: ADDRESS }), secretBase64: '' };
+    expect(() => openKeystore(file, '')).toThrow(/missing secretBase64/u);
+  });
+
+  it('still refuses a version it was not built to read', () => {
+    const file = { ...plainKeystore({ secretKey: SECRET, address: ADDRESS }), version: 99 };
+    expect(() => openKeystore(file, '')).toThrow(/version 99/u);
   });
 });
 

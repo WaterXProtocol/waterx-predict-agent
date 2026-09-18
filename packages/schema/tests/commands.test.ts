@@ -70,6 +70,10 @@ describe('the command registry', () => {
   it('marks exactly the fund-moving commands as writes needing confirmation', () => {
     const writes = AGENT_COMMANDS.filter((command) => command.classification === 'write');
     expect(writes.map((command) => command.name)).toEqual([
+      // Writes this machine, not the exchange: it rewrites the config file and
+      // can cause no trade. It is a write all the same, because a host that
+      // gates writes should gate a command that changes what this runtime is.
+      'runtime.configure',
       'order.execute',
       'order.execute-many',
       'strategy.create',
@@ -103,10 +107,11 @@ describe('the command registry', () => {
       }
     }
 
-    // The one write that moves nothing. Cancelling can only ever stop trading,
-    // so making an operator approve it would be a gate that costs money to pass.
+    // The two writes that move nothing. Cancelling can only ever stop trading,
+    // so making an operator approve it would be a gate that costs money to pass;
+    // `configure` rewrites a local file and cannot reach an exchange at all.
     const stoppers = writes.filter((command) => !command.sideEffects.includes('MOVES_FUNDS'));
-    expect(stoppers.map((command) => command.name)).toEqual(['strategy.cancel']);
+    expect(stoppers.map((command) => command.name)).toEqual(['runtime.configure', 'strategy.cancel']);
     for (const command of stoppers) {
       expect(command.sideEffects, command.name).toEqual(['NONE']);
       expect(command.confirmation, command.name).toBe('NOT_REQUIRED');
@@ -187,7 +192,13 @@ describe('the command registry', () => {
     // become (see AgentCommandImplementation).
     for (const command of AGENT_COMMANDS) {
       if (command.implementation.kind !== 'runtime') continue;
-      expect(command.classification, command.name).toBe('read');
+      // `runtime.configure` is the one runtime command that changes anything,
+      // and what it changes is a local file (ADR-0020). The invariant that
+      // matters is below and holds for it too: no runtime command may move
+      // funds or sign.
+      expect(command.classification, command.name).toBe(
+        command.name === 'runtime.configure' ? 'write' : 'read',
+      );
       expect(command.sideEffects, command.name).not.toContain('MOVES_FUNDS');
       expect(command.sideEffects, command.name).not.toContain('SIGNS_TRANSACTION');
       expect(command.implementation.note.length, command.name).toBeGreaterThan(0);

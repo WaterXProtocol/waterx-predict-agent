@@ -75,6 +75,13 @@ export const CAPABILITIES: readonly Capability[] = [
       'What is still missing before this agent may trade, and the link an owner opens to grant it.',
   },
   {
+    id: 'configure',
+    command: 'runtime.configure',
+    status: 'AVAILABLE',
+    summary:
+      "Write the agent wallet and signer command into this machine's config file. Writes no network, policy or account, and sends nothing.",
+  },
+  {
     id: 'next',
     command: 'runtime.next',
     status: 'AVAILABLE',
