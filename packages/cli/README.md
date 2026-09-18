@@ -35,6 +35,15 @@ installed.
 
 ## Quickstart
 
+An agent host installs both binaries from the repository (ADR-0019):
+
+```sh
+npm install github:WaterXProtocol/waterx-predict-agent
+npx --no waterx-predict next --json   # and do what it says
+```
+
+From a checkout, build and alias instead:
+
 ```sh
 pnpm --filter @waterx/predict-agent-cli build
 alias waterx-predict='node packages/cli/dist/src/main.js'

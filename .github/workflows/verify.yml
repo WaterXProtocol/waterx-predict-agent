@@ -35,6 +35,10 @@ jobs:
 
       - run: pnpm test
 
+      # The two ways in, both walked: the git install shape (ADR-0019) and the
+      # release artifacts (ADR-0010). A change that breaks either breaks a setup.
+      - run: pnpm install:check
+
       # The committed artifact is the one adapters read. A generator that no
       # longer reproduces it byte-for-byte means the schema and the contract
       # have diverged, which `packages/schema/tests` cannot catch on its own

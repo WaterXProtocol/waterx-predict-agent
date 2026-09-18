@@ -29,6 +29,7 @@ wins and the plan should be corrected.
 | [0016](0016-runner-direct-mode.md) | The Runner trades in direct mode too | Accepted | amends ADR-0013, ADR-0001 §8 |
 | [0017](0017-mainnet-writes-are-opt-in.md) | On mainnet, placing orders is something the operator turns on | Accepted | amends ADR-0011 |
 | [0018](0018-approval-audit.md) | An approval names who gave it, and every write decision is kept | Accepted | amends ADR-0014, ADR-0015 |
+| [0019](0019-git-install.md) | The repository installs with npm, as one sentence | Accepted | amends ADR-0010, ADR-0012 |
 
 ## Status vocabulary
 

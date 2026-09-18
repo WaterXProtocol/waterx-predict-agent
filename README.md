@@ -121,6 +121,16 @@ Node.js 20+ and ESM. macOS and Linux; Windows is not verified (ADR-0002).
 An agent host needs one instruction:
 
 ```
+Run `npm install github:WaterXProtocol/waterx-predict-agent`, then `npx --no waterx-predict next --json`, and do what it says.
+```
+
+That installs both binaries from this repository (ADR-0019): npm clones it,
+the root `prepare` builds the workspace with pnpm and assembles what the two
+binaries run, and npm installs the result. It needs a git that can read this
+private repository, and about a minute to build. The release artifacts stay the
+other way in, for an operator who wants a pinned, prebuilt tarball and its SBOM:
+
+```
 Run `npm install <cli.tgz-url> <keystore.tgz-url>`, then `npx --no waterx-predict next --json`, and do what it says.
 ```
 
