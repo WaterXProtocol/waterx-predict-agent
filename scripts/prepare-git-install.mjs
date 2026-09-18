@@ -19,8 +19,12 @@ import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 
 const agent = process.env['npm_config_user_agent'] ?? '';
-const forced = process.env['WATERX_PREPARE_GIT_INSTALL'] === '1';
-if (!forced && !agent.startsWith('npm/')) {
+const flag = process.env['WATERX_PREPARE_GIT_INSTALL'];
+// `0` is how this hook turns itself off for everything it starts. Without it
+// the build below recurses: `pnpm install` runs this same hook, which runs
+// `pnpm install` again. `1` is how `install:check` asks for the real path even
+// though pnpm, not npm, is what invoked `npm pack`.
+if (flag === '0' || (flag !== '1' && !agent.startsWith('npm/'))) {
   process.stderr.write(`prepare: nothing to do for ${agent === '' ? 'this runner' : agent.split(' ')[0]}; \`pnpm build\` builds this workspace\n`);
   process.exit(0);
 }
@@ -39,11 +43,13 @@ const runners = [
   ['npx', ['--yes', 'pnpm@' + pinned]],
 ];
 
+const childEnv = { ...process.env, WATERX_PREPARE_GIT_INSTALL: '0' };
+
 const run = (args) => {
   let lastError;
   for (const [command, prefix] of runners) {
     try {
-      execFileSync(command, [...prefix, ...args], { stdio: 'inherit' });
+      execFileSync(command, [...prefix, ...args], { stdio: 'inherit', env: childEnv });
       return;
     } catch (error) {
       lastError = error;

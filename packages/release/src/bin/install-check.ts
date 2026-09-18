@@ -26,7 +26,7 @@
  * against a throwaway HOME and its own directory.
  */
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -71,8 +71,20 @@ const main = (argv: readonly string[]): number => {
   const keystoreDir = mkdtempSync('/tmp/wxgk-');
 
   try {
+    // A tree left by an earlier build must not be able to make this pass: the
+    // point is that `prepare` assembles one. That is also why `prepare` is
+    // forced — `npm pack` run from pnpm inherits pnpm's user agent, and the
+    // hook would take this for a developer's install and return.
+    rmSync(join(repoRoot, 'dist', 'install'), { recursive: true, force: true });
     process.stderr.write('packing the repository the way a git install packs it (this runs the root prepare)…\n');
-    execFileSync('npm', ['pack', '--pack-destination', staging], { cwd: repoRoot, stdio: 'inherit' });
+    execFileSync('npm', ['pack', '--pack-destination', staging], {
+      cwd: repoRoot,
+      stdio: 'inherit',
+      env: { ...process.env, WATERX_PREPARE_GIT_INSTALL: '1' },
+    });
+    if (!existsSync(join(repoRoot, 'dist', 'install', 'cli', 'main.js'))) {
+      throw new Error('`npm pack` did not run the root prepare: nothing assembled dist/install');
+    }
     const tarball = readdirSync(staging).find((name) => name.endsWith('.tgz'));
     if (tarball === undefined) throw new Error('npm pack produced no tarball');
 
