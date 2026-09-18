@@ -405,7 +405,7 @@ export function decideNext(facts: NextFacts): NextAnswer {
             to: 'AGENT_OPERATOR',
             message:
               'The keystore signer did not answer. Its agent is probably not running — a socket file can outlive the process that made it. Ask the operator to start it again.',
-            steps: [agentStep()],
+            steps: [agentStep(facts.keystore?.agent === 'SOCKET_PRESENT')],
           }
         : undefined,
     );
@@ -679,9 +679,18 @@ export function decideNext(facts: NextFacts): NextAnswer {
 const KEYSTORE_ASSET = `waterx-predict-agent-signer-keystore-${CLI_VERSION}.tgz`;
 const npxKeystore = (subcommand: string): string => `npx --no ${KEYSTORE_LAYOUT.command} ${subcommand}`;
 
-const agentStep = (): SetupStep => ({
+/**
+ * The step is listed even when a socket file is there, because a socket proves
+ * nothing: the file outlives the agent that made it, and this runtime will not
+ * dial it to find out (`keystore-probe.ts`). A real host followed a hand-over
+ * that skipped this step on a machine whose socket was a month stale, and the
+ * first signature is where that would have surfaced.
+ */
+const agentStep = (socketPresent: boolean): SetupStep => ({
   run: npxKeystore('agent'),
-  why: 'Unlocks the keystore once, in its own terminal, and stays running holding the key. Every signature after that goes through it; nothing else sees the passphrase.',
+  why: socketPresent
+    ? 'Unlocks the keystore and stays running holding the key. A socket file is already there, which does not prove an agent is behind it — if one is running, this step is done; if it is not, every signature fails until it is.'
+    : 'Unlocks the keystore once, in its own terminal, and stays running holding the key. Every signature after that goes through it; nothing else sees the passphrase.',
 });
 
 /**
@@ -731,8 +740,8 @@ function setupSteps(facts: NextFacts, gaps: readonly ResolvedRequirement[]): Set
   if (probe !== undefined && useKeystore) {
     if (!probe.installed) {
       steps.push({
-        run: `npm install <release-asset-url>/${KEYSTORE_ASSET}`,
-        why: 'Installs the keystore signer beside this CLI, from the same release. It is a separate program on purpose: this CLI never holds a key.',
+        run: `npm install github:WaterXProtocol/waterx-predict-agent   # or <release-asset-url>/${KEYSTORE_ASSET}`,
+        why: 'Installs the keystore signer beside this CLI — the repository carries both binaries (ADR-0019), and a release carries them as two artifacts. It is a separate program on purpose: this CLI never holds a key.',
       });
     }
     if (probe.keystore.status === 'UNREADABLE') {
@@ -747,7 +756,7 @@ function setupSteps(facts: NextFacts, gaps: readonly ResolvedRequirement[]): Set
         why: 'Creates a NEW agent wallet, sealed under a passphrase the operator chooses, and prints its address. Never import the account owner\'s key here: this key stays unlocked while the agent runs.',
       });
     }
-    if (probe.keystore.status !== 'PRESENT' || probe.agent === 'NO_SOCKET') steps.push(agentStep());
+    steps.push(agentStep(probe.keystore.status === 'PRESENT' && probe.agent === 'SOCKET_PRESENT'));
     const address = probe.keystore.status === 'PRESENT' ? probe.keystore.address : undefined;
     const mismatched =
       address !== undefined && facts.agentWallet !== undefined && facts.agentWallet.toLowerCase() !== address.toLowerCase();
