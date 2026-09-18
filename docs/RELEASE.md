@@ -217,7 +217,11 @@ runs it on every push.
 
 It is not a replacement for the bundle below: a git install resolves its
 dependencies by range at install time and builds on the host, while the release
-artifacts are pinned, prebuilt and carry an SBOM each.
+artifacts are pinned, prebuilt and carry an SBOM each. A git install also
+depends on npm running `prepare` — npm already warns that the script is not
+covered by `allowScripts`, and a host that disables install scripts gets a
+package that was never built. The artifacts have no install script at all,
+which is the reason to keep publishing them.
 
 ## The operator CLI bundle
 

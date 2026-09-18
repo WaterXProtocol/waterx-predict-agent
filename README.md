@@ -127,7 +127,15 @@ Run `npm install github:WaterXProtocol/waterx-predict-agent`, then `npx --no wat
 That installs both binaries from this repository (ADR-0019): npm clones it,
 the root `prepare` builds the workspace with pnpm and assembles what the two
 binaries run, and npm installs the result. It needs a git that can read this
-private repository, and about a minute to build. The release artifacts stay the
+private repository, and about a minute to build.
+
+**npm will warn about that `prepare` script.** Recent npm prints `1 package has
+install scripts not yet covered by allowScripts` and suggests
+`npm approve-scripts`. The install still runs the script today, and the warning
+is about future installs — but a host that disables install scripts (or an npm
+that stops running them by default) gets a package with nothing to run, because
+the build never happened. Two ways out: approve the script, or install the
+release artifacts below, which need no install script at all. The release artifacts stay the
 other way in, for an operator who wants a pinned, prebuilt tarball and its SBOM:
 
 ```

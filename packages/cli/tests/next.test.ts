@@ -306,7 +306,7 @@ describe('next, walking an operator through the keystore signer', () => {
     const { result, answer } = await next({ env: {}, homeDir: HOME });
     expect(answer.state).toBe('SETUP_INCOMPLETE');
     expect(runs(answer)).toEqual([
-      'npm install <release-asset-url>/waterx-predict-agent-signer-keystore-0.1.0.tgz',
+      'npm install github:WaterXProtocol/waterx-predict-agent   # or <release-asset-url>/waterx-predict-agent-signer-keystore-0.1.0.tgz',
       'npx --no waterx-predict-keystore init',
       'npx --no waterx-predict-keystore agent',
       'export WATERX_PREDICT_AGENT_WALLET=<the address init printed>',
@@ -373,7 +373,11 @@ describe('next, walking an operator through the keystore signer', () => {
     });
     expect(answer.state).toBe('SETUP_INCOMPLETE');
     expect(answer.headline).toContain(`but the keystore holds ${KEYSTORE_ADDRESS}`);
-    expect(runs(answer)).toEqual([`export WATERX_PREDICT_AGENT_WALLET=${KEYSTORE_ADDRESS}`]);
+    // The agent step rides along: a socket file is not proof one is running.
+    expect(runs(answer)).toEqual([
+      'npx --no waterx-predict-keystore agent',
+      `export WATERX_PREDICT_AGENT_WALLET=${KEYSTORE_ADDRESS}`,
+    ]);
     expect(result.signerRuns).toEqual([]);
   });
 
@@ -405,6 +409,22 @@ describe('next, walking an operator through the keystore signer', () => {
     expect(runs(answer)).toEqual(['npx --no waterx-predict-keystore agent']);
     expect(answer.suggestions.map((row) => row.command)).toEqual(['runtime.doctor']);
     assertBounded(answer);
+  });
+
+  it('still lists the agent step when only a socket file says one ran', async () => {
+    // A socket outlives the agent that made it, and this runtime will not dial
+    // it to find out. A real host followed a hand-over that skipped this step
+    // on a machine whose socket was a month stale; the first signature is
+    // where that would have surfaced.
+    const { answer } = await next({
+      env: {},
+      homeDir: HOME,
+      executables: ['waterx-predict-keystore'],
+      files: KEYSTORE_FILE,
+      pathStat: socketUp,
+    });
+    expect(runs(answer)[0]).toBe('npx --no waterx-predict-keystore agent');
+    expect(answer.handOver?.steps?.[0]?.why).toMatch(/does not prove an agent is behind it/u);
   });
 
   it('gets out of the way once every step is done', async () => {

@@ -42,6 +42,10 @@ npm install github:WaterXProtocol/waterx-predict-agent
 npx --no waterx-predict next --json   # and do what it says
 ```
 
+npm warns that the root `prepare` script is not covered by `allowScripts`. That
+script is what builds this workspace, so an install that skips it leaves nothing
+to run — approve it, or use the release artifacts, which need no install script.
+
 From a checkout, build and alias instead:
 
 ```sh
