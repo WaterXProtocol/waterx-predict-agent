@@ -10,7 +10,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { invoke, type InvokeOptions } from './harness.ts';
+import { ACCOUNT_ID, AUTH_OK, CONFIGURED_ENV, invoke, type InvokeOptions } from './harness.ts';
 
 const HOME = '/home/op';
 const CONFIG = `${HOME}/.config/waterx-predict/config.json`;
@@ -222,5 +222,57 @@ describe('where an answer points next', () => {
       files: { [CONFIG]: JSON.stringify({ policy: { mode: 'interactive' } }) },
     });
     expect(answer.envelope.meta?.nextCommand).toBe('waterx-predict next');
+  });
+});
+
+/**
+ * The choice that comes right after the signature (ADR-0025).
+ *
+ * Two permissions, not one: the OWNER grants this agent a delegation, and the
+ * OPERATOR decides what this runtime may sign with it. The second one is due
+ * the moment the first lands — on mainnet the default is read-only, so an
+ * agent that has just been authorized still cannot place an order, and saying
+ * "authorized" without saying that is the half-truth that wastes somebody's
+ * afternoon.
+ */
+describe('after the owner signs', () => {
+  it('tells the operator what is still missing, and does not claim it may trade', async () => {
+    const result = await invoke(['onboard', '--wait', '--timeoutMs', '2000'], {
+      homeDir: HOME,
+      env: {
+        ...CONFIGURED_ENV,
+        WATERX_PREDICT_CONSOLE_URL: 'https://console.test.invalid',
+        // What mainnet does by default (ADR-0017), without needing mainnet.
+        WATERX_PREDICT_POLICY: 'read-only',
+        WATERX_PREDICT_NO_BROWSER: '1',
+      },
+      routes: {
+        'POST /agent-api/v1/auth': AUTH_OK,
+        'GET /agent-api/v1/predict/accounts': {
+          status: 200,
+          body: {
+            accounts: [
+              {
+                accountId: ACCOUNT_ID,
+                ownerAddress: `0x${'a'.repeat(63)}9`,
+                isSuspended: false,
+                delegation: { mayPlaceOrder: true, status: 'ACTIVE' },
+                riskProfile: { exists: true },
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    expect(result.envelope.ok).toBe(true);
+    // The old sentence — "this agent may now trade" — was false here: on
+    // mainnet the execution policy defaults to read-only, and the owner's
+    // grant does not change it.
+    expect(result.stderr).not.toContain('may now trade');
+    expect(result.stderr).toContain('still places no order');
+    // And it hands the loop onward rather than stopping on a half-truth:
+    // `next` is where the account is adopted and the three modes are offered.
+    expect(result.envelope.meta?.nextCommand).toBe('waterx-predict next');
   });
 });

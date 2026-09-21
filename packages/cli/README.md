@@ -638,6 +638,11 @@ token and no `/agent-api` request.
   chain's grant events, and a named account (`WATERX_PREDICT_ACCOUNT_ID`) is
   verified from its on-chain object. Once an account is in use, `next` never
   switches to another unless it is named.
+- **Two permissions, from two people.** The ACCOUNT OWNER signs the delegation
+  on the authorize page; the AGENT OPERATOR decides what this runtime may sign
+  with it. The second is due the moment the first lands, so `onboard` says the
+  runtime still places no order and `next` offers the three modes first
+  (ADR-0025).
 - **Mainnet is read-only until the operator opts in** (ADR-0017). With no
   policy configured, mainnet reads and previews and places nothing.
   `waterx-predict policy` lists the three modes with what each allows, and the

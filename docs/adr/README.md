@@ -35,6 +35,7 @@ wins and the plan should be corrected.
 | [0022](0022-every-answer-points-somewhere.md) | Every answer points somewhere, and says whose step it is | Accepted | amends ADR-0020 |
 | [0023](0023-say-what-the-account-is-carrying.md) | Say what the account is carrying | Accepted | amends ADR-0022 |
 | [0024](0024-handing-the-link-over.md) | Handing the link over | Accepted | amends ADR-0022 |
+| [0025](0025-the-choice-after-the-signature.md) | The operator's choice comes right after the owner's signature | Accepted | amends ADR-0021, ADR-0022 |
 
 ## Status vocabulary
 

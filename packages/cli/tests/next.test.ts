@@ -857,15 +857,18 @@ describe('next, when nothing stands in the way', () => {
     expect(result.envelope.meta?.nextCommand).toBe('waterx-predict onboard --wait');
   });
 
-  it('offers no order under a read-only policy, and says why', async () => {
-    const { answer } = await next({ env: CONFIGURED_ENV, routes: READY_ROUTES }, ['--policy', 'read-only']);
+  it('puts the policy choice first when the grant has landed and it still cannot sign', async () => {
+    const { answer, result } = await next({ env: CONFIGURED_ENV, routes: READY_ROUTES }, ['--policy', 'read-only']);
     expect(answer.state).toBe('READY');
     expect(answer.facts.policy.writes).toBe('REFUSED');
-    // The chooser rides along, so a relaying agent hands over three options
-    // rather than the one mode a sentence happened to name (ADR-0021).
-    expect(answer.suggestions.map((row) => row.command)).toEqual(['market.search', 'runtime.policy']);
+    // The chooser comes FIRST — the grant has landed and this thing still
+    // cannot sign, so the operator's choice outranks a market to browse
+    // (ADR-0025). Being first is also what `meta.nextCommand` points at.
+    expect(answer.suggestions.map((row) => row.command)).toEqual(['runtime.policy', 'market.search']);
+    expect(result.envelope.meta?.nextCommand).toBe('waterx-predict policy');
     expect(answer.headline).toMatch(/read-only/u);
-    expect(answer.headline).toMatch(/waterx-predict policy/u);
+    expect(answer.headline).toMatch(/places no order yet/u);
+    expect(answer.headline).toMatch(/waterx-predict policy set --mode <mode> --yes/u);
     assertBounded(answer);
   });
 });

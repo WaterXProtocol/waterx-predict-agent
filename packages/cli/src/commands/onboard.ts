@@ -234,7 +234,13 @@ export async function runtimeOnboard(context: CommandContext): Promise<unknown> 
     onChange: (state) => {
       context.diagnostic(
         state.status === 'READY'
-          ? 'Authorized. This agent may now trade on the account below.\n'
+          ? // "May now trade" is false under a read-only policy, which is the
+            // default on mainnet (ADR-0017) — and the moment after the owner
+            // signs is exactly when the operator's own choice is due
+            // (ADR-0025). Two separate permissions, said as two.
+            context.config.policy.mode === 'read-only'
+            ? 'Authorized. This runtime still places no order: its execution policy is read-only, which is the operator\u2019s to change. Run `waterx-predict next` \u2014 it shows the three modes and what each allows.\n'
+            : 'Authorized. This agent may now trade on the account below.\n'
           : context.config.mode === 'direct' && state.status === 'NOT_ONBOARDED'
             ? 'Waiting — NOT_ONBOARDED: the owner opens the link, picks an account and signs the delegation.\n'
             : `Waiting — ${state.status}: ${state.nextStep.action}\n`,

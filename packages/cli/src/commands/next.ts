@@ -720,14 +720,32 @@ function decide(facts: NextFacts): NextAnswer {
   }
 
   // 8. Ready. What to trade, how much and how carefully are the user's words.
-  const suggestions: NextSuggestion[] = [
+  //
+  //    …except when nothing may be signed yet. The grant has landed and this
+  //    runtime still places no order, so the next thing to put in front of the
+  //    operator is that choice — not a market to browse (ADR-0025).
+  const suggestions: NextSuggestion[] = [];
+  if (facts.writes === 'REFUSED') {
+    // The chooser, not a mode. Naming one of the three in a sentence is how an
+    // operator ends up taking the middle option without being shown the other
+    // two, and `next` is read by an agent that relays exactly what it is given
+    // (ADR-0021). First, so it is also what `meta.nextCommand` points at.
+    suggestions.push(
+      suggest(
+        'runtime.policy',
+        {},
+        'The three modes this runtime could be in, with what each allows and the command that takes it. Choosing is the operator\u2019s: relay the three, do not pick one for them.',
+      ),
+    );
+  }
+  suggestions.push(
     suggest(
       'market.search',
       { tradeable: true },
       'Turn the user\'s words into one server-resolved market. AMBIGUOUS is an answer: show the candidates and ask.',
       [{ field: 'search', why: 'What to trade is the user\'s to say.' }],
     ),
-  ];
+  );
   if (facts.writes === 'NEEDS_APPROVAL' || facts.writes === 'WITHIN_SCOPE') {
     suggestions.push(
       suggest(
@@ -756,26 +774,23 @@ function decide(facts: NextFacts): NextAnswer {
     );
   }
   if (facts.writes === 'REFUSED') {
-    // The chooser, not a mode. Naming one of the three in a sentence is how an
-    // operator ends up taking the middle option without being shown the other
-    // two, and `next` is read by an agent that will relay exactly what it is
-    // given (ADR-0021).
-    suggestions.push(
-      suggest(
-        'runtime.policy',
-        {},
-        'The three modes this runtime could be in, with what each allows and the command that takes it. Setting one is the operator\u2019s: relay the choice, do not make it.',
-      ),
+    // Authorized, and still unable to sign. Said in the headline rather than
+    // left to `facts.policy`, because the owner has just done their part and
+    // the next question is the operator's: what may this thing sign?
+    return answer(
+      'READY',
+      `Authorized on ${accountId} with nothing in flight, and it places no order yet.${
+        facts.readOnlyByDefault === true
+          ? ' This runtime is read-only by default on mainnet (nobody has chosen a policy).'
+          : ' The execution policy is read-only.'
+      } Choosing what it may sign is the operator\u2019s: \`waterx-predict policy\` lists the three modes with what each allows, and \`waterx-predict policy set --mode <mode> --yes\` takes one. Reads still work.`,
+      suggestions,
     );
   }
   const posture =
-    facts.writes === 'REFUSED'
-      ? facts.readOnlyByDefault === true
-        ? ' This runtime is read-only by default on mainnet: it can search and preview, and places no order until the operator chooses a policy — `waterx-predict policy` lists the three and what each allows.'
-        : ' The execution policy is read-only, so this runtime can place no order. `waterx-predict policy` lists the three modes and what each allows.'
-      : facts.writes === 'SCOPE_EXPIRED'
-        ? ' The delegated-auto window has closed, so this runtime authorizes no order until the operator renews it.'
-        : '';
+    facts.writes === 'SCOPE_EXPIRED'
+      ? ' The delegated-auto window has closed, so this runtime authorizes no order until the operator renews it.'
+      : '';
   return answer(
     'READY',
     `Authorized on ${accountId} with nothing in flight.${posture} Ask the user what to trade.`,
