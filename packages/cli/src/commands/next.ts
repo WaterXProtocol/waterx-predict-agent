@@ -485,7 +485,7 @@ export function decideNext(facts: NextFacts): NextAnswer {
     case 'DELEGATION_MISSING':
       return answer(
         'AWAITING_OWNER',
-        `The account owner has not authorized this agent yet (${onboarding.status}).`,
+        `The account owner has not authorized this agent yet (${onboarding.status}). Send them the link, then run the step below while they sign.`,
         [waitForOwner],
         {
           to: 'ACCOUNT_OWNER',
@@ -497,6 +497,22 @@ export function decideNext(facts: NextFacts): NextAnswer {
                 : 'Send the owner this link. They pick an account, set the limits and sign once in their own wallet. The link carries no token and grants nothing by itself; never ask for their key.',
           ...(link === undefined ? {} : { authorizationUrl: link }),
         },
+        // The signature is the owner's; the command is this agent's. Those are
+        // two halves of one step that attach to different people, and a screen
+        // that named only the first is where a real session stopped — having
+        // produced no link at all, because it never ran the command that prints
+        // one (ADR-0022).
+        link === undefined
+          ? []
+          : [
+              {
+                run: `${BINARY} onboard --wait`,
+                command: 'runtime.onboard',
+                why: 'Prints the link again, opens nothing by itself, and polls until the owner\u2019s grant lands — then adopts the account it was granted on. A wait that runs out cancels nothing: run it again.',
+                safeBecause:
+                  'It reads. It signs the login challenge and nothing else, grants nothing, and cannot make the owner\u2019s decision for them — only notice when they have made it.',
+              },
+            ],
       );
     case 'SUSPENDED':
       return answer(
@@ -710,11 +726,24 @@ export function decideNext(facts: NextFacts): NextAnswer {
       ),
     );
   }
+  if (facts.writes === 'REFUSED') {
+    // The chooser, not a mode. Naming one of the three in a sentence is how an
+    // operator ends up taking the middle option without being shown the other
+    // two, and `next` is read by an agent that will relay exactly what it is
+    // given (ADR-0021).
+    suggestions.push(
+      suggest(
+        'runtime.policy',
+        {},
+        'The three modes this runtime could be in, with what each allows and the command that takes it. Setting one is the operator\u2019s: relay the choice, do not make it.',
+      ),
+    );
+  }
   const posture =
     facts.writes === 'REFUSED'
       ? facts.readOnlyByDefault === true
-        ? ' This runtime is read-only by default on mainnet: it can search and preview, and places no order until the operator sets WATERX_PREDICT_POLICY=interactive.'
-        : ' The execution policy is read-only, so this runtime can place no order.'
+        ? ' This runtime is read-only by default on mainnet: it can search and preview, and places no order until the operator chooses a policy — `waterx-predict policy` lists the three and what each allows.'
+        : ' The execution policy is read-only, so this runtime can place no order. `waterx-predict policy` lists the three modes and what each allows.'
       : facts.writes === 'SCOPE_EXPIRED'
         ? ' The delegated-auto window has closed, so this runtime authorizes no order until the operator renews it.'
         : '';
@@ -1105,6 +1134,18 @@ export async function runtimeNext(context: CommandContext): Promise<unknown> {
 
   // For a person watching a terminal: the headline, who acts, and the first step.
   const first = decided.suggestions[0];
+  // The pointer is the first thing here that can be run AS PRINTED — an agent
+  // step before a suggestion, because those are the ones that move the setup
+  // along. A suggestion carrying `<field>` is skipped by `pointTo` itself, and
+  // then the fallback is `next`, which is the right answer while waiting for a
+  // person (ADR-0022).
+  for (const candidate of [
+    ...(decided.agentSteps ?? []).map((step) => step.run),
+    ...decided.suggestions.map((suggestion) => suggestion.invocation),
+  ]) {
+    context.pointTo(candidate);
+    break;
+  }
   context.diagnostic(
     [
       decided.headline,

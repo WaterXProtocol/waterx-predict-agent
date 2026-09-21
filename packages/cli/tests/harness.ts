@@ -47,7 +47,7 @@ export interface Envelope {
   requestId: string;
   data?: unknown;
   error?: { code: string; message: string; retryable: boolean; source: string; details?: unknown };
-  meta?: { defaultsApplied?: Record<string, unknown>; warnings?: string[] };
+  meta?: { defaultsApplied?: Record<string, unknown>; warnings?: string[]; nextCommand?: string };
 }
 
 export interface FetchCall {

@@ -31,6 +31,11 @@ export const GLOBAL_FLAGS = new Set([
   'approve',
   'approver',
   'policy',
+  // Consent to WIDEN what this runtime may sign (`policy set`). A dispatcher
+  // flag for the same reason as `--approve`: a model host reaches this CLI
+  // through `--input <json>`, so a confirmation carried in the input would let
+  // one generated document both propose the change and agree to it.
+  'yes',
   // Opens the authorization link. Dispatcher-owned rather than an input field
   // on purpose: a model host reaches this CLI through `--input <json>` and the
   // adapters' operator-flag allowlist, and neither can reach a global flag — so

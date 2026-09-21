@@ -82,6 +82,18 @@ export const CAPABILITIES: readonly Capability[] = [
       "Write the agent wallet and signer command into this machine's config file. Writes no network, policy or account, and sends nothing.",
   },
   {
+    id: 'policy',
+    command: 'runtime.policy',
+    status: 'AVAILABLE',
+    summary: 'What this runtime may sign, and the three modes it could be in, with what each allows.',
+  },
+  {
+    id: 'policy set',
+    command: 'runtime.policy-set',
+    status: 'AVAILABLE',
+    summary: "Set the execution policy. A person's command: widening it needs --yes.",
+  },
+  {
     id: 'next',
     command: 'runtime.next',
     status: 'AVAILABLE',

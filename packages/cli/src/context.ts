@@ -100,6 +100,23 @@ export interface CommandContext {
    */
   probeKeystore(): KeystoreProbe | undefined;
   /**
+   * Name the one command to run after this one.
+   *
+   * Every envelope carries a pointer (`meta.nextCommand`); this is how a
+   * command names a better one than the default `waterx-predict next`. It is
+   * REFUSED — and the default kept — for anything a host must not run as
+   * printed: a `<placeholder>` nobody may fill in by guessing, or `--yes`,
+   * which is a person's consent (ADR-0022).
+   */
+  pointTo(command: string): void;
+  /**
+   * `--yes`: a person\u2019s consent to widen what this runtime may sign.
+   *
+   * A dispatcher flag rather than an input field, like `--approve` — see
+   * `parse.ts`. Only `policy set` reads it, and only when the change widens.
+   */
+  readonly confirmed: boolean;
+  /**
    * The settings file this runtime reads, and the seam that rewrites it.
    *
    * `path` is the file that WAS read, or the first candidate location when none

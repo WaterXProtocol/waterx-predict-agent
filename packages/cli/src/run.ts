@@ -46,6 +46,7 @@ import { describeRuntime } from './commands/describe.ts';
 import { doctorFailure, runDoctor } from './commands/doctor.ts';
 import { marketGet, marketList, marketQuote, marketSearch } from './commands/market.ts';
 import { runtimeConfigure } from './commands/configure.ts';
+import { runtimePolicy, runtimePolicySet } from './commands/policy.ts';
 import { runtimeNext } from './commands/next.ts';
 import { runtimeOnboard } from './commands/onboard.ts';
 import {
@@ -168,6 +169,8 @@ const HANDLERS: Readonly<Record<string, CommandHandler>> = {
     Promise.resolve(describeRuntime(context.config, context.nodeVersion)),
   'runtime.command-schema': (context) => Promise.resolve(commandSchema(context.input)),
   'runtime.configure': runtimeConfigure,
+  'runtime.policy': runtimePolicy,
+  'runtime.policy-set': runtimePolicySet,
   'market.list': marketList,
   'market.search': marketSearch,
   'market.get': marketGet,
@@ -285,6 +288,22 @@ export async function run(io: CliIo): Promise<number> {
     if (code === EXIT_CODES.AMBIGUOUS || successExit === EXIT_CODES.OK) successExit = code;
   };
 
+  /**
+   * The pointer this invocation hands back (ADR-0022).
+   *
+   * It starts at `next` — which answers in every state, so the fallback is
+   * never a dead end — and a command may name a better one. It may NOT name a
+   * command that cannot be run as printed: see `pointTo`.
+   */
+  let nextCommand = `${CLI_NAME} next`;
+  const pointTo = (candidate: string): void => {
+    // A placeholder is a value somebody has to choose, and `--yes` is a
+    // person's consent. Handing either back as "the command to run next" is
+    // precisely the invitation a host must not receive, so the default stands.
+    if (candidate.includes('<') || /(^|\s)--yes(\s|$)/u.test(candidate)) return;
+    nextCommand = candidate;
+  };
+
   try {
     parsed = parseArgv(io.argv);
     timeoutMs = parseTimeoutFlag(parsed.flags) ?? 0;
@@ -293,7 +312,7 @@ export async function run(io: CliIo): Promise<number> {
       command = 'runtime.version';
       emitEnvelope(
         io.streams,
-        successEnvelope(command, requestId, { name: CLI_NAME, version: CLI_VERSION }),
+        successEnvelope(command, requestId, { name: CLI_NAME, version: CLI_VERSION }, withPointer(undefined, nextCommand)),
         redactor,
       );
       return EXIT_CODES.OK;
@@ -388,6 +407,7 @@ export async function run(io: CliIo): Promise<number> {
     const invocation = createContext(io, config, built.input, diagnostic, {
       approval: requireFlagValue(parsed.flags, 'approve'),
       approver: approverOf(parsed),
+      confirmed: parsed.flags.get('yes') === true,
       // Always a function when asked for, never a silent absence: a host with no
       // opener has to be able to SAY so, and `undefined` here would be
       // indistinguishable from the flag not being passed at all.
@@ -399,6 +419,7 @@ export async function run(io: CliIo): Promise<number> {
         : undefined,
       runnerDir: requireFlagValue(parsed.flags, 'runner-dir'),
       exitAs,
+      pointTo,
       onSecret: (secret) => redactor.register(secret),
     });
     const context = invocation.context;
@@ -410,11 +431,11 @@ export async function run(io: CliIo): Promise<number> {
     if (spec.name === 'runtime.doctor') {
       const report = await runDoctor(context);
       if (report.failed === 0) {
-        emitEnvelope(io.streams, successEnvelope(command, requestId, report, meta), redactor);
+        emitEnvelope(io.streams, successEnvelope(command, requestId, report, withPointer(meta, nextCommand)), redactor);
         return EXIT_CODES.OK;
       }
       const failure = doctorFailure(report);
-      emitEnvelope(io.streams, errorEnvelope(command, requestId, failure.error, meta), redactor);
+      emitEnvelope(io.streams, errorEnvelope(command, requestId, failure.error, withPointer(meta, nextCommand)), redactor);
       return failure.exit;
     }
 
@@ -425,13 +446,13 @@ export async function run(io: CliIo): Promise<number> {
 
     emitEnvelope(
       io.streams,
-      successEnvelope(command, requestId, await handler(context), meta),
+      successEnvelope(command, requestId, await handler(context), withPointer(meta, nextCommand)),
       redactor,
     );
     return successExit;
   } catch (error: unknown) {
     const envelopeError = toEnvelopeError(error, timeoutMs);
-    emitEnvelope(io.streams, errorEnvelope(command, requestId, envelopeError, meta), redactor);
+    emitEnvelope(io.streams, errorEnvelope(command, requestId, envelopeError, withPointer(meta, nextCommand)), redactor);
     return resolveExit(error, envelopeError.source, envelopeError.code);
   } finally {
     closeRunner?.();
@@ -471,6 +492,12 @@ function buildMeta(
   };
   return Object.keys(meta).length > 0 ? meta : undefined;
 }
+
+/** The same meta with this invocation's pointer on it. Never absent (ADR-0022). */
+const withPointer = (meta: EnvelopeMeta | undefined, nextCommand: string): EnvelopeMeta => ({
+  ...meta,
+  nextCommand,
+});
 
 /**
  * `--approver`, checked where it is read. It is required with `--approve`
@@ -534,9 +561,11 @@ function createContext(
   options: {
     approval: string | undefined;
     approver: string | undefined;
+    confirmed: boolean;
     openInBrowser: ((url: string) => void) | undefined;
     runnerDir: string | undefined;
     exitAs: (code: ExitCode) => void;
+    pointTo: (command: string) => void;
     onSecret: (secret: string) => void;
   },
 ): { context: CommandContext; close: () => void } {
@@ -674,6 +703,7 @@ function createContext(
       runner: () => (runner ??= openRunner()),
       signal: (atLeastMs?: number) => deadline(Math.max(config.timeoutMs, atLeastMs ?? 0)),
       exitAs: options.exitAs,
+      pointTo: options.pointTo,
       diagnostic,
       nodeVersion: io.nodeVersion,
       now: io.now,
@@ -686,6 +716,7 @@ function createContext(
         }
         return (ledgers ??= io.ledgers());
       },
+      confirmed: options.confirmed,
       configFile: configFileSeam(io, config),
       probeKeystore: () =>
         probeKeystore(config, {

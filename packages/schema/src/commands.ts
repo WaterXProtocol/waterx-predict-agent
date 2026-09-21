@@ -821,6 +821,79 @@ const runtimeConfigure: AgentCommandSpec = {
   ],
 };
 
+/**
+ * The choosing screen for what this runtime may sign.
+ *
+ * A read, and the reason it is one: `next` may suggest it, so a relaying agent
+ * hands its operator THREE options with what each costs, rather than the one
+ * mode somebody happened to name in a sentence (ADR-0021). Choosing between
+ * them is the person's part, and a decision needs all of its options in front
+ * of it.
+ */
+const runtimePolicy: AgentCommandSpec = {
+  ...readOnly,
+  name: 'runtime.policy',
+  cli: 'policy',
+  summary: 'What this runtime may sign today, the three modes it could be in, and what each allows.',
+  description:
+    'Reports the execution policy in force, where it came from, and the three modes as three — in rank order, each with what it allows, what it costs, and the exact command that takes it. They are not neutral alternatives: `delegated-auto` is the one where this process signs against real money with nobody watching, so it is listed with its prerequisite rather than hidden (hiding it leaves the people who need it unable to find it) and never presented as equal to the others. A mode whose prerequisite is not met says so where it is offered, instead of letting somebody walk into the refusal. This command changes nothing; `policy set` is what changes it, and that one is a person\u2019s.',
+  implementation: {
+    kind: 'runtime',
+    note: 'Local only: the resolved policy and the modes available from it. Issues no request and signs nothing.',
+  },
+  input: { type: 'object', additionalProperties: false, properties: {} },
+  examples: [{ title: 'What may this runtime sign, and what else could it?', input: {} }],
+};
+
+/**
+ * The one command that changes what may be signed — and a person\u2019s.
+ *
+ * Widening needs `--yes`, which is a DISPATCHER flag and not an input field, for
+ * the same reason `--approve` is (ADR-0018): a model host reaches this CLI
+ * through `--input <json>`, so a confirmation that lived in the input would let
+ * one generated document both propose the change and consent to it.
+ * Narrowing needs nothing — refusing to let somebody turn writes off would be
+ * absurd.
+ */
+const runtimePolicySet: AgentCommandSpec = {
+  name: 'runtime.policy-set',
+  cli: 'policy set',
+  summary: 'Set the execution policy. Widening it is a person\u2019s act and needs --yes.',
+  description:
+    'Writes `policy.mode` into the config file, 0600, so it outlives the process that set it — an `export` cannot, because a tool host runs every command in its own child process. THE PERSON RUNS THIS, not the agent: it decides what this runtime may sign with real funds, which is the one thing an agent may not widen for itself (ADR-0003, ADR-0017, ADR-0020). Narrowing — anything towards read-only — needs no confirmation and no ceremony. Widening refuses without the `--yes` flag, and names the exact command to repeat. `delegated-auto` is refused outright unless a scope is already configured, because an auto-approving policy with no stated ceilings authorizes everything: the refusal names the ceilings a scope must carry. Nothing is sent and nothing is signed; the answer says what the file now holds and whether the environment will shadow it.',
+  classification: 'write',
+  sideEffects: ['NONE'],
+  longRunning: false,
+  idempotency: {
+    required: false,
+    callerSupplied: 'UNSUPPORTED',
+    note: 'Setting the same mode twice leaves the same file; the answer says nothing changed.',
+  },
+  confirmation: 'NOT_REQUIRED',
+  implementation: {
+    kind: 'runtime',
+    note: 'Local only: rewrites the `policy` block of the config file. Issues no request and signs nothing.',
+  },
+  input: {
+    type: 'object',
+    required: ['mode'],
+    additionalProperties: false,
+    properties: {
+      mode: {
+        title: 'Execution policy mode',
+        description:
+          'read-only places no order; interactive signs one previewed order per human approval; delegated-auto signs inside a scope that was written down first. Run `policy` for what each allows.',
+        type: 'string',
+        enum: ['read-only', 'interactive', 'delegated-auto'],
+      },
+    },
+  },
+  examples: [
+    { title: 'Turn writes off. No confirmation needed.', input: { mode: 'read-only' } },
+    { title: 'Allow approved orders (needs --yes)', input: { mode: 'interactive' } },
+  ],
+};
+
 const runtimeCommandSchema: AgentCommandSpec = {
   ...readOnly,
   name: 'runtime.command-schema',
@@ -1269,6 +1342,8 @@ export const AGENT_COMMANDS: readonly AgentCommandSpec[] = [
   runtimeDescribe,
   runtimeCommandSchema,
   runtimeConfigure,
+  runtimePolicy,
+  runtimePolicySet,
   runtimeDoctor,
   runtimeOnboard,
   runtimeNext,

@@ -822,12 +822,33 @@ describe('next, when nothing stands in the way', () => {
     assertBounded(answer);
   });
 
+  it('hands the owner\u2019s state back with the command that is still the agent\u2019s', async () => {
+    // The signature is the owner's; `onboard --wait` is this agent's, and a
+    // screen that named only the first is where a real session stopped without
+    // producing a link at all (ADR-0022).
+    const { result, answer } = await next({
+      env: CONSOLE_ENV,
+      routes: { 'POST /agent-api/v1/auth': AUTH_OK, [ACCOUNTS]: listing() },
+    });
+    expect(answer.state).toBe('AWAITING_OWNER');
+    expect(answer.stop).toBe(true);
+    expect(answer.actor).toBe('ACCOUNT_OWNER');
+    expect((answer.agentSteps ?? []).map((step) => step.run)).toEqual(['waterx-predict onboard --wait']);
+    expect(answer.headline).toMatch(/run the step below while they sign/u);
+    // And the envelope points at it, so an answer that stops for a person is
+    // still not a dead end.
+    expect(result.envelope.meta?.nextCommand).toBe('waterx-predict onboard --wait');
+  });
+
   it('offers no order under a read-only policy, and says why', async () => {
     const { answer } = await next({ env: CONFIGURED_ENV, routes: READY_ROUTES }, ['--policy', 'read-only']);
     expect(answer.state).toBe('READY');
     expect(answer.facts.policy.writes).toBe('REFUSED');
-    expect(answer.suggestions.map((row) => row.command)).toEqual(['market.search']);
+    // The chooser rides along, so a relaying agent hands over three options
+    // rather than the one mode a sentence happened to name (ADR-0021).
+    expect(answer.suggestions.map((row) => row.command)).toEqual(['market.search', 'runtime.policy']);
     expect(answer.headline).toMatch(/read-only/u);
+    expect(answer.headline).toMatch(/waterx-predict policy/u);
     assertBounded(answer);
   });
 });

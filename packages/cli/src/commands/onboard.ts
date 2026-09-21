@@ -26,6 +26,7 @@ import {
 } from '@waterx/predict-agent-sdk';
 
 import { CliError } from '../errors.ts';
+import { CLI_NAME } from '../version.ts';
 import type { CommandContext } from '../context.ts';
 
 /** Long enough for a person to find a wallet and read a screen. */
@@ -155,8 +156,22 @@ export async function runtimeOnboard(context: CommandContext): Promise<unknown> 
 
   const client = await context.client();
 
+  /**
+   * Where to go from here (ADR-0022).
+   *
+   * Until the grant lands, the command to run next is this one WITH `--wait`:
+   * it prints the link, waits for the owner and adopts the account. It is the
+   * AGENT's command even though the signature is the owner's — the two attach
+   * to different people, and a screen that named only the owner is where one
+   * real session stopped without ever producing a link.
+   */
+  const pointOnward = (status: string): void => {
+    if (status !== 'READY') context.pointTo(`${CLI_NAME} onboard --wait`);
+  };
+
   if (context.input.wait !== true) {
     const state = describeOnboarding(await client.listAuthorizedAccounts(context.signal()), scope);
+    pointOnward(state.status);
     return render(state, authorizationUrl, agentWallet, false, context.config.mode === 'direct');
   }
 
@@ -184,5 +199,8 @@ export async function runtimeOnboard(context: CommandContext): Promise<unknown> 
       );
     },
   });
+  // A wait that ran out is not a refusal: the owner may sign a minute later,
+  // and resuming means calling this again.
+  pointOnward(result.status);
   return render(result, authorizationUrl, agentWallet, result.timedOut, context.config.mode === 'direct');
 }

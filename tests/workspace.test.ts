@@ -6,7 +6,10 @@
  * adapter dependencies is the whole reason for the split (ADR-0001 §4), and
  * nothing inside a single package can check it.
  */
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import ts from 'typescript';
@@ -17,6 +20,8 @@ import {
   toolNameFor,
 } from '../packages/adapters/src/index.ts';
 import { CAPABILITIES } from '../packages/cli/src/capabilities.ts';
+import { CLI_ERROR_CODES } from '../packages/cli/src/errors.ts';
+import { EXIT_CODES, exitCodeForCliError } from '../packages/cli/src/exit-codes.ts';
 import { createMcpServer } from '../packages/mcp/src/server.ts';
 import {
   openRunnerSession,
@@ -1520,6 +1525,92 @@ describe('the command contract compiles to the SDK', () => {
     const availableCommands = new Set(advertised.map((capability) => capability.command));
     for (const name of contractNames) {
       expect(availableCommands.has(name), name).toBe(true);
+    }
+  });
+});
+
+describe('the binaries of a git install', () => {
+  /**
+   * A copy of the package with its `bin/` and nothing else — which is what an
+   * install whose `prepare` never ran actually looks like (ADR-0021).
+   */
+  const unbuilt = (): string => {
+    const dir = mkdtempSync(join(tmpdir(), 'wx-unbuilt-'));
+    mkdirSync(join(dir, 'bin'));
+    for (const file of readdirSync(`${ROOT}bin`)) {
+      copyFileSync(`${ROOT}bin/${file}`, join(dir, 'bin', file));
+    }
+    copyFileSync(`${ROOT}package.json`, join(dir, 'package.json'));
+    return dir;
+  };
+
+  const runShim = (dir: string, argv: readonly string[]): { status: number; stdout: string; stderr: string } => {
+    const result = spawnSync(process.execPath, [join(dir, 'bin', argv[0] as string), ...argv.slice(1)], {
+      encoding: 'utf8',
+    });
+    return { status: result.status ?? -1, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
+  };
+
+  it('says the build is missing instead of dying with a module stack', () => {
+    // Measured before this existed: ERR_MODULE_NOT_FOUND, empty stdout, exit 1
+    // — the code reserved for "this process fell over", so an automated caller
+    // could not tell an unbuilt install from a crash, on the first command.
+    const dir = unbuilt();
+    try {
+      const answer = runShim(dir, ['waterx-predict.mjs', 'next', '--json']);
+      expect(answer.status).toBe(EXIT_CODES.CONFIG);
+      const envelope = JSON.parse(answer.stdout) as {
+        ok: boolean;
+        command: string;
+        error: { code: string; source: string; message: string };
+      };
+      expect(envelope.ok).toBe(false);
+      expect(envelope.command).toBe('next');
+      expect(envelope.error.code).toBe('BUILD_MISSING');
+      expect(envelope.error.source).toBe('CLI');
+      expect(CLI_ERROR_CODES.has(envelope.error.code)).toBe(true);
+      expect(exitCodeForCliError('BUILD_MISSING')).toBe(EXIT_CODES.CONFIG);
+      expect(answer.stderr).toMatch(/npm install github:WaterXProtocol\/waterx-predict-agent/u);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps stdout empty when no JSON was asked for, and still exits 3', () => {
+    const dir = unbuilt();
+    try {
+      const answer = runShim(dir, ['waterx-predict.mjs', 'describe']);
+      expect(answer.stdout).toBe('');
+      expect(answer.status).toBe(EXIT_CODES.CONFIG);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('answers in the keystore\u2019s own voice, which speaks no envelope', () => {
+    const dir = unbuilt();
+    try {
+      const answer = runShim(dir, ['waterx-predict-keystore.mjs', 'init']);
+      expect(answer.status).toBe(EXIT_CODES.CONFIG);
+      expect(answer.stdout).toBe('');
+      expect(answer.stderr.startsWith('waterx-predict-keystore:')).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('names the remedies that were measured, and the ones that do not work', () => {
+    // `npm rebuild` reports success and runs no `prepare`; re-installing a
+    // packed tarball of this repository does not run it either. Both were
+    // measured on npm 11.16.0, and a message that left either out would send
+    // someone round a loop that cannot end.
+    const shared = readFileSync(`${ROOT}bin/missing-build.mjs`, 'utf8');
+    expect(shared).toMatch(/npm rebuild/u);
+    expect(shared).toMatch(/tarball/u);
+    // It may import nothing but Node: everything else in this package is the
+    // thing that is missing.
+    for (const match of shared.matchAll(/from '([^']+)'/gu)) {
+      expect(match[1]?.startsWith('node:'), match[1]).toBe(true);
     }
   });
 });

@@ -59,14 +59,19 @@ describe('describe', () => {
     const data = result.envelope.data as Described;
     expect(data.api.baseUrl).toBe('https://api.waterx.app');
     expect(data.api.deploymentSource).toBe('NAMED');
-    expect(result.envelope.meta).toBeUndefined();
+    // Only the pointer, which every answer carries (ADR-0022).
+    expect(result.envelope.meta).toEqual({ nextCommand: 'waterx-predict next' });
   });
 
   it('places nothing on mainnet until the operator says it may (ADR-0017)', async () => {
     const mainnet = await invoke(['describe'], { env: { WATERX_PREDICT_ENVIRONMENT: 'mainnet' } });
     const data = mainnet.envelope.data as Described;
     expect(data.policy).toMatchObject({ mode: 'read-only', source: 'DEFAULT', writesAllowed: false });
-    expect(mainnet.envelope.meta?.warnings?.join(' ')).toMatch(/read-only on mainnet.*WATERX_PREDICT_POLICY=interactive/u);
+    // The warning rides on every answer, so it names a COMMAND: an `export` is
+    // advice a tool host cannot follow (ADR-0021).
+    const warning = mainnet.envelope.meta?.warnings?.join(' ') ?? '';
+    expect(warning).toMatch(/read-only on mainnet.*waterx-predict policy/u);
+    expect(warning).not.toMatch(/WATERX_PREDICT_POLICY=/u);
 
     // Testnet, and a host whose network nobody named, keep the interactive default.
     const testnet = (await invoke(['describe'], { env: { WATERX_PREDICT_ENVIRONMENT: 'testnet' } })).envelope

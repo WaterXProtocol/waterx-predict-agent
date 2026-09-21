@@ -45,6 +45,18 @@ export interface EnvelopeMeta {
   /** Values the CLI supplied that the caller did not, so nothing is silent. */
   readonly defaultsApplied?: Readonly<Record<string, unknown>>;
   readonly warnings?: readonly string[];
+  /**
+   * One command to run next, on EVERY answer — success or refusal (ADR-0022).
+   *
+   * It is a promise about copying, not composing: whatever is here can be run
+   * exactly as printed. A command that needs a value only a person can choose
+   * (`<placeholder>`) or a person's consent (`--yes`) is never put here, because
+   * the one thing a host must not do at those seams is fill them in. The
+   * fallback is `waterx-predict next`, which answers in every state — so no
+   * envelope is a dead end, which is how one real install session read an
+   * outcome that carried no pointer at all.
+   */
+  readonly nextCommand?: string;
 }
 
 interface EnvelopeBase {
@@ -71,7 +83,8 @@ const withMeta = (meta: EnvelopeMeta | undefined): { meta?: EnvelopeMeta } => {
   if (meta === undefined) return {};
   const populated =
     (meta.defaultsApplied !== undefined && Object.keys(meta.defaultsApplied).length > 0) ||
-    (meta.warnings !== undefined && meta.warnings.length > 0);
+    (meta.warnings !== undefined && meta.warnings.length > 0) ||
+    meta.nextCommand !== undefined;
   return populated ? { meta } : {};
 };
 
