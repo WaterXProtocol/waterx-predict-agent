@@ -629,8 +629,11 @@ token and no `/agent-api` request.
   verified from its on-chain object. Once an account is in use, `next` never
   switches to another unless it is named.
 - **Mainnet is read-only until the operator opts in** (ADR-0017). With no
-  policy configured, mainnet reads and previews and places nothing; set
-  `WATERX_PREDICT_POLICY=interactive` to allow approved orders.
+  policy configured, mainnet reads and previews and places nothing.
+  `waterx-predict policy` lists the three modes with what each allows, and the
+  operator takes one with `waterx-predict policy set --mode interactive --yes`
+  (ADR-0021). Narrowing needs no `--yes`; widening is a person's act, and
+  `delegated-auto` is refused until a `policy.scope` is written down.
 
 ## The signer
 

@@ -66,7 +66,11 @@ describe('describe', () => {
     const mainnet = await invoke(['describe'], { env: { WATERX_PREDICT_ENVIRONMENT: 'mainnet' } });
     const data = mainnet.envelope.data as Described;
     expect(data.policy).toMatchObject({ mode: 'read-only', source: 'DEFAULT', writesAllowed: false });
-    expect(mainnet.envelope.meta?.warnings?.join(' ')).toMatch(/read-only on mainnet.*WATERX_PREDICT_POLICY=interactive/u);
+    // The warning rides on every answer, so it names a COMMAND: an `export` is
+    // advice a tool host cannot follow (ADR-0021).
+    const warning = mainnet.envelope.meta?.warnings?.join(' ') ?? '';
+    expect(warning).toMatch(/read-only on mainnet.*waterx-predict policy/u);
+    expect(warning).not.toMatch(/WATERX_PREDICT_POLICY=/u);
 
     // Testnet, and a host whose network nobody named, keep the interactive default.
     const testnet = (await invoke(['describe'], { env: { WATERX_PREDICT_ENVIRONMENT: 'testnet' } })).envelope

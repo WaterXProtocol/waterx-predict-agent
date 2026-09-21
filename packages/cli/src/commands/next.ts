@@ -710,11 +710,24 @@ export function decideNext(facts: NextFacts): NextAnswer {
       ),
     );
   }
+  if (facts.writes === 'REFUSED') {
+    // The chooser, not a mode. Naming one of the three in a sentence is how an
+    // operator ends up taking the middle option without being shown the other
+    // two, and `next` is read by an agent that will relay exactly what it is
+    // given (ADR-0021).
+    suggestions.push(
+      suggest(
+        'runtime.policy',
+        {},
+        'The three modes this runtime could be in, with what each allows and the command that takes it. Setting one is the operator\u2019s: relay the choice, do not make it.',
+      ),
+    );
+  }
   const posture =
     facts.writes === 'REFUSED'
       ? facts.readOnlyByDefault === true
-        ? ' This runtime is read-only by default on mainnet: it can search and preview, and places no order until the operator sets WATERX_PREDICT_POLICY=interactive.'
-        : ' The execution policy is read-only, so this runtime can place no order.'
+        ? ' This runtime is read-only by default on mainnet: it can search and preview, and places no order until the operator chooses a policy — `waterx-predict policy` lists the three and what each allows.'
+        : ' The execution policy is read-only, so this runtime can place no order. `waterx-predict policy` lists the three modes and what each allows.'
       : facts.writes === 'SCOPE_EXPIRED'
         ? ' The delegated-auto window has closed, so this runtime authorizes no order until the operator renews it.'
         : '';

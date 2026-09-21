@@ -418,7 +418,10 @@ export function loadConfig(sources: ConfigSources): ResolvedConfig {
   });
   if (policy.source === 'DEFAULT' && policy.mode === 'read-only') {
     warnings.push(
-      'The execution policy defaults to read-only on mainnet: reads and previews work, and no order is placed. Set WATERX_PREDICT_POLICY=interactive (or `policy.mode` in the config file) to allow approved orders with real funds.',
+      // The command, not an `export`: this warning rides on EVERY answer, so it
+      // is one of the most-read surfaces here, and a tool host cannot export
+      // anything into a shell that outlives its own process (ADR-0021).
+      'The execution policy defaults to read-only on mainnet: reads and previews work, and no order is placed. Run `waterx-predict policy` for the three modes and what each allows; the operator takes one with `waterx-predict policy set --mode <mode> --yes`.',
     );
   }
   if (policy.mode === 'delegated-auto') {

@@ -86,6 +86,16 @@ export interface ExecutionPolicy {
   readonly mode: PolicyMode;
   /** Present only for delegated-auto; parsing guarantees the pairing. */
   readonly scope: DelegatedScope | undefined;
+  /**
+   * Whether a VALID scope is written down, whatever mode is in force.
+   *
+   * Separate from `scope`, which is the scope this invocation would enforce, so
+   * nothing can mistake "a scope exists on disk" for "an auto-approving policy
+   * is running". It exists because `policy` has to be able to say whether
+   * delegated-auto can be chosen yet, and the answer is on disk before the mode
+   * that uses it is (ADR-0021).
+   */
+  readonly hasConfiguredScope: boolean;
   /** Where the mode came from, so `describe` can show it was not a default. */
   readonly source: 'DEFAULT' | 'CONFIG_FILE' | 'ENVIRONMENT' | 'FLAG';
 }
@@ -93,6 +103,7 @@ export interface ExecutionPolicy {
 export const DEFAULT_POLICY: ExecutionPolicy = {
   mode: 'interactive',
   scope: undefined,
+  hasConfiguredScope: false,
   source: 'DEFAULT',
 };
 
@@ -251,8 +262,11 @@ const denyReadOnly = (command: string): CliError =>
     {
       policy: 'read-only',
       command,
+      // A command, because this reaches a caller that cannot `export`
+      // anything — and the CHOOSER, because which mode to be in is the
+      // operator's decision and needs all three in front of it (ADR-0021).
       remedy:
-        'Set `policy.mode` to `interactive` in the config file (or WATERX_PREDICT_POLICY=interactive) to enable approved writes.',
+        'Run `waterx-predict policy` for the three modes and what each allows. The operator takes one with `waterx-predict policy set --mode <mode> --yes`.',
     },
   );
 
@@ -639,7 +653,12 @@ export function parseExecutionPolicy(sources: PolicySources): ExecutionPolicy {
     );
   }
 
-  return { mode, scope: mode === 'delegated-auto' ? scope : undefined, source };
+  return {
+    mode,
+    scope: mode === 'delegated-auto' ? scope : undefined,
+    hasConfiguredScope: scope !== undefined,
+    source,
+  };
 }
 
 /* ── The signing gate ──────────────────────────────────────────────────────── */

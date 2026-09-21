@@ -46,6 +46,7 @@ import { describeRuntime } from './commands/describe.ts';
 import { doctorFailure, runDoctor } from './commands/doctor.ts';
 import { marketGet, marketList, marketQuote, marketSearch } from './commands/market.ts';
 import { runtimeConfigure } from './commands/configure.ts';
+import { runtimePolicy, runtimePolicySet } from './commands/policy.ts';
 import { runtimeNext } from './commands/next.ts';
 import { runtimeOnboard } from './commands/onboard.ts';
 import {
@@ -168,6 +169,8 @@ const HANDLERS: Readonly<Record<string, CommandHandler>> = {
     Promise.resolve(describeRuntime(context.config, context.nodeVersion)),
   'runtime.command-schema': (context) => Promise.resolve(commandSchema(context.input)),
   'runtime.configure': runtimeConfigure,
+  'runtime.policy': runtimePolicy,
+  'runtime.policy-set': runtimePolicySet,
   'market.list': marketList,
   'market.search': marketSearch,
   'market.get': marketGet,
@@ -388,6 +391,7 @@ export async function run(io: CliIo): Promise<number> {
     const invocation = createContext(io, config, built.input, diagnostic, {
       approval: requireFlagValue(parsed.flags, 'approve'),
       approver: approverOf(parsed),
+      confirmed: parsed.flags.get('yes') === true,
       // Always a function when asked for, never a silent absence: a host with no
       // opener has to be able to SAY so, and `undefined` here would be
       // indistinguishable from the flag not being passed at all.
@@ -534,6 +538,7 @@ function createContext(
   options: {
     approval: string | undefined;
     approver: string | undefined;
+    confirmed: boolean;
     openInBrowser: ((url: string) => void) | undefined;
     runnerDir: string | undefined;
     exitAs: (code: ExitCode) => void;
@@ -686,6 +691,7 @@ function createContext(
         }
         return (ledgers ??= io.ledgers());
       },
+      confirmed: options.confirmed,
       configFile: configFileSeam(io, config),
       probeKeystore: () =>
         probeKeystore(config, {

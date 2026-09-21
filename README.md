@@ -178,7 +178,8 @@ authenticated Agent API, which on mainnet is deployed but not yet switched on
 issued, expire and are spent once, a `delegated-auto` budget is counted across
 invocations, and an order's state is read from the chain (ADR-0014). On
 mainnet, with no policy configured, the CLI is read-only until the operator
-sets `WATERX_PREDICT_POLICY=interactive` (ADR-0017).
+chooses a policy — `waterx-predict policy` lists the three modes with what each
+allows, and `policy set --mode <mode> --yes` takes one (ADR-0017, ADR-0021).
 
 **The CLI uses mainnet unless told otherwise** (ADR-0011): with no
 `WATERX_PREDICT_ENVIRONMENT` or `WATERX_PREDICT_BASE_URL` it connects to

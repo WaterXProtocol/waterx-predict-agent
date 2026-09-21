@@ -826,8 +826,11 @@ describe('next, when nothing stands in the way', () => {
     const { answer } = await next({ env: CONFIGURED_ENV, routes: READY_ROUTES }, ['--policy', 'read-only']);
     expect(answer.state).toBe('READY');
     expect(answer.facts.policy.writes).toBe('REFUSED');
-    expect(answer.suggestions.map((row) => row.command)).toEqual(['market.search']);
+    // The chooser rides along, so a relaying agent hands over three options
+    // rather than the one mode a sentence happened to name (ADR-0021).
+    expect(answer.suggestions.map((row) => row.command)).toEqual(['market.search', 'runtime.policy']);
     expect(answer.headline).toMatch(/read-only/u);
+    expect(answer.headline).toMatch(/waterx-predict policy/u);
     assertBounded(answer);
   });
 });
