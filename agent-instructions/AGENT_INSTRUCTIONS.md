@@ -300,6 +300,7 @@ Generated from the command contract. `write` commands are gated by the execution
 | --- | --- | --- | --- | --- | --- | --- |
 | `runtime.describe` | `describe` | `waterx_predict_runtime_describe` | no — composed by the core | read | NOT_REQUIRED | Report what this runtime can actually do, and what it cannot. |
 | `runtime.command-schema` | `command-schema` | `waterx_predict_runtime_command_schema` | no — composed by the core | read | NOT_REQUIRED | Emit this command document, or one command from it. |
+| `runtime.configure` | `configure` | `waterx_predict_runtime_configure` | no — composed by the core | write | NOT_REQUIRED | Write the agent wallet and signer into this machine’s config file. |
 | `runtime.doctor` | `doctor` | `waterx_predict_runtime_doctor` | no — composed by the core | read | NOT_REQUIRED | Check configuration, signer, reachability and authentication. |
 | `runtime.onboard` | `onboard` | `waterx_predict_runtime_onboard` | no — composed by the core | read | NOT_REQUIRED | Get this agent authorized: the link an owner signs, and where the grants stand. |
 | `runtime.next` | `next` | `waterx_predict_runtime_next` | no — composed by the core | read | NOT_REQUIRED | Where this agent stands, and the one thing to do next — as commands, not prose. |

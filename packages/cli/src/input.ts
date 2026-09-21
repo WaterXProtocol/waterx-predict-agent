@@ -186,7 +186,13 @@ export async function buildCommandInput(
     input.accountId = sources.defaultAccountId;
     defaultsApplied.accountId = sources.defaultAccountId;
   }
-  const wantsWallet = Object.hasOwn(properties, 'agentWallet');
+  /**
+   * `runtime.configure` is excluded on purpose: filling its `agentWallet` in
+   * from the configured wallet would hand the command the value it exists to
+   * SET, and a caller asking to take the wallet from the keystore would find an
+   * address it never named already in its input.
+   */
+  const wantsWallet = Object.hasOwn(properties, 'agentWallet') && command.name !== 'runtime.configure';
   if (wantsWallet && input.agentWallet === undefined && sources.defaultAgentWallet !== undefined) {
     input.agentWallet = sources.defaultAgentWallet;
     defaultsApplied.agentWallet = sources.defaultAgentWallet;

@@ -754,6 +754,73 @@ const runtimeDescribe: AgentCommandSpec = {
   examples: [{ title: 'Describe the runtime', input: {} }],
 };
 
+/**
+ * The one command that changes this machine rather than reporting on it.
+ *
+ * It exists because of a gap a real agent host walked into: `next` told it to
+ * `export WATERX_PREDICT_AGENT_WALLET=…`, and a tool host running each command
+ * as its own child process cannot export anything into a shell that outlives it.
+ * The advice was correct for a person at a terminal and impossible for the
+ * caller it was addressed to, so the setup stalled at a step nobody could do.
+ *
+ * What it may write is deliberately small: which wallet this runtime claims to
+ * be and which program signs for it. It writes NO network, NO policy and NO
+ * account — those decide whether real money moves, and an agent choosing them
+ * for its operator is the failure ADR-0003 exists to prevent (ADR-0020).
+ */
+const runtimeConfigure: AgentCommandSpec = {
+  name: 'runtime.configure',
+  cli: 'configure',
+  summary: 'Write the agent wallet and signer into this machine\u2019s config file.',
+  description:
+    'Persists what an `export` cannot: a tool host runs each command as its own process, so a setting it exports is gone before the next call. This writes the same two settings into the config file instead, 0600, and reports the path and every key it changed. It is the ONLY command that writes configuration, and it writes just the two settings that name this agent to itself \u2014 the agent wallet, and the signer command that holds its key. It will not write the network, the policy or the account: those decide whether an order spends real funds, and they stay the operator\u2019s to set (ADR-0020). fromKeystore takes both values from the keystore signer on this machine, which is how a host that has just run `keystore init` finishes its own setup; it fails rather than guessing if no keystore is there. An existing value is only replaced when replace is set, so a second call cannot silently repoint a configured runtime at another wallet. Nothing is sent anywhere and no key is read: the address in a keystore file is public.',
+  classification: 'write',
+  sideEffects: ['NONE'],
+  longRunning: false,
+  idempotency: {
+    required: false,
+    callerSupplied: 'UNSUPPORTED',
+    note: 'Writing the same settings twice leaves the same file; the answer says nothing changed.',
+  },
+  confirmation: 'NOT_REQUIRED',
+  implementation: {
+    kind: 'runtime',
+    note: 'Local only: reads the keystore\u2019s public address when asked, and rewrites the config file 0600. Issues no request and signs nothing.',
+  },
+  input: {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      fromKeystore: {
+        title: 'Take both settings from the keystore',
+        description:
+          'Read the agent wallet from the keystore signer\u2019s file on this machine and point signerCommand at it. An error when no readable keystore is there \u2014 an invented address would be a wallet nobody holds.',
+        type: 'boolean',
+      },
+      agentWallet: { $ref: '#/$defs/agentWallet' },
+      signerCommand: {
+        title: 'Signer argv',
+        description:
+          'The external signer as argv, first element the executable. Never a key, and never a shell string: this runtime does not invoke a shell.',
+        type: 'array',
+        minItems: 1,
+        maxItems: 16,
+        items: { type: 'string', minLength: 1, maxLength: 512 },
+      },
+      replace: {
+        title: 'Replace what is already set',
+        description:
+          'Overwrite a setting the file already carries. Without it an existing value is kept and reported as unchanged, so a repeat call cannot repoint a working runtime at a different wallet.',
+        type: 'boolean',
+      },
+    },
+  },
+  examples: [
+    { title: 'Finish setup from the keystore just created', input: { fromKeystore: true } },
+    { title: 'Name a wallet a custom signer holds', input: { agentWallet: EXAMPLE_AGENT_WALLET } },
+  ],
+};
+
 const runtimeCommandSchema: AgentCommandSpec = {
   ...readOnly,
   name: 'runtime.command-schema',
@@ -1201,6 +1268,7 @@ const strategyEvents: AgentCommandSpec = {
 export const AGENT_COMMANDS: readonly AgentCommandSpec[] = [
   runtimeDescribe,
   runtimeCommandSchema,
+  runtimeConfigure,
   runtimeDoctor,
   runtimeOnboard,
   runtimeNext,
