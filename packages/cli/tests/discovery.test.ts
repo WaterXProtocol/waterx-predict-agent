@@ -59,7 +59,8 @@ describe('describe', () => {
     const data = result.envelope.data as Described;
     expect(data.api.baseUrl).toBe('https://api.waterx.app');
     expect(data.api.deploymentSource).toBe('NAMED');
-    expect(result.envelope.meta).toBeUndefined();
+    // Only the pointer, which every answer carries (ADR-0022).
+    expect(result.envelope.meta).toEqual({ nextCommand: 'waterx-predict next' });
   });
 
   it('places nothing on mainnet until the operator says it may (ADR-0017)', async () => {

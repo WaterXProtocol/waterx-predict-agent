@@ -190,3 +190,37 @@ describe('setting the policy', () => {
     expect(answer.secretWrites).toEqual([]);
   });
 });
+
+/**
+ * The pointer every envelope carries (ADR-0022).
+ *
+ * It is a promise about COPYING: whatever is in `meta.nextCommand` runs exactly
+ * as printed. The two things that must never be in it are the two a host must
+ * not supply on its own — a value only a person can choose, and a person's
+ * consent.
+ */
+describe('where an answer points next', () => {
+  it('never points at a command that needs a person’s consent', async () => {
+    const refused = await run(['policy', 'set', '--mode', 'interactive'], {
+      files: { [CONFIG]: JSON.stringify({ policy: { mode: 'read-only' } }) },
+    });
+    // The refusal names `--yes` in its message, where a person reads it…
+    expect(refused.envelope.error?.message).toContain('--yes');
+    // …and the pointer does not, because that is the one thing a host must not
+    // add on its own initiative.
+    expect(refused.envelope.meta?.nextCommand).not.toContain('--yes');
+    expect(refused.envelope.meta?.nextCommand).toBe('waterx-predict next');
+  });
+
+  it('points onward from the chooser rather than at one of the three', async () => {
+    const answer = await run(['policy']);
+    expect(answer.envelope.meta?.nextCommand).toBe('waterx-predict next');
+  });
+
+  it('points at `next` once a setting has landed', async () => {
+    const answer = await run(['policy', 'set', '--mode', 'read-only'], {
+      files: { [CONFIG]: JSON.stringify({ policy: { mode: 'interactive' } }) },
+    });
+    expect(answer.envelope.meta?.nextCommand).toBe('waterx-predict next');
+  });
+});

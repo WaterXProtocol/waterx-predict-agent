@@ -158,6 +158,8 @@ export async function runtimeConfigure(context: CommandContext): Promise<unknown
 
   const written = changes.filter((change) => change.status === 'WRITTEN');
   if (written.length > 0) file.write(`${JSON.stringify(next, null, 2)}\n`);
+  // `next` is what reads these back and says what is still missing.
+  context.pointTo('waterx-predict next');
 
   /**
    * A value the environment supplies wins over the file (see `config.ts`), so a
@@ -191,6 +193,5 @@ export async function runtimeConfigure(context: CommandContext): Promise<unknown
             'This keystore holds its key in plaintext, protected by the file mode alone. Keep it to a delegated agent wallet; the account owner’s key belongs somewhere this file cannot reach.',
         }
       : {}),
-    then: 'waterx-predict next',
   };
 }

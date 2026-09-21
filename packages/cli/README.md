@@ -46,6 +46,12 @@ npm warns that the root `prepare` script is not covered by `allowScripts`. That
 script is what builds this workspace, so an install that skips it leaves nothing
 to run — approve it, or use the release artifacts, which need no install script.
 
+**Every answer points somewhere.** `meta.nextCommand` is on every envelope,
+success or refusal, and whatever is in it runs exactly as printed — a command
+needing a value only a person can choose (`<placeholder>`) or a person's consent
+(`--yes`) is never put there, and the fallback is `waterx-predict next`, which
+answers in every state (ADR-0022).
+
 `next` answers with two lists. `handOver.steps` are a person's — installing
 software, unlocking a sealed keystore, choosing a network, the owner's grant.
 `agentSteps` are the ones a host may run itself, and on a fresh machine they are

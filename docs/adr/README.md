@@ -32,6 +32,7 @@ wins and the plan should be corrected.
 | [0019](0019-git-install.md) | The repository installs with npm, as one sentence | Accepted | amends ADR-0010, ADR-0012 |
 | [0020](0020-unattended-setup.md) | What an agent host may set up for itself | Accepted | amends ADR-0012, ADR-0019 |
 | [0021](0021-a-path-that-ends-somewhere.md) | An install that can fail legibly, and a policy somebody can choose | Accepted | amends ADR-0017, ADR-0019, ADR-0020 |
+| [0022](0022-every-answer-points-somewhere.md) | Every answer points somewhere, and says whose step it is | Accepted | amends ADR-0020 |
 
 ## Status vocabulary
 

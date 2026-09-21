@@ -92,6 +92,9 @@ export const policyChoices = (current: PolicyMode, hasScope: boolean): PolicyCho
 /** The chooser. Reports; changes nothing. */
 export function runtimePolicy(context: CommandContext): Promise<unknown> {
   const policy = context.config.policy;
+  // Not one of the choices: taking one is the operator's, and the commands that
+  // take a wider mode carry `--yes` — which `pointTo` refuses anyway (ADR-0022).
+  context.pointTo('waterx-predict next');
   const realFunds = context.config.network === 'mainnet' || context.config.deploymentSource === 'DEFAULT';
   return Promise.resolve({
     current: {
@@ -110,7 +113,6 @@ export function runtimePolicy(context: CommandContext): Promise<unknown> {
         ? 'This runtime places no order in read-only. The three modes below are the choice, and it is the operator’s.'
         : 'These are the modes this runtime can be in. Narrowing takes effect immediately and needs no confirmation.',
     choices: policyChoices(policy.mode, policy.hasConfiguredScope),
-    then: 'waterx-predict next',
   });
 }
 
@@ -177,6 +179,7 @@ export async function runtimePolicySet(context: CommandContext): Promise<unknown
     file.write(`${JSON.stringify({ ...existing, policy: { ...held, mode: requested } }, null, 2)}\n`);
   }
 
+  context.pointTo('waterx-predict next');
   // The environment beats the file (`config.ts`), so a write it will shadow
   // must not report as a policy that now applies.
   const shadowed = policy.source === 'ENVIRONMENT' || policy.source === 'FLAG';
@@ -200,6 +203,5 @@ export async function runtimePolicySet(context: CommandContext): Promise<unknown
             'This deployment is mainnet. From here an order spends real funds, under the approvals this mode requires.',
         }
       : {}),
-    then: 'waterx-predict next',
   };
 }
