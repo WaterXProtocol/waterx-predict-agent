@@ -28,7 +28,13 @@ import {
 } from '@waterx/predict-agent-sdk';
 
 import { CAPABILITIES, getCapability, type Capability } from './capabilities.ts';
-import { resolveOpener } from './browser.ts';
+import {
+  browserSuppressed,
+  openedRecently,
+  rememberOpened,
+  resolveOpener,
+  type OpenMemoryIo,
+} from './browser.ts';
 import { createClient, deadline, toEnvelopeError, type TradingClient } from './client.ts';
 import { readCachedSession, writeCachedSession, type SessionCacheIo } from './session-cache.ts';
 import {
@@ -392,31 +398,48 @@ export async function run(io: CliIo): Promise<number> {
     // `--open` belongs to one command. Accepted globally by the parser, refused
     // here rather than ignored: a flag that silently does nothing is one an
     // operator keeps passing, believing it worked.
-    const wantsBrowser = parsed.flags.get('open') === true;
-    if (parsed.flags.has('open') && !wantsBrowser) {
-      throw new CliError('USAGE', '`--open` takes no value.');
+    // `--open`, `--no-open` and `--qr` belong to one command. Refused here
+    // rather than ignored: a flag that silently does nothing is one an operator
+    // keeps passing, believing it worked.
+    const linkFlags = ['open', 'no-open', 'qr'] as const;
+    for (const flag of linkFlags) {
+      if (parsed.flags.has(flag) && parsed.flags.get(flag) !== true) {
+        throw new CliError('USAGE', `\`--${flag}\` takes no value.`);
+      }
+      if (parsed.flags.get(flag) === true && spec.name !== 'runtime.onboard') {
+        throw new CliError(
+          'USAGE',
+          `\`--${flag}\` applies to \`onboard\`, which is the only command with a link. \`${spec.cli}\` has none.`,
+          { command: spec.name },
+        );
+      }
     }
-    if (wantsBrowser && spec.name !== 'runtime.onboard') {
-      throw new CliError(
-        'USAGE',
-        `\`--open\` applies to \`onboard\`, which is the only command with a link to open. \`${spec.cli}\` has none.`,
-        { command: spec.name },
-      );
+    if (parsed.flags.get('open') === true && parsed.flags.get('no-open') === true) {
+      throw new CliError('USAGE', '`--open` and `--no-open` say opposite things. Pass one.');
     }
 
     const invocation = createContext(io, config, built.input, diagnostic, {
       approval: requireFlagValue(parsed.flags, 'approve'),
       approver: approverOf(parsed),
       confirmed: parsed.flags.get('yes') === true,
-      // Always a function when asked for, never a silent absence: a host with no
-      // opener has to be able to SAY so, and `undefined` here would be
-      // indistinguishable from the flag not being passed at all.
-      openInBrowser: wantsBrowser
-        ? (io.openUrl?.bind(io) ??
-          (() => {
-            throw new Error('this build has no way to open a browser');
-          }))
-        : undefined,
+      // The page opens by itself now (ADR-0024), so this is present whenever
+      // this host can open one at all — `undefined` means "this build cannot",
+      // which is a thing a command has to be able to SAY rather than guess.
+      browser: {
+        forced: parsed.flags.get('open') === true,
+        suppressed: parsed.flags.get('no-open') === true,
+        refusedBecause: browserSuppressed(io.env),
+        open: io.openUrl?.bind(io),
+        openedRecently: (url) => {
+          const path = openedMemoryPath(io);
+          return path !== null && openedRecently(path, url, openMemoryIo(io));
+        },
+        remember: (url) => {
+          const path = openedMemoryPath(io);
+          if (path !== null) rememberOpened(path, url, openMemoryIo(io));
+        },
+      },
+      wantsQr: parsed.flags.get('qr') === true,
       runnerDir: requireFlagValue(parsed.flags, 'runner-dir'),
       exitAs,
       pointTo,
@@ -562,7 +585,8 @@ function createContext(
     approval: string | undefined;
     approver: string | undefined;
     confirmed: boolean;
-    openInBrowser: ((url: string) => void) | undefined;
+    browser: CommandContext['browser'];
+    wantsQr: boolean;
     runnerDir: string | undefined;
     exitAs: (code: ExitCode) => void;
     pointTo: (command: string) => void;
@@ -697,7 +721,8 @@ function createContext(
       config,
       approval: options.approval,
       approver: options.approver,
-      openInBrowser: options.openInBrowser,
+      browser: options.browser,
+      wantsQr: options.wantsQr,
       gate,
       client: () => (session ??= open()),
       runner: () => (runner ??= openRunner()),
@@ -737,6 +762,24 @@ function createContext(
     },
   };
 }
+
+/**
+ * Where the "already opened" memory lives: beside the other ledgers, private to
+ * this user. `null` when this machine has nowhere to keep one, and then every
+ * run opens — one extra tab is not worth a failure.
+ */
+function openedMemoryPath(io: CliIo): string | null {
+  const named = io.env['WATERX_PREDICT_STATE_DIR'];
+  if (named !== undefined && named.trim() !== '') return `${named}/opened.json`;
+  const home = io.homeDir();
+  return home === null || home === '' ? null : `${home}/.waterx-predict/opened.json`;
+}
+
+const openMemoryIo = (io: CliIo): OpenMemoryIo => ({
+  readFile: (path) => io.readFile(path),
+  writeFile: (path, contents) => io.writeSecretFile?.(path, contents),
+  now: () => io.now().getTime(),
+});
 
 const noop = (): void => {
   /* nothing to do */

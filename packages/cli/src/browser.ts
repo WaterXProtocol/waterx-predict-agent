@@ -84,3 +84,64 @@ export function resolveOpener(
       return { kind: 'refused', reason: `opening a browser is not supported on ${platform}` };
   }
 }
+
+/* ── Opening by default, and the memory that makes it bearable ─────────────── */
+
+/**
+ * Whether something in the environment says not to open a browser here.
+ *
+ * The escape hatch that makes opening-by-default defensible: a server, a
+ * container and a CI runner have no browser and nobody watching, and they are
+ * exactly the places that set these. `resolveOpener` already refuses CI and a
+ * Linux host with no display; this is the explicit "don't", for a machine that
+ * looks openable and is not.
+ */
+export const browserSuppressed = (
+  env: Readonly<Record<string, string | undefined>>,
+): string | undefined => {
+  const value = env['WATERX_PREDICT_NO_BROWSER'];
+  const on = value !== undefined && value.trim() !== '' && value.trim() !== '0' && value.trim().toLowerCase() !== 'false';
+  return on ? 'WATERX_PREDICT_NO_BROWSER is set' : undefined;
+};
+
+/**
+ * How long an opened link stays opened.
+ *
+ * `onboard --wait` is run again constantly — the agent asks `next`, is told to
+ * wait, the wait runs out, it asks again — and opening every time turns a
+ * five-minute wait into twenty tabs of one page.
+ */
+export const REOPEN_AFTER_MS = 30 * 60_000;
+
+export interface OpenMemoryIo {
+  readFile(path: string): string | null;
+  writeFile(path: string, contents: string): void;
+  now(): number;
+}
+
+/** Whether this exact link was opened from this machine recently enough not to open again. */
+export function openedRecently(path: string, url: string, io: OpenMemoryIo): boolean {
+  let opened: Record<string, unknown>;
+  try {
+    const raw = io.readFile(path);
+    if (raw === null) return false;
+    opened = JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    // An unreadable memory counts as no memory. The worst that does is open
+    // one more tab, which is not worth a failure.
+    return false;
+  }
+  const at = opened[url];
+  return typeof at === 'number' && io.now() - at < REOPEN_AFTER_MS;
+}
+
+/** Writes it down. Never throws: this is a convenience, not a record. */
+export function rememberOpened(path: string, url: string, io: OpenMemoryIo): void {
+  try {
+    const raw = io.readFile(path);
+    const opened = raw === null ? {} : (JSON.parse(raw) as Record<string, unknown>);
+    io.writeFile(path, `${JSON.stringify({ ...opened, [url]: io.now() })}\n`);
+  } catch {
+    /* the link was still opened; only the memory of it is lost */
+  }
+}

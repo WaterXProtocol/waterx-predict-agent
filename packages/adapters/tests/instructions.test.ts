@@ -17,6 +17,7 @@ import {
   buildAgentInstructions,
   renderAgentInstructions,
 } from '../src/instructions.ts';
+import { renderAgentSkill } from '../src/skill.ts';
 import { toolNameFor } from '../src/tools.ts';
 
 const COMMITTED = fileURLToPath(
@@ -143,5 +144,40 @@ describe('the instructions document', () => {
     // composed commands need the core, and a blank cell reads as an oversight.
     expect(text).toContain('no — local Runner');
     expect(text).toContain('no — composed by the core');
+  });
+});
+
+/**
+ * Prohibitions an agent must not have to infer (ADR-0024).
+ *
+ * These agents obey a direct instruction and do not infer one. Told "do not
+ * pass `--open` yourself", one followed it verbatim; a later one passed
+ * `--no-open` on its own initiative, because nothing forbade it and the
+ * surrounding prose offered it as an equal option. So the prohibition is an
+ * invariant rather than wording somebody once chose: if the document stops
+ * saying it, this fails.
+ */
+describe('what the instructions must keep saying', () => {
+  it('forbids `--no-open` by name in BOTH documents an agent might read', () => {
+    // These agents obey a direct instruction and do not infer one: told "do not
+    // pass `--open` yourself", one followed it verbatim; a later one passed
+    // `--no-open` on its own initiative, because nothing forbade it. Which
+    // document a host reads depends on the host, so both say it (ADR-0024).
+    for (const [name, text] of [
+      ['instructions', renderAgentInstructions()],
+      ['skill', renderAgentSkill()],
+    ] as const) {
+      expect(text, name).toMatch(/do not pass `--no-open`/iu);
+      expect(text, name).toMatch(/onboard --qr/u);
+      // Whose switch it is, stated rather than left to be inferred from prose.
+      expect(text, name).toMatch(/operator's call/u);
+    }
+  });
+
+  it('keeps the owner\u2019s grant the owner\u2019s, in the same breath', () => {
+    const skill = renderAgentSkill();
+    expect(skill).toMatch(/Do not offer to do this step for the owner/u);
+    expect(skill).toMatch(/do not ask for their key/u);
+    expect(renderAgentInstructions()).toMatch(/no tooling here may do it for them/u);
   });
 });

@@ -94,6 +94,10 @@ export WATERX_PREDICT_SIGNER_COMMAND='/path/to/your-signer'
 
 # 3. Get authorized. Prints the link an OWNER opens; --wait polls until they sign.
 waterx-predict onboard --label momentum-bot --wait
+#    The page opens on THIS machine by itself. `--no-open` stops it for one run
+#    (an agent must never pass that on its own initiative); WATERX_PREDICT_NO_BROWSER
+#    stops it for good. `--qr` draws the link as a code, for an owner who is
+#    somewhere else — which is the usual case (ADR-0024).
 #    → the accountId comes back from the server. Nobody copies it out of a browser.
 
 # 4. Check the setup before trusting any read from it.
