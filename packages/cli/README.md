@@ -645,7 +645,8 @@ token and no `/agent-api` request.
   (ADR-0025).
 - **Mainnet is read-only until the operator opts in** (ADR-0017). With no
   policy configured, mainnet reads and previews and places nothing.
-  `waterx-predict policy` lists the three modes with what each allows, and the
+  `waterx-predict policy` PRINTS the three modes — what each allows, what each
+  costs, and the command that takes it, one per line and never wrapped — and the
   operator takes one with `waterx-predict policy set --mode interactive --yes`
   (ADR-0021). Narrowing needs no `--yes`; widening is a person's act, and
   `delegated-auto` is refused until a `policy.scope` is written down.

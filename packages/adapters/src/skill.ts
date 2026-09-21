@@ -91,6 +91,14 @@ const STEPS: readonly AgentSkillStep[] = [
     ],
   },
   {
+    id: 'THE_POLICY_IS_A_CHOICE',
+    title: 'Relay the three modes; do not pick one',
+    body: [
+      'The owner\u2019s grant and the execution policy are two permissions from two people. The moment the grant lands, this runtime still places no order on mainnet: the policy defaults to read-only, and choosing what may be signed is the OPERATOR\u2019s (ADR-0021, ADR-0025).',
+      '`waterx-predict policy` prints the three modes as a screen \u2014 what each allows, what each costs, and the exact command that takes it. Relay that screen as it was printed. Do not summarise it into one recommendation and do not run `policy set` yourself: widening needs `--yes`, which is a person saying so, and an agent adding it on its own initiative is the thing that flag exists to prevent.',
+    ],
+  },
+  {
     id: 'RESOLVE_THE_MARKET',
     title: 'Let the server name the market',
     body: [
