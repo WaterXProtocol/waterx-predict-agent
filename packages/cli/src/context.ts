@@ -39,17 +39,6 @@ export interface CommandContext {
    */
   readonly approver: string | undefined;
   /**
-   * Hands the authorization link to this machine's browser, when `--open` was
-   * given and this host can. Absent otherwise, which a command reports rather
-   * than working around — an operator who believes a window opened waits for
-   * one that never appears.
-   *
-   * Deliberately reachable only from a terminal: `--open` is a dispatcher flag,
-   * so it is neither a schema field a model can fill in nor an operator flag an
-   * adapter may pin.
-   */
-  readonly openInBrowser: ((url: string) => void) | undefined;
-  /**
    * Permits the signer spends. A command that authorizes a write grants here;
    * the signer consumes before it spawns. A command that forgets to grant cannot
    * sign, which is the point.
@@ -99,6 +88,31 @@ export interface CommandContext {
    * only. `undefined` when a different signer is configured.
    */
   probeKeystore(): KeystoreProbe | undefined;
+  /**
+   * What this invocation may do with the authorization link (ADR-0024).
+   *
+   * The page opens by ITSELF now, so `open` is present whenever this host can
+   * open one at all rather than only when a flag was passed. `forced` is
+   * `--open`: open it again even though this link was opened here already.
+   * `suppressed` is `--no-open`, for one run.
+   */
+  readonly browser: {
+    readonly forced: boolean;
+    readonly suppressed: boolean;
+    /**
+     * Why the environment says not to open one, if it does. A server, a
+     * container and a CI runner all have no browser and nobody watching, and
+     * they are exactly the places that set it.
+     */
+    readonly refusedBecause: string | undefined;
+    /** Opens it, or throws with a reason a person can act on. */
+    readonly open: ((url: string) => void) | undefined;
+    /** Has this exact link been opened from this machine recently? */
+    openedRecently(url: string): boolean;
+    remember(url: string): void;
+  };
+  /** `--qr`: draw the link as a code, for an owner who is somewhere else. */
+  readonly wantsQr: boolean;
   /**
    * Name the one command to run after this one.
    *

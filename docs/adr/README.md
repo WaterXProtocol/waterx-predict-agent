@@ -34,6 +34,7 @@ wins and the plan should be corrected.
 | [0021](0021-a-path-that-ends-somewhere.md) | An install that can fail legibly, and a policy somebody can choose | Accepted | amends ADR-0017, ADR-0019, ADR-0020 |
 | [0022](0022-every-answer-points-somewhere.md) | Every answer points somewhere, and says whose step it is | Accepted | amends ADR-0020 |
 | [0023](0023-say-what-the-account-is-carrying.md) | Say what the account is carrying | Accepted | amends ADR-0022 |
+| [0024](0024-handing-the-link-over.md) | Handing the link over | Accepted | amends ADR-0022 |
 
 ## Status vocabulary
 

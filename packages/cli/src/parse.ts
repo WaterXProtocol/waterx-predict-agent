@@ -42,6 +42,16 @@ export const GLOBAL_FLAGS = new Set([
   // launching a browser on an operator's machine stays something only a person
   // at that machine can ask for. Same posture as `--approve`.
   'open',
+  // The other half of it, and the reason `--open` is no longer needed for the
+  // common case: the page opens by itself now, and this is how a person who
+  // does not want that says so for one run (ADR-0024). An AGENT must not pass
+  // it — whether the page opens is the operator's call, not a decision to make
+  // on their behalf.
+  'no-open',
+  // Draws the authorization link as a QR code. The case this arrangement is
+  // actually built for: the account owner is NOT at this machine, so opening a
+  // browser here helps them not at all, and nobody retypes 115 characters.
+  'qr',
   // Which local Runner the strategy family talks to. An address, not part of any
   // intent: the same strategy sent to two runtime directories is two strategies,
   // and neither the schema nor the Runner should have to know how it was reached.

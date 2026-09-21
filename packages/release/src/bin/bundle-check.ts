@@ -333,7 +333,8 @@ async function main(argv: readonly string[]): Promise<number> {
     mkdirSync(home, { recursive: true });
     const passphraseFile = join(staging, 'passphrase');
     writeFileSync(passphraseFile, 'bundle-check-passphrase\n', { mode: 0o600 });
-    const bare = { HOME: home, WATERX_KEYSTORE_DIR: keystoreDir };
+    // Nothing here should ever put a window on the desk of whoever runs it.
+    const bare = { HOME: home, WATERX_KEYSTORE_DIR: keystoreDir, WATERX_PREDICT_NO_BROWSER: '1' };
 
     // 1. A bare machine.
     const first = await next(walk, project, bare, 'bare');

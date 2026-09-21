@@ -26,6 +26,7 @@ import {
 } from '@waterx/predict-agent-sdk';
 
 import { CliError } from '../errors.ts';
+import { qrLines } from '../qr.ts';
 import { CLI_NAME } from '../version.ts';
 import type { CommandContext } from '../context.ts';
 
@@ -137,21 +138,62 @@ export async function runtimeOnboard(context: CommandContext): Promise<unknown> 
       : `Authorize this agent by opening:\n  ${authorizationUrl}\nThe page asks the account owner to pick an account, set the limits and sign once.\n`,
   );
 
-  // `--open`, and only ever on stderr. The outcome is a fact about this
-  // terminal, not about the onboarding state, so it does not belong in the
-  // envelope: a program driving this cannot pass the flag in the first place.
+  // The code, under the link rather than instead of it: whoever is at this
+  // terminal may be the one who signs, and a link they can click beats a code
+  // they cannot. `--qr` is for the case this arrangement is actually built for
+  // — the owner is somewhere else, with their wallet on a phone (ADR-0024).
+  if (context.wantsQr) {
+    const drawn = qrLines(authorizationUrl);
+    if (drawn === undefined) {
+      context.diagnostic('The link is too long to draw as a QR code here. Send it as text.\n');
+    } else {
+      // One line at a time: a diagnostic is truncated past 2000 characters,
+      // which is a sensible cap for a sentence and would cut a code in half.
+      context.diagnostic('\n');
+      for (const line of drawn) context.diagnostic(`${line}\n`);
+      context.diagnostic('  Scan it with the phone the owner\u2019s wallet is on.\n');
+    }
+  }
+
+  // The page opens by ITSELF, and the link is printed first so a machine with
+  // no browser loses nothing. Four things stop it, and each says which in one
+  // line rather than silently doing nothing (ADR-0024):
   //
-  // A failure here is reported and stepped over. The link is printed above and
-  // is just as valid; failing the command because a window did not appear would
-  // throw away the answer the caller actually asked for.
-  if (context.openInBrowser !== undefined) {
+  //   - `--no-open`, for this run;
+  //   - the environment says not to, or this host cannot;
+  //   - this exact link was already opened here — `onboard --wait` is run again
+  //     constantly, and a five-minute wait should not end in twenty tabs;
+  //   - the opener failed, which is reported and stepped over. The link is
+  //     above and just as valid; failing the command because a window did not
+  //     appear would throw away the answer the caller asked for.
+  //
+  // `--open` overrides the memory: it is the "I am here, open it now" button.
+  const browser = context.browser;
+  const refusal = browser.suppressed
+    ? '--no-open'
+    : browser.refusedBecause !== undefined
+      ? browser.refusedBecause
+      : browser.open === undefined
+        ? 'this build has no way to open a browser'
+        : !browser.forced && browser.openedRecently(authorizationUrl)
+          ? 'already opened here \u2014 `--open` opens it again'
+          : undefined;
+  if (refusal !== undefined) {
+    context.diagnostic(`Not opening a browser (${refusal}).\n`);
+  } else if (browser.open !== undefined) {
     try {
-      context.openInBrowser(authorizationUrl);
-      context.diagnostic('Opening it in your browser.\n');
+      browser.open(authorizationUrl);
+      browser.remember(authorizationUrl);
+      context.diagnostic('Opening it in your browser. `--no-open` is how a person here says not to.\n');
     } catch (error: unknown) {
       const reason = error instanceof Error ? error.message : 'the opener failed';
-      context.diagnostic(`Could not open a browser (${reason}). Open the link above yourself.\n`);
+      context.diagnostic(`Not opening a browser (${reason}). Open the link above yourself.\n`);
     }
+  }
+  if (!context.wantsQr) {
+    // Named where an agent reads, not only in `--help`: an option nothing
+    // mentions is one nobody can relay (ADR-0024).
+    context.diagnostic('If the owner is not at this machine, `onboard --qr` draws the link as a code they can scan.\n');
   }
 
   const client = await context.client();

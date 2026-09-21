@@ -522,8 +522,8 @@ function decide(facts: NextFacts): NextAnswer {
             link === undefined
               ? 'The owner has to authorize this agent in their own wallet, and no console is paired with this deployment to send them to. Ask the operator for the console URL (WATERX_PREDICT_CONSOLE_URL).'
               : facts.direct === true
-                ? 'Send the owner this link. They pick an account and sign the delegation once in their own wallet; that signature is the whole grant in direct mode. If the page then fails to save limits, the grant has still landed — this runtime bounds spending with its own execution policy. The link carries no token; never ask for their key.'
-                : 'Send the owner this link. They pick an account, set the limits and sign once in their own wallet. The link carries no token and grants nothing by itself; never ask for their key.',
+                ? 'Send the owner this link. They pick an account and sign the delegation once in their own wallet; that signature is the whole grant in direct mode. If the page then fails to save limits, the grant has still landed — this runtime bounds spending with its own execution policy. The link carries no token; never ask for their key. If they are not at this machine, `waterx-predict onboard --qr` draws it as a code they can scan.'
+                : 'Send the owner this link. They pick an account, set the limits and sign once in their own wallet. The link carries no token and grants nothing by itself; never ask for their key. If they are not at this machine, `waterx-predict onboard --qr` draws it as a code they can scan.',
           ...(link === undefined ? {} : { authorizationUrl: link }),
         },
         // The signature is the owner's; the command is this agent's. Those are
@@ -537,7 +537,7 @@ function decide(facts: NextFacts): NextAnswer {
               {
                 run: `${BINARY} onboard --wait`,
                 command: 'runtime.onboard',
-                why: 'Prints the link again, opens nothing by itself, and polls until the owner\u2019s grant lands — then adopts the account it was granted on. A wait that runs out cancels nothing: run it again.',
+                why: 'Prints the link again, opens the page on THIS machine (which is the operator\u2019s call, not yours \u2014 do not pass `--no-open`), and polls until the owner\u2019s grant lands — then adopts the account it was granted on. A wait that runs out cancels nothing: run it again.',
                 safeBecause:
                   'It reads. It signs the login challenge and nothing else, grants nothing, and cannot make the owner\u2019s decision for them — only notice when they have made it.',
               },

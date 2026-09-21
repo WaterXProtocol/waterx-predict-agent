@@ -202,7 +202,7 @@ describe('account list', () => {
  * boundary around it: a browser opening on an operator's machine must be
  * something that operator asked for, at that machine, and nothing else.
  */
-describe('onboard --open', () => {
+describe('onboard and the browser', () => {
   it('hands the link to this machine when a person asks for it', async () => {
     const result = await invoke(['onboard', '--open', '--label', 'momentum-bot'], {
       env: CONSOLE_ENV,
@@ -216,13 +216,57 @@ describe('onboard --open', () => {
     expect(result.envelope.ok).toBe(true);
   });
 
-  it('opens nothing unless asked', async () => {
+  it('opens the page without being asked', async () => {
+    // The default flipped (ADR-0024): the person who installed this asked for
+    // the page, and whether it opens is theirs to decide, not the agent's.
     const result = await invoke(['onboard', '--label', 'momentum-bot'], {
       env: CONSOLE_ENV,
       routes: { 'POST /agent-api/v1/auth': AUTH_OK, [ACCOUNTS_PATH]: listing() },
     });
 
+    const data = result.envelope.data as { authorizationUrl: string };
+    expect(result.opened).toEqual([data.authorizationUrl]);
+  });
+
+  it('does not open when a person here says not to, and says which stopped it', async () => {
+    const result = await invoke(['onboard', '--no-open'], {
+      env: CONSOLE_ENV,
+      routes: { 'POST /agent-api/v1/auth': AUTH_OK, [ACCOUNTS_PATH]: listing() },
+    });
+
     expect(result.opened).toEqual([]);
+    expect(result.stderr).toContain('Not opening a browser (--no-open)');
+  });
+
+  it('refuses two flags that say opposite things', async () => {
+    const result = await invoke(['onboard', '--open', '--no-open'], { env: CONSOLE_ENV });
+    expect(result.envelope.error?.code).toBe('USAGE');
+    expect(result.fetches).toHaveLength(0);
+  });
+
+  it('draws the link as a code for an owner who is somewhere else', async () => {
+    const result = await invoke(['onboard', '--qr'], {
+      env: CONSOLE_ENV,
+      routes: { 'POST /agent-api/v1/auth': AUTH_OK, [ACCOUNTS_PATH]: listing() },
+    });
+
+    const data = result.envelope.data as { authorizationUrl: string };
+    // Under the link, never instead of it: whoever is at this terminal may be
+    // the one who signs, and a link they can click beats a code they cannot.
+    expect(result.stderr).toContain(data.authorizationUrl);
+    expect(result.stderr).toMatch(/[\u2580\u2584\u2588]/u);
+    expect(result.stderr).toContain('Scan it with the phone');
+  });
+
+  it('names the code where an agent reads, not only in --help', async () => {
+    // An option nothing mentions is one nobody can relay: a real session worked
+    // out for itself that opening a browser here was the wrong thing, and never
+    // mentioned `--qr`, because nothing it read named it (ADR-0024).
+    const result = await invoke(['onboard'], {
+      env: CONSOLE_ENV,
+      routes: { 'POST /agent-api/v1/auth': AUTH_OK, [ACCOUNTS_PATH]: listing() },
+    });
+    expect(result.stderr).toContain('onboard --qr');
   });
 
   it('still answers when the browser will not open', async () => {
@@ -240,7 +284,7 @@ describe('onboard --open', () => {
     expect(result.opened).toEqual([]);
     // Said out loud, on stderr. An operator who believes a window opened waits
     // for one that never appears.
-    expect(result.stderr).toContain('Could not open a browser');
+    expect(result.stderr).toContain('Not opening a browser');
     expect(result.stderr).toContain('no DISPLAY');
   });
 
@@ -270,5 +314,52 @@ describe('onboard: the link survives a broken session', () => {
     expect(result.envelope.ok).toBe(false);
     expect(result.stderr).toContain('Authorize this agent by opening:');
     expect(result.stderr).toContain('/agent/authorize?agent=');
+  });
+});
+
+describe('the environment can say no for a machine nobody is watching', () => {
+  it('does not open when WATERX_PREDICT_NO_BROWSER is set, and says which stopped it', async () => {
+    // The escape hatch that makes opening-by-default defensible: a server, a
+    // container and a CI runner all have no browser and no one in front of
+    // them, and they are exactly the places that set this (ADR-0024).
+    const result = await invoke(['onboard'], {
+      env: { ...CONSOLE_ENV, WATERX_PREDICT_NO_BROWSER: '1' },
+      routes: { 'POST /agent-api/v1/auth': AUTH_OK, [ACCOUNTS_PATH]: listing() },
+    });
+
+    expect(result.opened).toEqual([]);
+    expect(result.stderr).toContain('WATERX_PREDICT_NO_BROWSER is set');
+    // The link is still printed, which is the thing that mattered.
+    const data = result.envelope.data as { authorizationUrl: string };
+    expect(result.stderr).toContain(data.authorizationUrl);
+  });
+
+  it('opens one link once, however many times onboard is run', async () => {
+    // `onboard --wait` is run again constantly — ask `next`, be told to wait,
+    // time out, run it again — and opening every time turns a five-minute wait
+    // into twenty tabs of one page.
+    const options = {
+      homeDir: '/home/op',
+      env: CONSOLE_ENV,
+      routes: { 'POST /agent-api/v1/auth': AUTH_OK, [ACCOUNTS_PATH]: listing() },
+    };
+    const first = await invoke(['onboard'], options);
+    expect(first.opened).toHaveLength(1);
+    const remembered = first.secretWrites.find((write) => write.path.endsWith('opened.json'));
+    expect(remembered).toBeDefined();
+
+    const second = await invoke(['onboard'], {
+      ...options,
+      files: { [remembered?.path ?? '']: remembered?.contents ?? '' },
+    });
+    expect(second.opened).toEqual([]);
+    expect(second.stderr).toContain('already opened here');
+
+    // `--open` is the "I am here, open it now" button, and it overrides that.
+    const forced = await invoke(['onboard', '--open'], {
+      ...options,
+      files: { [remembered?.path ?? '']: remembered?.contents ?? '' },
+    });
+    expect(forced.opened).toHaveLength(1);
   });
 });

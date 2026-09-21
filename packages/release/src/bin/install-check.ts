@@ -127,7 +127,8 @@ const main = (argv: readonly string[]): number => {
 
     const home = join(staging, 'home');
     mkdirSync(home, { recursive: true });
-    const bare = { HOME: home, WATERX_KEYSTORE_DIR: keystoreDir };
+    // Nothing here should ever put a window on the desk of whoever runs it.
+    const bare = { HOME: home, WATERX_KEYSTORE_DIR: keystoreDir, WATERX_PREDICT_NO_BROWSER: '1' };
 
     // 1. It answers with nothing configured, and sends nothing.
     const described = run(project, bare, ['waterx-predict', 'describe']);
