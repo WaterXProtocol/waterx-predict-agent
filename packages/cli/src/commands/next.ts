@@ -53,12 +53,14 @@ import {
   type OnboardingState,
   type PredictEffectiveLimitsResponseBody,
   type PredictExecutionSummary,
+  type PredictPositionSummary,
   type PredictTradingBlocker,
   type ResolvedRequirement,
 } from '@waterx/predict-agent-sdk';
 import { getCommand, type AgentCommandClassification } from '@waterx/predict-agent-schema';
 
 import { isDirectClient, toEnvelopeError } from '../client.ts';
+import { exposureNotes, type ExposureNote } from './exposure.ts';
 import type { CommandContext } from '../context.ts';
 import { CliError } from '../errors.ts';
 import { resolveRequirements } from '../requirements.ts';
@@ -202,6 +204,14 @@ export interface NextAnswer {
    * it may run AFTER handing over — waiting for the person, or asking again.
    */
   readonly suggestions: readonly NextSuggestion[];
+  /**
+   * What the account is carrying, whatever state this is (ADR-0023).
+   *
+   * Rides on every state and changes none of them: a position nothing can price
+   * matters whether this runtime is READY or halfway through setup. Absent when
+   * there is nothing to say.
+   */
+  readonly notes?: readonly ExposureNote[];
 }
 
 /* ── The facts it is decided from ─────────────────────────────────────────── */
@@ -247,7 +257,11 @@ export type AccountFact =
       /** Null in direct mode: there is no server-side mandate to read (ADR-0013). */
       readonly limits: PredictEffectiveLimitsResponseBody | null;
       readonly unsettled: readonly PredictExecutionSummary[];
-      readonly positions: number;
+      /**
+       * The positions themselves, not a count. They were always fetched; what
+       * was missing was anything that read them (ADR-0023).
+       */
+      readonly positions: readonly PredictPositionSummary[];
     }
   | { readonly failed: string };
 
@@ -271,6 +285,11 @@ export interface NextFacts {
   readonly namedAccountId?: string;
   /** Present exactly when the onboarding state is READY. */
   readonly account?: AccountFact;
+  /**
+   * This invocation's clock, for the age of an unsettled order. Injected rather
+   * than read here so `decideNext` stays pure; `new Date()` when absent.
+   */
+  readonly now?: Date;
   /**
    * Direct mode: the account this agent was trading on, against the one now
    * authorized. `CONFLICT` stops the loop — a different account is whose money
@@ -390,6 +409,16 @@ const readyAccounts = (onboarding: OnboardingState): string[] =>
  * without a server — the order is the part that keeps money safe.
  */
 export function decideNext(facts: NextFacts): NextAnswer {
+  // The state is decided first and the notes are attached to whatever comes
+  // back: they must never be able to change which state applies (ADR-0023).
+  const decided = decide(facts);
+  const account = facts.account;
+  if (account === undefined || 'failed' in account) return decided;
+  const notes = exposureNotes(account.positions, account.unsettled, facts.now ?? new Date());
+  return notes.length === 0 ? decided : { ...decided, notes };
+}
+
+function decide(facts: NextFacts): NextAnswer {
   // 1. Local setup. Operator gaps come first even when an owner gap exists too:
   //    an owner cannot grant anything to an agent whose address nobody has.
   const gaps = facts.requirements.filter(
@@ -668,7 +697,7 @@ export function decideNext(facts: NextFacts): NextAnswer {
     ];
     // A capacity blocker does not stop a SELL, so an agent holding positions
     // still has something to look at.
-    if (account.positions > 0 && blockers.every((blocker) => blocker === 'NO_BUY_CAPACITY')) {
+    if (account.positions.length > 0 && blockers.every((blocker) => blocker === 'NO_BUY_CAPACITY')) {
       suggestions.push(
         suggest(
           'account.positions',
@@ -717,12 +746,12 @@ export function decideNext(facts: NextFacts): NextAnswer {
       ),
     );
   }
-  if (account.positions > 0) {
+  if (account.positions.length > 0) {
     suggestions.push(
       suggest(
         'account.positions',
         onAccount,
-        `${String(account.positions)} position(s) are held. A SELL needs the positionId from here.`,
+        `${String(account.positions.length)} position(s) are held. A SELL needs the positionId from here.`,
       ),
     );
   }
@@ -939,6 +968,9 @@ async function gatherFacts(context: CommandContext): Promise<NextFacts> {
   const keystore = context.probeKeystore();
   const base = {
     writes: writePosture(context),
+    // One clock for the whole answer, so the age of an unsettled order is not
+    // measured against a different instant than the rest of it.
+    now: context.now(),
     ...(config.policy.mode === 'read-only' && config.policy.source === 'DEFAULT' ? { readOnlyByDefault: true } : {}),
     ...(config.mode === 'direct' ? { direct: true } : {}),
     ...(named === undefined ? {} : { namedAccountId: named }),
@@ -1022,7 +1054,7 @@ async function gatherFacts(context: CommandContext): Promise<NextFacts> {
     }
     return {
       ...settled,
-      account: { limits: null, unsettled: unsettled.value, positions: positions.value.positions.length },
+      account: { limits: null, unsettled: unsettled.value, positions: positions.value.positions },
       runner: runnerFact,
       adoption,
     };
@@ -1053,7 +1085,7 @@ async function gatherFacts(context: CommandContext): Promise<NextFacts> {
       unsettled: executions.value.executions.filter(
         (execution) => !isTerminalExecutionStatus(execution.status),
       ),
-      positions: positions.value.positions.length,
+      positions: positions.value.positions,
     },
     runner: runnerFact,
   };
@@ -1124,7 +1156,9 @@ function describeAccount(account: AccountFact | undefined): unknown {
       status: execution.status,
     })),
     executionsScanned: EXECUTION_SCAN,
-    positions: account.positions,
+    // A count, as it always was. What the positions HOLD is in `notes`, which
+    // is where a reader of this answer will actually see it (ADR-0023).
+    positions: account.positions.length,
   };
 }
 
@@ -1148,6 +1182,10 @@ export async function runtimeNext(context: CommandContext): Promise<unknown> {
   }
   context.diagnostic(
     [
+      // Before the headline: what the account is carrying outranks what this
+      // runtime is waiting for. A stale feed or a locked escrow matters in
+      // every state, including the ones that read as fine (ADR-0023).
+      ...(decided.notes ?? []).map((note) => `  ! ${note.says}`),
       decided.headline,
       // The agent's own steps first: they are the ones this process can act on,
       // and a person reading along should see what the host is about to do.

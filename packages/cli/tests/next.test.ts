@@ -68,6 +68,23 @@ interface Answer {
 }
 
 const OTHER_ACCOUNT = `0x${'d'.repeat(63)}3`;
+/** Positions are summaries now, not a count: `next` reads what they hold. */
+const position = (over: Record<string, unknown> = {}) =>
+  ({
+    positionId: `0x${'e'.repeat(63)}1`,
+    marketId: `0x${'f'.repeat(63)}1`,
+    outcomeId: 'YES',
+    strategyId: null,
+    originalCost: '10.000000',
+    remainingCost: '10.000000',
+    shares: '13.500000',
+    avgEntryPrice: '0.740000',
+    currentPrice: '0.750000',
+    unrealizedPnl: '0.125000',
+    openedAt: '2026-01-01T00:00:00.000Z',
+    ...over,
+  }) as never;
+const held = (count: number) => Array.from({ length: count }, () => position());
 const ACCOUNTS = 'GET /agent-api/v1/predict/accounts';
 const LIMITS = `GET /agent-api/v1/predict/accounts/${ACCOUNT_ID}/effective-limits`;
 const EXECUTIONS = `GET /agent-api/v1/predict/accounts/${ACCOUNT_ID}/executions`;
@@ -917,7 +934,7 @@ describe('decideNext precedence', () => {
   const blockedAccount = {
     limits: { ...EFFECTIVE_LIMITS_OK.body, blockers: ['SUSPENDED'] } as never,
     unsettled: [execution('PENDING_FILL') as never],
-    positions: 3,
+    positions: held(3),
   };
   const everythingWrong: NextFacts = {
     requirements: satisfied,
@@ -973,7 +990,7 @@ describe('decideNext precedence', () => {
       unconfigured,
       { ...everythingWrong, onboarding: { failed: 'SERVICE_UNAVAILABLE' } },
       { ...everythingWrong, writes: 'WITHIN_SCOPE', runner: { status: 'ABSENT' }, account: {
-        limits: EFFECTIVE_LIMITS_OK.body as never, unsettled: [], positions: 0,
+        limits: EFFECTIVE_LIMITS_OK.body as never, unsettled: [], positions: [],
       } },
     ];
     for (const facts of variants) {
