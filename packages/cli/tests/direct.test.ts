@@ -686,7 +686,11 @@ describe('direct mode', () => {
     const ready = await run(['next'], { env });
     const data = ready.envelope.data as { state: string; headline: string; suggestions: { command: string }[] };
     expect(data.state).toBe('READY');
-    expect(data.headline).toMatch(/WATERX_PREDICT_POLICY=interactive/u);
+    // It names the CHOOSER, not one of the three modes, and not an `export` a
+    // tool host cannot perform (ADR-0021).
+    expect(data.headline).toMatch(/waterx-predict policy/u);
+    expect(data.headline).not.toMatch(/export /u);
+    expect(data.suggestions.map((s) => s.command)).toContain('runtime.policy');
     expect(data.suggestions.map((s) => s.command)).not.toContain('order.preview');
 
     const marketId = await resolveMarket(run);

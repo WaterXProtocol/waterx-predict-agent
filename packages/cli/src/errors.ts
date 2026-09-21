@@ -16,6 +16,12 @@ export type CliErrorCode =
   | 'INVALID_INPUT'
   /** A required setting is absent. Nothing was attempted. */
   | 'NOT_CONFIGURED'
+  /**
+   * This package installed without its build, so there is nothing to run. Only
+   * the `bin/` shims can ever report it: by the time any of this code is
+   * loaded, the build it describes is there (ADR-0021).
+   */
+  | 'BUILD_MISSING'
   /** A setting is present but unusable. */
   | 'CONFIG_INVALID'
   /**
@@ -58,6 +64,7 @@ export const CLI_ERROR_CODES: ReadonlySet<string> = new Set<CliErrorCode>([
   'UNKNOWN_COMMAND',
   'INVALID_INPUT',
   'NOT_CONFIGURED',
+  'BUILD_MISSING',
   'CONFIG_INVALID',
   'CONFIG_CONTAINS_SECRET',
   'SIGNER_UNAVAILABLE',

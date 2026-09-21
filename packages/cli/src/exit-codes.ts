@@ -52,6 +52,9 @@ const BY_CLI_CODE: Readonly<Record<CliErrorCode, ExitCode>> = {
   UNKNOWN_COMMAND: EXIT_CODES.USAGE,
   INVALID_INPUT: EXIT_CODES.INVALID_INPUT,
   NOT_CONFIGURED: EXIT_CODES.CONFIG,
+  // An install with no build in it is a configuration problem, not a crash:
+  // exit 1 would put it in the same bucket as "this process fell over".
+  BUILD_MISSING: EXIT_CODES.CONFIG,
   CONFIG_INVALID: EXIT_CODES.CONFIG,
   CONFIG_CONTAINS_SECRET: EXIT_CODES.CONFIG,
   SIGNER_UNAVAILABLE: EXIT_CODES.CONFIG,

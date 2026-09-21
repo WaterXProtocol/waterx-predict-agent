@@ -180,6 +180,8 @@ Only the account owner can sign the delegation, in their own wallet, and no tool
 
 Printing the link and stopping turns one signature into a conversation: the person signs, comes back to a dead terminal, and has to announce that they are done before anything moves. Wait for it instead. Running out of time is not a failure and cancels nothing — the result carries `timedOut` and the last state, and you resume by calling again.
 
+The CLI OPENS that page by itself on the machine it runs on, and whether it should is the operator's call rather than yours: do not pass `--no-open` on your own initiative. When the owner is not at that machine — the usual case — `waterx-predict onboard --qr` draws the link as a code they can scan with the phone their wallet is on. Offer it; do not decide it.
+
 The link GRANTS nothing — no key, no token, no pre-authorization — so intercepting it buys an attacker the ability to ask someone to authorize an address they can already see. Say that when you hand it over; a person asked to open a link about their money deserves to be told what is in it. Do not go further and call it contentless: it names the agent wallet, and it carries whatever `label` and `accountId` you put in it, so an account id in a link is an account id in a message.
 
 ### Under a read-only policy, refuse the write and say so
@@ -300,6 +302,9 @@ Generated from the command contract. `write` commands are gated by the execution
 | --- | --- | --- | --- | --- | --- | --- |
 | `runtime.describe` | `describe` | `waterx_predict_runtime_describe` | no — composed by the core | read | NOT_REQUIRED | Report what this runtime can actually do, and what it cannot. |
 | `runtime.command-schema` | `command-schema` | `waterx_predict_runtime_command_schema` | no — composed by the core | read | NOT_REQUIRED | Emit this command document, or one command from it. |
+| `runtime.configure` | `configure` | `waterx_predict_runtime_configure` | no — composed by the core | write | NOT_REQUIRED | Write the agent wallet and signer into this machine’s config file. |
+| `runtime.policy` | `policy` | `waterx_predict_runtime_policy` | no — composed by the core | read | NOT_REQUIRED | What this runtime may sign today, the three modes it could be in, and what each allows. |
+| `runtime.policy-set` | `policy set` | `waterx_predict_runtime_policy_set` | no — composed by the core | write | NOT_REQUIRED | Set the execution policy. Widening it is a person’s act and needs --yes. |
 | `runtime.doctor` | `doctor` | `waterx_predict_runtime_doctor` | no — composed by the core | read | NOT_REQUIRED | Check configuration, signer, reachability and authentication. |
 | `runtime.onboard` | `onboard` | `waterx_predict_runtime_onboard` | no — composed by the core | read | NOT_REQUIRED | Get this agent authorized: the link an owner signs, and where the grants stand. |
 | `runtime.next` | `next` | `waterx_predict_runtime_next` | no — composed by the core | read | NOT_REQUIRED | Where this agent stands, and the one thing to do next — as commands, not prose. |

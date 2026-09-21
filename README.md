@@ -144,10 +144,24 @@ Run `npm install <cli.tgz-url> <keystore.tgz-url>`, then `npx --no waterx-predic
 
 The second half is `runtime.next`: it answers in every state, suggests only
 reads from the command contract, stops and names the person whenever a person
-has to act, and reports anything unsettled before offering anything new. The
+has to act, and reports anything unsettled before offering anything new. It
+answers with two lists (ADR-0020): `handOver.steps` for the person — installing
+software, unlocking a sealed keystore, choosing a network, the owner's grant —
+and `agentSteps` for what the host may run itself, which on a fresh machine is
+the whole rest of the setup:
+
+```
+npx --no waterx-predict-keystore init --no-passphrase   # a NEW, empty agent wallet
+npx --no waterx-predict configure --fromKeystore        # persist which wallet, and who signs
+```
+
+`init --no-passphrase` keeps the key in a `0600` file with no passphrase and no
+resident process — the perp agent's posture, stated — and `configure` writes the
+two settings that name this runtime to itself, and never the network, the policy
+or the account. An operator who wants the key sealed runs `keystore init` and
+`keystore agent --detach` instead, and those steps are theirs. The
 first half is the two operator artifacts (`pnpm cli:bundle`): the CLI, and the
-keystore signer it needs, whose `init` / `agent` steps `next` hands to the
-operator as commands. Both are built and walked to READY against a local stub
+keystore signer it needs, whose steps `next` hands to whoever may run them. Both are built and walked to READY against a local stub
 in CI. ADR-0010 and ADR-0012 are Accepted, so a release may carry them;
 **none has been made yet**. `npm install github:…` is not an installation
 path — the repository root is a private workspace with no binary.
@@ -164,7 +178,8 @@ authenticated Agent API, which on mainnet is deployed but not yet switched on
 issued, expire and are spent once, a `delegated-auto` budget is counted across
 invocations, and an order's state is read from the chain (ADR-0014). On
 mainnet, with no policy configured, the CLI is read-only until the operator
-sets `WATERX_PREDICT_POLICY=interactive` (ADR-0017).
+chooses a policy — `waterx-predict policy` lists the three modes with what each
+allows, and `policy set --mode <mode> --yes` takes one (ADR-0017, ADR-0021).
 
 **The CLI uses mainnet unless told otherwise** (ADR-0011): with no
 `WATERX_PREDICT_ENVIRONMENT` or `WATERX_PREDICT_BASE_URL` it connects to

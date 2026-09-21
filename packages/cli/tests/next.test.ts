@@ -52,6 +52,7 @@ interface Answer {
     authorizationUrl?: string;
     settings?: { requirement: string; supplyWith: string[] }[];
   };
+  agentSteps?: { run: string; command?: string; why: string; safeBecause: string }[];
   suggestions: Suggestion[];
   facts: {
     deployment: { source: string; name: string | null; baseUrl: string | null; realFunds: boolean };
@@ -67,6 +68,23 @@ interface Answer {
 }
 
 const OTHER_ACCOUNT = `0x${'d'.repeat(63)}3`;
+/** Positions are summaries now, not a count: `next` reads what they hold. */
+const position = (over: Record<string, unknown> = {}) =>
+  ({
+    positionId: `0x${'e'.repeat(63)}1`,
+    marketId: `0x${'f'.repeat(63)}1`,
+    outcomeId: 'YES',
+    strategyId: null,
+    originalCost: '10.000000',
+    remainingCost: '10.000000',
+    shares: '13.500000',
+    avgEntryPrice: '0.740000',
+    currentPrice: '0.750000',
+    unrealizedPnl: '0.125000',
+    openedAt: '2026-01-01T00:00:00.000Z',
+    ...over,
+  }) as never;
+const held = (count: number) => Array.from({ length: count }, () => position());
 const ACCOUNTS = 'GET /agent-api/v1/predict/accounts';
 const LIMITS = `GET /agent-api/v1/predict/accounts/${ACCOUNT_ID}/effective-limits`;
 const EXECUTIONS = `GET /agent-api/v1/predict/accounts/${ACCOUNT_ID}/executions`;
@@ -301,19 +319,27 @@ describe('next, walking an operator through the keystore signer', () => {
     WATERX_PREDICT_SIGNER_COMMAND: SIGNER,
   });
   const runs = (answer: Answer): string[] => (answer.handOver?.steps ?? []).map((step) => step.run);
+  /** The steps the agent may run itself — a separate list, deliberately (ADR-0020). */
+  const own = (answer: Answer): string[] => (answer.agentSteps ?? []).map((step) => step.run);
 
-  it('starts from nothing: install, init, agent, then wire both settings in', async () => {
+  it('starts from nothing: the operator installs, and the agent does the rest itself', async () => {
     const { result, answer } = await next({ env: {}, homeDir: HOME });
     expect(answer.state).toBe('SETUP_INCOMPLETE');
+    // Installing software on someone's machine is theirs. Everything after it
+    // creates an empty wallet and writes a local file, so it is the agent's.
     expect(runs(answer)).toEqual([
       'npm install github:WaterXProtocol/waterx-predict-agent   # or <release-asset-url>/waterx-predict-agent-signer-keystore-0.1.0.tgz',
-      'npx --no waterx-predict-keystore init',
-      'npx --no waterx-predict-keystore agent',
-      'export WATERX_PREDICT_AGENT_WALLET=<the address init printed>',
-      `export WATERX_PREDICT_SIGNER_COMMAND='${SIGNER}'`,
     ]);
+    expect(own(answer)).toEqual([
+      'npx --no waterx-predict-keystore init --no-passphrase',
+      'waterx-predict configure --fromKeystore',
+    ]);
+    // A person's list and the agent's are never merged, and the agent's says
+    // why each step is one it may take.
+    expect(answer.agentSteps?.[0]?.safeBecause).toMatch(/holds no funds/u);
     // The owner's key is the one thing an operator must not put there.
-    expect(answer.handOver?.steps?.[1]?.why).toMatch(/Never import the account owner's key/u);
+    expect(answer.agentSteps?.[0]?.why).toMatch(/perp agent/u);
+    expect(answer.agentSteps?.[0]?.safeBecause).toMatch(/Never import an existing key/u);
     expect(answer.facts.signer).toMatchObject({ kind: 'KEYSTORE', installed: false, configured: false, agent: 'NO_SOCKET' });
     expect(result.fetches).toEqual([]);
     assertBounded(answer);
@@ -326,11 +352,10 @@ describe('next, walking an operator through the keystore signer', () => {
       executables: ['waterx-predict-keystore'],
       files: KEYSTORE_FILE,
     });
-    expect(runs(answer)).toEqual([
-      'npx --no waterx-predict-keystore agent',
-      `export WATERX_PREDICT_AGENT_WALLET=${KEYSTORE_ADDRESS}`,
-      `export WATERX_PREDICT_SIGNER_COMMAND='${SIGNER}'`,
-    ]);
+    // The sealed keystore still needs a person to unlock it; the settings do not.
+    expect(runs(answer)).toEqual(['npx --no waterx-predict-keystore agent']);
+    expect(own(answer)).toEqual(['waterx-predict configure --fromKeystore']);
+    expect(answer.agentSteps?.[0]?.why).toContain(KEYSTORE_ADDRESS);
     // Only the public address is read; nothing sealed ever reaches an output.
     expect(result.stdout).not.toContain('secret-bits');
     expect(result.stderr).not.toContain('secret-bits');
@@ -343,7 +368,8 @@ describe('next, walking an operator through the keystore signer', () => {
       executables: ['waterx-predict-keystore'],
       files: { '/srv/ks/keystore.json': JSON.stringify({ address: KEYSTORE_ADDRESS }) },
     });
-    expect(runs(answer)).toContain(`export WATERX_PREDICT_AGENT_WALLET=${KEYSTORE_ADDRESS}`);
+    expect(own(answer)).toContain('waterx-predict configure --fromKeystore');
+    expect(answer.agentSteps?.[0]?.why).toContain(KEYSTORE_ADDRESS);
   });
 
   it('will not sign while the agent is not running', async () => {
@@ -374,10 +400,10 @@ describe('next, walking an operator through the keystore signer', () => {
     expect(answer.state).toBe('SETUP_INCOMPLETE');
     expect(answer.headline).toContain(`but the keystore holds ${KEYSTORE_ADDRESS}`);
     // The agent step rides along: a socket file is not proof one is running.
-    expect(runs(answer)).toEqual([
-      'npx --no waterx-predict-keystore agent',
-      `export WATERX_PREDICT_AGENT_WALLET=${KEYSTORE_ADDRESS}`,
-    ]);
+    expect(runs(answer)).toEqual(['npx --no waterx-predict-keystore agent']);
+    // `--replace`, because the wrong wallet is already configured and a write
+    // that silently repointed a runtime would be the more dangerous default.
+    expect(own(answer)).toEqual(['waterx-predict configure --fromKeystore --replace']);
     expect(result.signerRuns).toEqual([]);
   });
 
@@ -390,7 +416,7 @@ describe('next, walking an operator through the keystore signer', () => {
     });
     expect(answer.headline).toContain('cannot be read');
     expect(runs(answer)[0]).toMatch(/^mv .*keystore\.json .*\.unreadable$/u);
-    expect(runs(answer)).toContain('npx --no waterx-predict-keystore init');
+    expect(own(answer)).toContain('npx --no waterx-predict-keystore init --no-passphrase');
   });
 
   it('sends a signer that did not answer back to the operator, not to doctor alone', async () => {
@@ -813,12 +839,36 @@ describe('next, when nothing stands in the way', () => {
     assertBounded(answer);
   });
 
-  it('offers no order under a read-only policy, and says why', async () => {
-    const { answer } = await next({ env: CONFIGURED_ENV, routes: READY_ROUTES }, ['--policy', 'read-only']);
+  it('hands the owner\u2019s state back with the command that is still the agent\u2019s', async () => {
+    // The signature is the owner's; `onboard --wait` is this agent's, and a
+    // screen that named only the first is where a real session stopped without
+    // producing a link at all (ADR-0022).
+    const { result, answer } = await next({
+      env: CONSOLE_ENV,
+      routes: { 'POST /agent-api/v1/auth': AUTH_OK, [ACCOUNTS]: listing() },
+    });
+    expect(answer.state).toBe('AWAITING_OWNER');
+    expect(answer.stop).toBe(true);
+    expect(answer.actor).toBe('ACCOUNT_OWNER');
+    expect((answer.agentSteps ?? []).map((step) => step.run)).toEqual(['waterx-predict onboard --wait']);
+    expect(answer.headline).toMatch(/run the step below while they sign/u);
+    // And the envelope points at it, so an answer that stops for a person is
+    // still not a dead end.
+    expect(result.envelope.meta?.nextCommand).toBe('waterx-predict onboard --wait');
+  });
+
+  it('puts the policy choice first when the grant has landed and it still cannot sign', async () => {
+    const { answer, result } = await next({ env: CONFIGURED_ENV, routes: READY_ROUTES }, ['--policy', 'read-only']);
     expect(answer.state).toBe('READY');
     expect(answer.facts.policy.writes).toBe('REFUSED');
-    expect(answer.suggestions.map((row) => row.command)).toEqual(['market.search']);
+    // The chooser comes FIRST — the grant has landed and this thing still
+    // cannot sign, so the operator's choice outranks a market to browse
+    // (ADR-0025). Being first is also what `meta.nextCommand` points at.
+    expect(answer.suggestions.map((row) => row.command)).toEqual(['runtime.policy', 'market.search']);
+    expect(result.envelope.meta?.nextCommand).toBe('waterx-predict policy');
     expect(answer.headline).toMatch(/read-only/u);
+    expect(answer.headline).toMatch(/places no order yet/u);
+    expect(answer.headline).toMatch(/waterx-predict policy set --mode <mode> --yes/u);
     assertBounded(answer);
   });
 });
@@ -887,7 +937,7 @@ describe('decideNext precedence', () => {
   const blockedAccount = {
     limits: { ...EFFECTIVE_LIMITS_OK.body, blockers: ['SUSPENDED'] } as never,
     unsettled: [execution('PENDING_FILL') as never],
-    positions: 3,
+    positions: held(3),
   };
   const everythingWrong: NextFacts = {
     requirements: satisfied,
@@ -943,7 +993,7 @@ describe('decideNext precedence', () => {
       unconfigured,
       { ...everythingWrong, onboarding: { failed: 'SERVICE_UNAVAILABLE' } },
       { ...everythingWrong, writes: 'WITHIN_SCOPE', runner: { status: 'ABSENT' }, account: {
-        limits: EFFECTIVE_LIMITS_OK.body as never, unsettled: [], positions: 0,
+        limits: EFFECTIVE_LIMITS_OK.body as never, unsettled: [], positions: [],
       } },
     ];
     for (const facts of variants) {

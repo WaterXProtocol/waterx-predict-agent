@@ -46,6 +46,29 @@ npm warns that the root `prepare` script is not covered by `allowScripts`. That
 script is what builds this workspace, so an install that skips it leaves nothing
 to run — approve it, or use the release artifacts, which need no install script.
 
+**Every answer points somewhere.** `meta.nextCommand` is on every envelope,
+success or refusal, and whatever is in it runs exactly as printed — a command
+needing a value only a person can choose (`<placeholder>`) or a person's consent
+(`--yes`) is never put there, and the fallback is `waterx-predict next`, which
+answers in every state (ADR-0022).
+
+`next` answers with two lists. `handOver.steps` are a person's — installing
+software, unlocking a sealed keystore, choosing a network, the owner's grant.
+`agentSteps` are the ones a host may run itself, and on a fresh machine they are
+the whole rest of the setup (ADR-0020):
+
+```sh
+npx --no waterx-predict-keystore init --no-passphrase  # a NEW, empty agent wallet
+npx --no waterx-predict configure --fromKeystore       # persist which wallet, and who signs
+npx --no waterx-predict next --json                    # → AWAITING_OWNER: now a person
+```
+
+`configure` is the only command that writes settings, and it writes exactly two:
+the agent wallet and the signer command. It will not write the network, the
+policy or the account — those decide whether real money moves. It writes a file
+rather than suggesting `export` because a tool host runs every command in its own
+process, where an exported variable is gone by the next call.
+
 From a checkout, build and alias instead:
 
 ```sh
@@ -66,9 +89,15 @@ waterx-predict describe
 export WATERX_PREDICT_ENVIRONMENT=testnet   # or mainnet; unset means mainnet
 export WATERX_PREDICT_AGENT_WALLET='0x<64 hex>'
 export WATERX_PREDICT_SIGNER_COMMAND='/path/to/your-signer'
+#    …or persist the last two, which is what an unattended host does:
+#    waterx-predict configure --agentWallet 0x<64 hex> --signerCommand '["/path/to/your-signer"]'
 
 # 3. Get authorized. Prints the link an OWNER opens; --wait polls until they sign.
 waterx-predict onboard --label momentum-bot --wait
+#    The page opens on THIS machine by itself. `--no-open` stops it for one run
+#    (an agent must never pass that on its own initiative); WATERX_PREDICT_NO_BROWSER
+#    stops it for good. `--qr` draws the link as a code, for an owner who is
+#    somewhere else — which is the usual case (ADR-0024).
 #    → the accountId comes back from the server. Nobody copies it out of a browser.
 
 # 4. Check the setup before trusting any read from it.
@@ -609,9 +638,17 @@ token and no `/agent-api` request.
   chain's grant events, and a named account (`WATERX_PREDICT_ACCOUNT_ID`) is
   verified from its on-chain object. Once an account is in use, `next` never
   switches to another unless it is named.
+- **Two permissions, from two people.** The ACCOUNT OWNER signs the delegation
+  on the authorize page; the AGENT OPERATOR decides what this runtime may sign
+  with it. The second is due the moment the first lands, so `onboard` says the
+  runtime still places no order and `next` offers the three modes first
+  (ADR-0025).
 - **Mainnet is read-only until the operator opts in** (ADR-0017). With no
-  policy configured, mainnet reads and previews and places nothing; set
-  `WATERX_PREDICT_POLICY=interactive` to allow approved orders.
+  policy configured, mainnet reads and previews and places nothing.
+  `waterx-predict policy` lists the three modes with what each allows, and the
+  operator takes one with `waterx-predict policy set --mode interactive --yes`
+  (ADR-0021). Narrowing needs no `--yes`; widening is a person's act, and
+  `delegated-auto` is refused until a `policy.scope` is written down.
 
 ## The signer
 

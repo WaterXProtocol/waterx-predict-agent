@@ -13,11 +13,17 @@
  *
  *   1. `npx --no waterx-predict describe`  → a runtime that answers with no
  *                                            configuration and no network
- *   2. `npx --no waterx-predict next --json` → SETUP_INCOMPLETE, and the first
- *                                            step is the keystore
- *   3. `npx --no waterx-predict-keystore init` → the second binary works, and
- *                                            holds a key it just made
- *   4. `next` again                        → the agent wallet it now knows
+ *   2. `npx --no waterx-predict next --json` → SETUP_INCOMPLETE, and the steps
+ *                                            it may run itself are the keystore
+ *                                            and `configure`
+ *   3. those steps, run verbatim            → a wallet, and a config file that
+ *                                            points at it
+ *   4. `next` again                        → past setup, with no person and no
+ *                                            resident agent involved
+ *
+ * Steps 2–4 are the walk a model host actually does, run as it would run it:
+ * the commands come out of `agentSteps` rather than being spelled here, so a
+ * hand-over that stops being runnable fails this check (ADR-0020).
  *
  * WHAT IT DOES NOT PROVE: that GitHub serves it. Nothing here clones over the
  * network; the packed tree is identical to the one a clone would pack, but a
@@ -25,7 +31,7 @@
  * private repository. No key of this machine is touched: the keystore runs
  * against a throwaway HOME and its own directory.
  */
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -35,7 +41,13 @@ import { findRepoRoot } from '../workspace.ts';
 interface Envelope {
   ok?: boolean;
   command?: string;
-  data?: { state?: string; handOver?: { steps?: { run?: string }[] }; facts?: { signer?: { kind?: string } } };
+  error?: { code?: string; message?: string };
+  data?: {
+    state?: string;
+    handOver?: { steps?: { run?: string }[] };
+    agentSteps?: { run?: string }[];
+    facts?: { signer?: { kind?: string }; agentWallet?: string | null };
+  };
 }
 
 const problems: string[] = [];
@@ -43,14 +55,27 @@ const expect = (condition: boolean, problem: string): void => {
   if (!condition) problems.push(problem);
 };
 
-function run(project: string, env: Record<string, string>, args: readonly string[]): { status: number | null; stdout: string; stderr: string } {
-  const result = execFileSync('npx', ['--no', ...args], {
+/**
+ * One command in the installed project.
+ *
+ * Both streams are captured rather than inherited, because two of the
+ * assertions below are about stderr — a warning nobody can see is a warning
+ * that is not there. A non-zero exit is returned rather than thrown: this walk
+ * wants to report every problem it found, not the first.
+ */
+function run(
+  project: string,
+  env: Record<string, string>,
+  args: readonly string[],
+): { status: number | null; stdout: string; stderr: string } {
+  const result = spawnSync('npx', ['--no', ...args], {
     cwd: project,
     env: { PATH: process.env['PATH'] ?? '', npm_config_update_notifier: 'false', ...env },
     encoding: 'utf8',
     timeout: 120_000,
   });
-  return { status: 0, stdout: result, stderr: '' };
+  if (result.error !== undefined) throw result.error;
+  return { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
 }
 
 const parse = (stdout: string, label: string): Envelope => {
@@ -102,39 +127,67 @@ const main = (argv: readonly string[]): number => {
 
     const home = join(staging, 'home');
     mkdirSync(home, { recursive: true });
-    const passphraseFile = join(staging, 'passphrase');
-    writeFileSync(passphraseFile, 'install-check-passphrase\n', { mode: 0o600 });
-    const bare = { HOME: home, WATERX_KEYSTORE_DIR: keystoreDir };
+    // Nothing here should ever put a window on the desk of whoever runs it.
+    const bare = { HOME: home, WATERX_KEYSTORE_DIR: keystoreDir, WATERX_PREDICT_NO_BROWSER: '1' };
 
     // 1. It answers with nothing configured, and sends nothing.
     const described = run(project, bare, ['waterx-predict', 'describe']);
     const describe = parse(described.stdout, 'describe');
     expect(describe.command === 'runtime.describe' && describe.ok === true, 'describe did not answer as itself');
 
-    // 2. The loop an agent host runs.
+    // 2. The loop an agent host runs, with the steps it may run itself.
     const first = parse(run(project, bare, ['waterx-predict', 'next', '--json']).stdout, 'next');
     expect(first.data?.state === 'SETUP_INCOMPLETE', `bare: next answered ${String(first.data?.state)}`);
-    const steps = (first.data?.handOver?.steps ?? []).map((step) => step.run ?? '');
+    const own = (first.data?.agentSteps ?? []).map((step) => step.run ?? '');
     expect(
-      steps[0] === 'npx --no waterx-predict-keystore init',
-      `bare: the first step was ${JSON.stringify(steps[0])}, not keystore init — the installed signer was not found`,
+      own[0] === 'npx --no waterx-predict-keystore init --no-passphrase',
+      `bare: the first step the agent may run was ${JSON.stringify(own[0])} — a host cannot finish setup from that`,
+    );
+    expect(
+      own[1] === 'waterx-predict configure --fromKeystore',
+      `bare: the second step the agent may run was ${JSON.stringify(own[1])}`,
+    );
+    expect(
+      (first.data?.handOver?.steps ?? []).every((step) => !(step.run ?? '').includes('export ')),
+      'bare: a hand-over step told the operator to `export` something, which no tool host can do',
     );
 
-    // 3. The second binary, from the same install.
-    const init = run(project, { ...bare, WATERX_KEYSTORE_PASSPHRASE_FILE: passphraseFile }, ['waterx-predict-keystore', 'init']);
+    // 3. Those steps, verbatim, exactly as a host would run them. `npx --no` is
+    //    prepended where the step does not carry it, which is what a host does
+    //    with a local binary.
     let address = '';
-    try {
-      address = String((JSON.parse(init.stdout) as { address?: unknown }).address ?? '');
-    } catch {
-      problems.push('keystore init did not print its address');
+    for (const step of own) {
+      const argv = step.startsWith('npx --no ') ? step.slice('npx --no '.length).split(' ') : step.split(' ');
+      const done = run(project, bare, argv);
+      expect(done.status === 0, `\`${step}\` exited ${String(done.status)}: ${done.stderr.trim().split('\n').pop() ?? ''}`);
+      if (argv[1] === 'init') {
+        try {
+          address = String((JSON.parse(done.stdout) as { address?: unknown }).address ?? '');
+        } catch {
+          problems.push('keystore init did not print its address');
+        }
+        expect(/^0x[0-9a-f]{64}$/u.test(address), `keystore init printed ${JSON.stringify(address)}`);
+        // The one thing this posture must never do quietly.
+        expect(
+          done.stderr.includes('plaintext'),
+          'keystore init --no-passphrase did not say on stderr that the key is stored in plaintext',
+        );
+      }
+      if (argv[1] === 'configure') {
+        const answer = parse(done.stdout, 'configure');
+        expect(answer.ok === true, `configure failed: ${String(answer.error?.message)}`);
+      }
     }
-    expect(/^0x[0-9a-f]{64}$/u.test(address), `keystore init printed ${JSON.stringify(address)}`);
 
-    // 4. `next` reads the keystore it just made.
-    const second = parse(run(project, bare, ['waterx-predict', 'next', '--json']).stdout, 'next after init');
+    // 4. `next` reads what those steps left behind — no person, no agent.
+    const second = parse(run(project, bare, ['waterx-predict', 'next', '--json']).stdout, 'next after setup');
     expect(
-      (second.data?.handOver?.steps ?? []).some((step) => (step.run ?? '').includes(address)),
-      'after init: next did not fill in the wallet the keystore holds',
+      second.data?.facts?.agentWallet === address,
+      `after setup: next reported agentWallet ${String(second.data?.facts?.agentWallet)}, not the ${address} the keystore holds`,
+    );
+    expect(
+      second.data?.state !== 'SETUP_INCOMPLETE',
+      `after setup: next still answered SETUP_INCOMPLETE — a host running its own steps cannot get past setup`,
     );
 
     if (problems.length > 0) {
@@ -143,7 +196,7 @@ const main = (argv: readonly string[]): number => {
       return 1;
     }
     process.stderr.write(
-      '\nPacked as a git install packs it, installed with npm alone and scripts off; `describe` answered, `next` asked for the keystore, `keystore init` made a wallet, and `next` read it back.\n',
+      '\nPacked as a git install packs it, installed with npm alone and scripts off; `describe` answered, and the steps `next` said the agent could run itself took it from nothing to a configured wallet with no person and no resident agent.\n',
     );
     return 0;
   } finally {

@@ -12,6 +12,14 @@
  *    under the same policy, validation and approval as if it had chosen it. And
  *    every suggestion is one the AGENT may run: none of them is a write.
  *
+ * 1b. **A step the agent may run itself is marked as such.** Setting up a
+ *    runtime is not the same as trading it: creating an agent wallet that holds
+ *    nothing and telling this runtime which wallet it is are both reversible,
+ *    cost nothing, and authorize nothing. A host that had to relay those to a
+ *    person could never finish its own setup — two real hosts stopped exactly
+ *    there — so they come back as `agentSteps`, separate from the person's
+ *    steps and never mixed into them (ADR-0020).
+ *
  * 2. **A person's step stops the loop, and says so as data.** The owner's grant,
  *    the operator's choice of network, the user's choice of account: none of
  *    these is the agent's to supply. `stop: true` and `handOver` carry who must
@@ -45,12 +53,14 @@ import {
   type OnboardingState,
   type PredictEffectiveLimitsResponseBody,
   type PredictExecutionSummary,
+  type PredictPositionSummary,
   type PredictTradingBlocker,
   type ResolvedRequirement,
 } from '@waterx/predict-agent-sdk';
 import { getCommand, type AgentCommandClassification } from '@waterx/predict-agent-schema';
 
 import { isDirectClient, toEnvelopeError } from '../client.ts';
+import { exposureNotes, type ExposureNote } from './exposure.ts';
 import type { CommandContext } from '../context.ts';
 import { CliError } from '../errors.ts';
 import { resolveRequirements } from '../requirements.ts';
@@ -143,6 +153,23 @@ export interface SetupStep {
   readonly why: string;
 }
 
+/**
+ * One thing the AGENT may run itself, in order.
+ *
+ * Kept a different type from `SetupStep` on purpose: the distinction is who is
+ * allowed to act, and two lists that looked alike would be merged by the first
+ * host in a hurry. Every one of these must be reversible, must move no funds and
+ * must grant no authority — `safeBecause` is where that is argued, per step, so
+ * a reviewer can check the claim rather than trust the list.
+ */
+export interface AgentSetupStep {
+  readonly run: string;
+  /** The contract command, when this step is one. Absent for the signer binary. */
+  readonly command?: string;
+  readonly why: string;
+  readonly safeBecause: string;
+}
+
 /** What to tell the person who must act. Present exactly when `stop` is true. */
 export interface HandOver {
   readonly to: Exclude<NextActor, 'AGENT'>;
@@ -165,10 +192,26 @@ export interface NextAnswer {
   readonly stop: boolean;
   readonly handOver?: HandOver;
   /**
+   * Setup steps the agent may run itself, in order, before asking again.
+   *
+   * Present whenever this machine has any. They are the agent's even when `stop`
+   * is true: the person's step and these are independent, and doing these first
+   * is usually what shortens the person's list.
+   */
+  readonly agentSteps?: readonly AgentSetupStep[];
+  /**
    * What the agent may run, first one first. When `stop` is true these are what
    * it may run AFTER handing over — waiting for the person, or asking again.
    */
   readonly suggestions: readonly NextSuggestion[];
+  /**
+   * What the account is carrying, whatever state this is (ADR-0023).
+   *
+   * Rides on every state and changes none of them: a position nothing can price
+   * matters whether this runtime is READY or halfway through setup. Absent when
+   * there is nothing to say.
+   */
+  readonly notes?: readonly ExposureNote[];
 }
 
 /* ── The facts it is decided from ─────────────────────────────────────────── */
@@ -214,7 +257,11 @@ export type AccountFact =
       /** Null in direct mode: there is no server-side mandate to read (ADR-0013). */
       readonly limits: PredictEffectiveLimitsResponseBody | null;
       readonly unsettled: readonly PredictExecutionSummary[];
-      readonly positions: number;
+      /**
+       * The positions themselves, not a count. They were always fetched; what
+       * was missing was anything that read them (ADR-0023).
+       */
+      readonly positions: readonly PredictPositionSummary[];
     }
   | { readonly failed: string };
 
@@ -238,6 +285,11 @@ export interface NextFacts {
   readonly namedAccountId?: string;
   /** Present exactly when the onboarding state is READY. */
   readonly account?: AccountFact;
+  /**
+   * This invocation's clock, for the age of an unsettled order. Injected rather
+   * than read here so `decideNext` stays pure; `new Date()` when absent.
+   */
+  readonly now?: Date;
   /**
    * Direct mode: the account this agent was trading on, against the one now
    * authorized. `CONFLICT` stops the loop — a different account is whose money
@@ -321,10 +373,12 @@ function answer(
   headline: string,
   suggestions: readonly NextSuggestion[],
   handOver?: HandOver,
+  agentSteps: readonly AgentSetupStep[] = [],
 ): NextAnswer {
+  const own = agentSteps.length > 0 ? { agentSteps } : {};
   return handOver === undefined
-    ? { state, headline, actor: 'AGENT', stop: false, suggestions }
-    : { state, headline, actor: handOver.to, stop: true, handOver, suggestions };
+    ? { state, headline, actor: 'AGENT', stop: false, ...own, suggestions }
+    : { state, headline, actor: handOver.to, stop: true, handOver, ...own, suggestions };
 }
 
 const scoped = (facts: NextFacts): Record<string, string> =>
@@ -355,6 +409,16 @@ const readyAccounts = (onboarding: OnboardingState): string[] =>
  * without a server — the order is the part that keeps money safe.
  */
 export function decideNext(facts: NextFacts): NextAnswer {
+  // The state is decided first and the notes are attached to whatever comes
+  // back: they must never be able to change which state applies (ADR-0023).
+  const decided = decide(facts);
+  const account = facts.account;
+  if (account === undefined || 'failed' in account) return decided;
+  const notes = exposureNotes(account.positions, account.unsettled, facts.now ?? new Date());
+  return notes.length === 0 ? decided : { ...decided, notes };
+}
+
+function decide(facts: NextFacts): NextAnswer {
   // 1. Local setup. Operator gaps come first even when an owner gap exists too:
   //    an owner cannot grant anything to an agent whose address nobody has.
   const gaps = facts.requirements.filter(
@@ -363,23 +427,39 @@ export function decideNext(facts: NextFacts): NextAnswer {
   const keystoreIssues = keystoreBlockers(facts);
   if (gaps.length > 0 || keystoreIssues.length > 0 || facts.session === undefined) {
     const titles = [...gaps.map((gap) => gap.title), ...keystoreIssues];
-    const steps = setupSteps(facts, gaps);
+    const { operator, agent } = setupSteps(facts, gaps);
+    // A person is only in the way while a step is theirs. When every remaining
+    // step is the agent's, stopping would strand a host that can finish its own
+    // setup — which is exactly what happened before `agentSteps` existed.
+    const needsPerson = operator.length > 0 || agent.length === 0;
     return answer(
       'SETUP_INCOMPLETE',
-      `This runtime is not set up yet${titles.length > 0 ? `: ${titles.join('; ')}` : ''}. Nothing was sent.`,
-      [suggest('runtime.next', scoped(facts), 'Once the operator has done the steps, ask again.')],
-      {
-        to: 'AGENT_OPERATOR',
-        message:
-          'Ask the operator to do these steps. Do not do them yourself — the wallet, its passphrase and the network are theirs. Unless they name a network, this runtime uses production (mainnet), where orders spend real funds.',
-        ...(steps.length > 0 ? { steps } : {}),
-        settings: gaps.map((gap) => ({
-          requirement: gap.id,
-          title: gap.title,
-          supplyWith: gap.supplyWith,
-          why: gap.why,
-        })),
-      },
+      `This runtime is not set up yet${titles.length > 0 ? `: ${titles.join('; ')}` : ''}. Nothing was sent.${
+        needsPerson || agent.length === 0 ? '' : ' Run the steps in agentSteps, then ask again.'
+      }`,
+      [
+        suggest(
+          'runtime.next',
+          scoped(facts),
+          needsPerson ? 'Once the operator has done the steps, ask again.' : 'After the steps above, ask again.',
+        ),
+      ],
+      needsPerson
+        ? {
+            to: 'AGENT_OPERATOR',
+            message: `Ask the operator to do these steps. Do not do them yourself — the wallet, its passphrase and the network are theirs. Unless they name a network, this runtime uses production (mainnet), where orders spend real funds.${
+              agent.length > 0 ? ' The steps in `agentSteps` are yours to run, and doing them first shortens this list.' : ''
+            }`,
+            ...(operator.length > 0 ? { steps: operator } : {}),
+            settings: gaps.map((gap) => ({
+              requirement: gap.id,
+              title: gap.title,
+              supplyWith: gap.supplyWith,
+              why: gap.why,
+            })),
+          }
+        : undefined,
+      agent,
     );
   }
 
@@ -434,7 +514,7 @@ export function decideNext(facts: NextFacts): NextAnswer {
     case 'DELEGATION_MISSING':
       return answer(
         'AWAITING_OWNER',
-        `The account owner has not authorized this agent yet (${onboarding.status}).`,
+        `The account owner has not authorized this agent yet (${onboarding.status}). Send them the link, then run the step below while they sign.`,
         [waitForOwner],
         {
           to: 'ACCOUNT_OWNER',
@@ -442,10 +522,26 @@ export function decideNext(facts: NextFacts): NextAnswer {
             link === undefined
               ? 'The owner has to authorize this agent in their own wallet, and no console is paired with this deployment to send them to. Ask the operator for the console URL (WATERX_PREDICT_CONSOLE_URL).'
               : facts.direct === true
-                ? 'Send the owner this link. They pick an account and sign the delegation once in their own wallet; that signature is the whole grant in direct mode. If the page then fails to save limits, the grant has still landed — this runtime bounds spending with its own execution policy. The link carries no token; never ask for their key.'
-                : 'Send the owner this link. They pick an account, set the limits and sign once in their own wallet. The link carries no token and grants nothing by itself; never ask for their key.',
+                ? 'Send the owner this link. They pick an account and sign the delegation once in their own wallet; that signature is the whole grant in direct mode. If the page then fails to save limits, the grant has still landed — this runtime bounds spending with its own execution policy. The link carries no token; never ask for their key. If they are not at this machine, `waterx-predict onboard --qr` draws it as a code they can scan.'
+                : 'Send the owner this link. They pick an account, set the limits and sign once in their own wallet. The link carries no token and grants nothing by itself; never ask for their key. If they are not at this machine, `waterx-predict onboard --qr` draws it as a code they can scan.',
           ...(link === undefined ? {} : { authorizationUrl: link }),
         },
+        // The signature is the owner's; the command is this agent's. Those are
+        // two halves of one step that attach to different people, and a screen
+        // that named only the first is where a real session stopped — having
+        // produced no link at all, because it never ran the command that prints
+        // one (ADR-0022).
+        link === undefined
+          ? []
+          : [
+              {
+                run: `${BINARY} onboard --wait`,
+                command: 'runtime.onboard',
+                why: 'Prints the link again, opens the page on THIS machine (which is the operator\u2019s call, not yours \u2014 do not pass `--no-open`), and polls until the owner\u2019s grant lands — then adopts the account it was granted on. A wait that runs out cancels nothing: run it again.',
+                safeBecause:
+                  'It reads. It signs the login challenge and nothing else, grants nothing, and cannot make the owner\u2019s decision for them — only notice when they have made it.',
+              },
+            ],
       );
     case 'SUSPENDED':
       return answer(
@@ -601,7 +697,7 @@ export function decideNext(facts: NextFacts): NextAnswer {
     ];
     // A capacity blocker does not stop a SELL, so an agent holding positions
     // still has something to look at.
-    if (account.positions > 0 && blockers.every((blocker) => blocker === 'NO_BUY_CAPACITY')) {
+    if (account.positions.length > 0 && blockers.every((blocker) => blocker === 'NO_BUY_CAPACITY')) {
       suggestions.push(
         suggest(
           'account.positions',
@@ -624,14 +720,32 @@ export function decideNext(facts: NextFacts): NextAnswer {
   }
 
   // 8. Ready. What to trade, how much and how carefully are the user's words.
-  const suggestions: NextSuggestion[] = [
+  //
+  //    …except when nothing may be signed yet. The grant has landed and this
+  //    runtime still places no order, so the next thing to put in front of the
+  //    operator is that choice — not a market to browse (ADR-0025).
+  const suggestions: NextSuggestion[] = [];
+  if (facts.writes === 'REFUSED') {
+    // The chooser, not a mode. Naming one of the three in a sentence is how an
+    // operator ends up taking the middle option without being shown the other
+    // two, and `next` is read by an agent that relays exactly what it is given
+    // (ADR-0021). First, so it is also what `meta.nextCommand` points at.
+    suggestions.push(
+      suggest(
+        'runtime.policy',
+        {},
+        'The three modes this runtime could be in, with what each allows and the command that takes it. Choosing is the operator\u2019s: relay the three, do not pick one for them.',
+      ),
+    );
+  }
+  suggestions.push(
     suggest(
       'market.search',
       { tradeable: true },
       'Turn the user\'s words into one server-resolved market. AMBIGUOUS is an answer: show the candidates and ask.',
       [{ field: 'search', why: 'What to trade is the user\'s to say.' }],
     ),
-  ];
+  );
   if (facts.writes === 'NEEDS_APPROVAL' || facts.writes === 'WITHIN_SCOPE') {
     suggestions.push(
       suggest(
@@ -650,23 +764,33 @@ export function decideNext(facts: NextFacts): NextAnswer {
       ),
     );
   }
-  if (account.positions > 0) {
+  if (account.positions.length > 0) {
     suggestions.push(
       suggest(
         'account.positions',
         onAccount,
-        `${String(account.positions)} position(s) are held. A SELL needs the positionId from here.`,
+        `${String(account.positions.length)} position(s) are held. A SELL needs the positionId from here.`,
       ),
     );
   }
+  if (facts.writes === 'REFUSED') {
+    // Authorized, and still unable to sign. Said in the headline rather than
+    // left to `facts.policy`, because the owner has just done their part and
+    // the next question is the operator's: what may this thing sign?
+    return answer(
+      'READY',
+      `Authorized on ${accountId} with nothing in flight, and it places no order yet.${
+        facts.readOnlyByDefault === true
+          ? ' This runtime is read-only by default on mainnet (nobody has chosen a policy).'
+          : ' The execution policy is read-only.'
+      } Choosing what it may sign is the operator\u2019s: \`waterx-predict policy\` lists the three modes with what each allows, and \`waterx-predict policy set --mode <mode> --yes\` takes one. Reads still work.`,
+      suggestions,
+    );
+  }
   const posture =
-    facts.writes === 'REFUSED'
-      ? facts.readOnlyByDefault === true
-        ? ' This runtime is read-only by default on mainnet: it can search and preview, and places no order until the operator sets WATERX_PREDICT_POLICY=interactive.'
-        : ' The execution policy is read-only, so this runtime can place no order.'
-      : facts.writes === 'SCOPE_EXPIRED'
-        ? ' The delegated-auto window has closed, so this runtime authorizes no order until the operator renews it.'
-        : '';
+    facts.writes === 'SCOPE_EXPIRED'
+      ? ' The delegated-auto window has closed, so this runtime authorizes no order until the operator renews it.'
+      : '';
   return answer(
     'READY',
     `Authorized on ${accountId} with nothing in flight.${posture} Ask the user what to trade.`,
@@ -720,17 +844,26 @@ function keystoreBlockers(facts: NextFacts): string[] {
 }
 
 /**
- * The operator's remaining steps, as commands, from what is actually on this
- * machine. Steps already done are left out; a step that depends on one not yet
- * done says where its value comes from instead of inventing it.
+ * The remaining steps, split by who may run them.
+ *
+ * Steps already done are left out; a step that depends on one not yet done says
+ * where its value comes from instead of inventing it. The split is the point:
+ * `operator` is what a person must decide or type — a passphrase, a network, a
+ * program to install — and `agent` is what a host may do for itself, which is
+ * creating a wallet that holds nothing and telling this runtime which wallet it
+ * is (ADR-0020).
  */
-function setupSteps(facts: NextFacts, gaps: readonly ResolvedRequirement[]): SetupStep[] {
+function setupSteps(
+  facts: NextFacts,
+  gaps: readonly ResolvedRequirement[],
+): { operator: SetupStep[]; agent: AgentSetupStep[] } {
   const missing = new Set(gaps.map((gap) => gap.id));
   const probe = facts.keystore;
-  const steps: SetupStep[] = [];
+  const operator: SetupStep[] = [];
+  const agent: AgentSetupStep[] = [];
 
   if (missing.has('deployment')) {
-    steps.push({
+    operator.push({
       run: 'export WATERX_PREDICT_ENVIRONMENT=mainnet   # or testnet to practise',
       why: `\`${facts.requirements.find((row) => row.id === 'deployment')?.evidence ?? ''}\` Name a deployment this build knows, or unset it to use mainnet.`,
     });
@@ -739,49 +872,61 @@ function setupSteps(facts: NextFacts, gaps: readonly ResolvedRequirement[]): Set
   const useKeystore = probe !== undefined && (probe.configuredAsSigner || missing.has('signer'));
   if (probe !== undefined && useKeystore) {
     if (!probe.installed) {
-      steps.push({
+      operator.push({
         run: `npm install github:WaterXProtocol/waterx-predict-agent   # or <release-asset-url>/${KEYSTORE_ASSET}`,
         why: 'Installs the keystore signer beside this CLI — the repository carries both binaries (ADR-0019), and a release carries them as two artifacts. It is a separate program on purpose: this CLI never holds a key.',
       });
     }
     if (probe.keystore.status === 'UNREADABLE') {
-      steps.push({
+      operator.push({
         run: `mv ${probe.dir}/${KEYSTORE_LAYOUT.keystoreFile} ${probe.dir}/${KEYSTORE_LAYOUT.keystoreFile}.unreadable`,
         why: 'The existing keystore file has no readable address. Move it aside rather than deleting it — it may still hold a key someone needs.',
       });
     }
     if (probe.keystore.status !== 'PRESENT') {
-      steps.push({
-        run: npxKeystore('init'),
-        why: 'Creates a NEW agent wallet, sealed under a passphrase the operator chooses, and prints its address. Never import the account owner\'s key here: this key stays unlocked while the agent runs.',
+      // The agent's, and the only reason it can be: the wallet this creates is
+      // new and empty, and until an owner grants it on-chain it may do exactly
+      // nothing. An operator who wants the key sealed runs `init` instead, and
+      // the why says so rather than hiding the choice. Listed even when the
+      // binary is still to be installed: the order is the plan, and the install
+      // above is the step that comes first.
+      agent.push({
+        run: npxKeystore('init --no-passphrase'),
+        why: `Creates a NEW agent wallet and prints its address${probe.installed ? '' : ', once the signer above is installed'}. \`--no-passphrase\` keeps the key in a 0600 file with no passphrase, because an unattended host has nobody to type one and nowhere to keep a resident process holding it unlocked — the same posture as the perp agent. An operator who would rather seal it runs \`${npxKeystore('init')}\` and then \`${npxKeystore('agent --detach')}\`, and this step is theirs instead of yours.`,
+        safeBecause:
+          'The wallet is brand new: it holds no funds, and it can do nothing at all until the ACCOUNT OWNER grants it on-chain, which is a step only they can take. Never import an existing key here.',
       });
     }
-    steps.push(agentStep(probe.keystore.status === 'PRESENT' && probe.agent === 'SOCKET_PRESENT'));
+    // A sealed keystore needs something holding it open. A passphrase-less one
+    // does not, and telling anyone to start an agent for it would be asking for
+    // a process that refuses to start (`keystore agent` says so).
+    if (probe.keystore.status === 'PRESENT' && probe.keystore.protection !== 'NONE') {
+      operator.push(agentStep(probe.agent === 'SOCKET_PRESENT'));
+    }
     const address = probe.keystore.status === 'PRESENT' ? probe.keystore.address : undefined;
     const mismatched =
       address !== undefined && facts.agentWallet !== undefined && facts.agentWallet.toLowerCase() !== address.toLowerCase();
-    if (missing.has('agentWallet') || mismatched) {
-      steps.push({
-        run: `export WATERX_PREDICT_AGENT_WALLET=${address ?? '<the address init printed>'}`,
-        why: 'The address the keystore holds. It is public: it is what the account owner will grant, and what every signature is checked against.',
+    if (missing.has('agentWallet') || missing.has('signer') || mismatched) {
+      agent.push({
+        run: `${BINARY} configure --fromKeystore${mismatched ? ' --replace' : ''}`,
+        command: 'runtime.configure',
+        why: `Writes the keystore's address and the signer command into this machine's config file${
+          address === undefined ? ', once the keystore exists' : ` (${address})`
+        }. It is written to a file rather than exported because a tool host runs every command in its own process, and a variable it exports is gone by the next call.`,
+        safeBecause:
+          'It writes exactly two settings — which wallet this runtime is, and which program signs for it — and no network, policy or account. Nothing is sent, nothing is signed, and the keystore is never opened: an address is public.',
       });
     }
-    if (missing.has('signer')) {
-      steps.push({
-        run: `export WATERX_PREDICT_SIGNER_COMMAND='${KEYSTORE_SIGNER_COMMAND}'`,
-        why: 'Points this CLI at the keystore. Each signature is a short-lived `sign` process that forwards to the agent and holds nothing.',
-      });
-    }
-    return steps;
+    return { operator, agent };
   }
 
   if (missing.has('agentWallet')) {
-    steps.push({
-      run: 'export WATERX_PREDICT_AGENT_WALLET=<the address your signer holds>',
-      why: 'A custom signer is configured, so only its operator knows which address it signs for.',
+    operator.push({
+      run: `${BINARY} configure --agentWallet <the address your signer holds>`,
+      why: 'A custom signer is configured, so only its operator knows which address it signs for. `configure` persists it in the config file, which an `export` in one process cannot do.',
     });
   }
-  return steps;
+  return { operator, agent };
 }
 
 /* ── Gathering the facts ─────────────────────────────────────────────────── */
@@ -838,6 +983,9 @@ async function gatherFacts(context: CommandContext): Promise<NextFacts> {
   const keystore = context.probeKeystore();
   const base = {
     writes: writePosture(context),
+    // One clock for the whole answer, so the age of an unsettled order is not
+    // measured against a different instant than the rest of it.
+    now: context.now(),
     ...(config.policy.mode === 'read-only' && config.policy.source === 'DEFAULT' ? { readOnlyByDefault: true } : {}),
     ...(config.mode === 'direct' ? { direct: true } : {}),
     ...(named === undefined ? {} : { namedAccountId: named }),
@@ -921,7 +1069,7 @@ async function gatherFacts(context: CommandContext): Promise<NextFacts> {
     }
     return {
       ...settled,
-      account: { limits: null, unsettled: unsettled.value, positions: positions.value.positions.length },
+      account: { limits: null, unsettled: unsettled.value, positions: positions.value.positions },
       runner: runnerFact,
       adoption,
     };
@@ -952,7 +1100,7 @@ async function gatherFacts(context: CommandContext): Promise<NextFacts> {
       unsettled: executions.value.executions.filter(
         (execution) => !isTerminalExecutionStatus(execution.status),
       ),
-      positions: positions.value.positions.length,
+      positions: positions.value.positions,
     },
     runner: runnerFact,
   };
@@ -1023,7 +1171,9 @@ function describeAccount(account: AccountFact | undefined): unknown {
       status: execution.status,
     })),
     executionsScanned: EXECUTION_SCAN,
-    positions: account.positions,
+    // A count, as it always was. What the positions HOLD is in `notes`, which
+    // is where a reader of this answer will actually see it (ADR-0023).
+    positions: account.positions.length,
   };
 }
 
@@ -1033,9 +1183,29 @@ export async function runtimeNext(context: CommandContext): Promise<unknown> {
 
   // For a person watching a terminal: the headline, who acts, and the first step.
   const first = decided.suggestions[0];
+  // The pointer is the first thing here that can be run AS PRINTED — an agent
+  // step before a suggestion, because those are the ones that move the setup
+  // along. A suggestion carrying `<field>` is skipped by `pointTo` itself, and
+  // then the fallback is `next`, which is the right answer while waiting for a
+  // person (ADR-0022).
+  for (const candidate of [
+    ...(decided.agentSteps ?? []).map((step) => step.run),
+    ...decided.suggestions.map((suggestion) => suggestion.invocation),
+  ]) {
+    context.pointTo(candidate);
+    break;
+  }
   context.diagnostic(
     [
+      // Before the headline: what the account is carrying outranks what this
+      // runtime is waiting for. A stale feed or a locked escrow matters in
+      // every state, including the ones that read as fine (ADR-0023).
+      ...(decided.notes ?? []).map((note) => `  ! ${note.says}`),
       decided.headline,
+      // The agent's own steps first: they are the ones this process can act on,
+      // and a person reading along should see what the host is about to do.
+      ...(decided.agentSteps === undefined ? [] : ['  you may run these yourself:']),
+      ...(decided.agentSteps ?? []).map((step, index) => `    ${String(index + 1)}. ${step.run}`),
       ...(decided.handOver === undefined ? [] : [`  hand over to ${decided.handOver.to}: ${decided.handOver.message}`]),
       ...(decided.handOver?.steps ?? []).map((step, index) => `    ${String(index + 1)}. ${step.run}`),
       ...(decided.handOver?.authorizationUrl === undefined ? [] : [`  ${decided.handOver.authorizationUrl}`]),

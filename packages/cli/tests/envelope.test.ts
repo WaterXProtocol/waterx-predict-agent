@@ -80,9 +80,18 @@ describe('the stdout envelope', () => {
     expect(result.envelope.meta?.warnings?.join(' ')).toMatch(/http/iu);
   });
 
-  it('omits meta entirely when there is nothing to report', async () => {
+  it('carries a pointer and nothing else when there is nothing to report', async () => {
+    // `meta` used to be absent here. It is not any more, and the one thing it
+    // carries is where to go next — on EVERY answer, so no envelope is a dead
+    // end (ADR-0022). Everything else is still reported only when it applies.
     const result = await invoke(['describe'], { env: { WATERX_PREDICT_ENVIRONMENT: 'testnet' } });
-    expect(result.envelope.meta).toBeUndefined();
+    expect(result.envelope.meta).toEqual({ nextCommand: 'waterx-predict next' });
+  });
+
+  it('points somewhere runnable on a refusal too, not only on a success', async () => {
+    const refused = await invoke(['order', 'preview', '--input', '{}']);
+    expect(refused.envelope.ok).toBe(false);
+    expect(refused.envelope.meta?.nextCommand).toBe('waterx-predict next');
   });
 
   it('warns on every command when mainnet was chosen by default', async () => {

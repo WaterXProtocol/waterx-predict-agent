@@ -39,17 +39,6 @@ export interface CommandContext {
    */
   readonly approver: string | undefined;
   /**
-   * Hands the authorization link to this machine's browser, when `--open` was
-   * given and this host can. Absent otherwise, which a command reports rather
-   * than working around — an operator who believes a window opened waits for
-   * one that never appears.
-   *
-   * Deliberately reachable only from a terminal: `--open` is a dispatcher flag,
-   * so it is neither a schema field a model can fill in nor an operator flag an
-   * adapter may pin.
-   */
-  readonly openInBrowser: ((url: string) => void) | undefined;
-  /**
    * Permits the signer spends. A command that authorizes a write grants here;
    * the signer consumes before it spawns. A command that forgets to grant cannot
    * sign, which is the point.
@@ -99,6 +88,61 @@ export interface CommandContext {
    * only. `undefined` when a different signer is configured.
    */
   probeKeystore(): KeystoreProbe | undefined;
+  /**
+   * What this invocation may do with the authorization link (ADR-0024).
+   *
+   * The page opens by ITSELF now, so `open` is present whenever this host can
+   * open one at all rather than only when a flag was passed. `forced` is
+   * `--open`: open it again even though this link was opened here already.
+   * `suppressed` is `--no-open`, for one run.
+   */
+  readonly browser: {
+    readonly forced: boolean;
+    readonly suppressed: boolean;
+    /**
+     * Why the environment says not to open one, if it does. A server, a
+     * container and a CI runner all have no browser and nobody watching, and
+     * they are exactly the places that set it.
+     */
+    readonly refusedBecause: string | undefined;
+    /** Opens it, or throws with a reason a person can act on. */
+    readonly open: ((url: string) => void) | undefined;
+    /** Has this exact link been opened from this machine recently? */
+    openedRecently(url: string): boolean;
+    remember(url: string): void;
+  };
+  /** `--qr`: draw the link as a code, for an owner who is somewhere else. */
+  readonly wantsQr: boolean;
+  /**
+   * Name the one command to run after this one.
+   *
+   * Every envelope carries a pointer (`meta.nextCommand`); this is how a
+   * command names a better one than the default `waterx-predict next`. It is
+   * REFUSED — and the default kept — for anything a host must not run as
+   * printed: a `<placeholder>` nobody may fill in by guessing, or `--yes`,
+   * which is a person's consent (ADR-0022).
+   */
+  pointTo(command: string): void;
+  /**
+   * `--yes`: a person\u2019s consent to widen what this runtime may sign.
+   *
+   * A dispatcher flag rather than an input field, like `--approve` — see
+   * `parse.ts`. Only `policy set` reads it, and only when the change widens.
+   */
+  readonly confirmed: boolean;
+  /**
+   * The settings file this runtime reads, and the seam that rewrites it.
+   *
+   * `path` is the file that WAS read, or the first candidate location when none
+   * exists yet — `configure` has to be able to create one, since a host with
+   * nothing configured is exactly who needs it. Absent when this machine has
+   * nowhere to put one, and then `configure` refuses rather than inventing a
+   * path. Nothing but `configure` may use it: every other command treats the
+   * configuration as given (ADR-0020).
+   */
+  readonly configFile:
+    | { readonly path: string; read(): string | null; write(contents: string): void }
+    | undefined;
   /**
    * The approval and spend ledgers (ADR-0014). Throws NOT_CONFIGURED where this
    * machine has nowhere to keep them — and then no approval is issued and no

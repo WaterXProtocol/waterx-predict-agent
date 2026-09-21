@@ -47,6 +47,8 @@ Wait for it. Printing the link and stopping makes the person come back to a dead
 
 The link grants nothing — no key, no token, no pre-authorization — and say so when you hand it over. It is not contentless: it names the agent wallet and any label or account id you put in it. Do not offer to do this step for the owner, do not ask for their key, and do not proceed on the assumption that they will.
 
+The page OPENS BY ITSELF on the machine running this. Do not pass `--no-open` on your own initiative: whether a browser opens here is the operator's call, and they have that flag if they want it. If the owner is somewhere else — the usual case — `waterx-predict onboard --qr` draws the link as a code they can scan with the phone their wallet is on. Say that option exists rather than deciding for them.
+
 ### 4. Let the server name the market
 
 `RESOLVE_THE_MARKET`

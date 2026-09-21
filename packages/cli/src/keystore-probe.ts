@@ -10,8 +10,9 @@
  * It looks the way a person with `ls` would, and no further:
  *
  * - the binary is on PATH (under `npx`, `node_modules/.bin` is);
- * - `keystore.json` exists, and its `address` field — which is public, and is
- *   exactly the agent wallet an owner will grant — is read;
+ * - `keystore.json` exists, and its `address` and `protection` fields — both
+ *   public; the address is exactly the agent wallet an owner will grant — are
+ *   read;
  * - something exists at the agent's socket path.
  *
  * It never imports the keystore package (the CLI must not carry the Sui SDK or
@@ -20,6 +21,11 @@
  * signing gate. A socket that exists may belong to an agent that died, and that
  * is reported as `SOCKET_PRESENT` rather than as a running agent — the session
  * that follows is what proves it.
+ *
+ * `protection` is what decides whether an agent is part of the setup at all: a
+ * passphrase-less keystore (ADR-0020) is opened by `sign` itself, so a hand-over
+ * that told an operator to start an agent for one would be asking for a process
+ * that refuses to start.
  *
  * The layout is a copy of the keystore's own `AGENT_PROTOCOL`, held equal to it
  * by `tests/workspace.test.ts`, the same way the Runner IPC copy is.
@@ -47,9 +53,21 @@ export interface KeystoreProbe {
   readonly keystore:
     | { readonly status: 'ABSENT' }
     | { readonly status: 'UNREADABLE' }
-    | { readonly status: 'PRESENT'; readonly address: string };
-  /** `SOCKET_PRESENT` is not proof of a live agent; see the module comment. */
-  readonly agent: 'SOCKET_PRESENT' | 'NO_SOCKET';
+    | {
+        readonly status: 'PRESENT';
+        readonly address: string;
+        /**
+         * `NONE` means the key is at rest in plaintext and `sign` opens it
+         * without an agent. Files written before the variant existed carry no
+         * such field, and are all sealed.
+         */
+        readonly protection: 'SCRYPT_AES_GCM' | 'NONE';
+      };
+  /**
+   * `SOCKET_PRESENT` is not proof of a live agent; see the module comment.
+   * `NOT_NEEDED` is a passphrase-less keystore: there is nothing to run.
+   */
+  readonly agent: 'SOCKET_PRESENT' | 'NO_SOCKET' | 'NOT_NEEDED';
 }
 
 export interface KeystoreProbeSources {
@@ -110,23 +128,26 @@ export function probeKeystore(
     keystore = { status: 'ABSENT' };
   } else {
     let address: unknown;
+    let protection: unknown;
     try {
-      address = (JSON.parse(text) as { address?: unknown }).address;
+      const parsed = JSON.parse(text) as { address?: unknown; protection?: unknown };
+      address = parsed.address;
+      protection = parsed.protection;
     } catch {
       address = undefined;
     }
     keystore =
       typeof address === 'string' && ADDRESS.test(address)
-        ? { status: 'PRESENT', address }
+        ? { status: 'PRESENT', address, protection: protection === 'NONE' ? 'NONE' : 'SCRYPT_AES_GCM' }
         : { status: 'UNREADABLE' };
   }
 
   const socket = sources.pathStat(`${dir}/${KEYSTORE_LAYOUT.socketFile}`);
-  return {
-    installed,
-    configuredAsSigner,
-    dir,
-    keystore,
-    agent: socket === null ? 'NO_SOCKET' : 'SOCKET_PRESENT',
-  };
+  const agent: KeystoreProbe['agent'] =
+    keystore.status === 'PRESENT' && keystore.protection === 'NONE'
+      ? 'NOT_NEEDED'
+      : socket === null
+        ? 'NO_SOCKET'
+        : 'SOCKET_PRESENT';
+  return { installed, configuredAsSigner, dir, keystore, agent };
 }

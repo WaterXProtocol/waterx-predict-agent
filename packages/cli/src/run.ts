@@ -28,7 +28,13 @@ import {
 } from '@waterx/predict-agent-sdk';
 
 import { CAPABILITIES, getCapability, type Capability } from './capabilities.ts';
-import { resolveOpener } from './browser.ts';
+import {
+  browserSuppressed,
+  openedRecently,
+  rememberOpened,
+  resolveOpener,
+  type OpenMemoryIo,
+} from './browser.ts';
 import { createClient, deadline, toEnvelopeError, type TradingClient } from './client.ts';
 import { readCachedSession, writeCachedSession, type SessionCacheIo } from './session-cache.ts';
 import {
@@ -45,6 +51,8 @@ import { commandSchema } from './commands/command-schema.ts';
 import { describeRuntime } from './commands/describe.ts';
 import { doctorFailure, runDoctor } from './commands/doctor.ts';
 import { marketGet, marketList, marketQuote, marketSearch } from './commands/market.ts';
+import { runtimeConfigure } from './commands/configure.ts';
+import { runtimePolicy, runtimePolicySet } from './commands/policy.ts';
 import { runtimeNext } from './commands/next.ts';
 import { runtimeOnboard } from './commands/onboard.ts';
 import {
@@ -61,7 +69,7 @@ import {
   strategyGet,
   strategyList,
 } from './commands/strategy.ts';
-import { loadConfig, type ResolvedConfig } from './config.ts';
+import { candidateConfigPaths, loadConfig, type ResolvedConfig } from './config.ts';
 import type { CommandContext, CommandHandler, WriteLedgers } from './context.ts';
 import { errorEnvelope, successEnvelope, type EnvelopeMeta } from './envelope.ts';
 import { CliError, isCliError, isCliErrorCode } from './errors.ts';
@@ -166,6 +174,9 @@ const HANDLERS: Readonly<Record<string, CommandHandler>> = {
   'runtime.describe': (context) =>
     Promise.resolve(describeRuntime(context.config, context.nodeVersion)),
   'runtime.command-schema': (context) => Promise.resolve(commandSchema(context.input)),
+  'runtime.configure': runtimeConfigure,
+  'runtime.policy': runtimePolicy,
+  'runtime.policy-set': runtimePolicySet,
   'market.list': marketList,
   'market.search': marketSearch,
   'market.get': marketGet,
@@ -283,6 +294,22 @@ export async function run(io: CliIo): Promise<number> {
     if (code === EXIT_CODES.AMBIGUOUS || successExit === EXIT_CODES.OK) successExit = code;
   };
 
+  /**
+   * The pointer this invocation hands back (ADR-0022).
+   *
+   * It starts at `next` — which answers in every state, so the fallback is
+   * never a dead end — and a command may name a better one. It may NOT name a
+   * command that cannot be run as printed: see `pointTo`.
+   */
+  let nextCommand = `${CLI_NAME} next`;
+  const pointTo = (candidate: string): void => {
+    // A placeholder is a value somebody has to choose, and `--yes` is a
+    // person's consent. Handing either back as "the command to run next" is
+    // precisely the invitation a host must not receive, so the default stands.
+    if (candidate.includes('<') || /(^|\s)--yes(\s|$)/u.test(candidate)) return;
+    nextCommand = candidate;
+  };
+
   try {
     parsed = parseArgv(io.argv);
     timeoutMs = parseTimeoutFlag(parsed.flags) ?? 0;
@@ -291,7 +318,7 @@ export async function run(io: CliIo): Promise<number> {
       command = 'runtime.version';
       emitEnvelope(
         io.streams,
-        successEnvelope(command, requestId, { name: CLI_NAME, version: CLI_VERSION }),
+        successEnvelope(command, requestId, { name: CLI_NAME, version: CLI_VERSION }, withPointer(undefined, nextCommand)),
         redactor,
       );
       return EXIT_CODES.OK;
@@ -371,32 +398,51 @@ export async function run(io: CliIo): Promise<number> {
     // `--open` belongs to one command. Accepted globally by the parser, refused
     // here rather than ignored: a flag that silently does nothing is one an
     // operator keeps passing, believing it worked.
-    const wantsBrowser = parsed.flags.get('open') === true;
-    if (parsed.flags.has('open') && !wantsBrowser) {
-      throw new CliError('USAGE', '`--open` takes no value.');
+    // `--open`, `--no-open` and `--qr` belong to one command. Refused here
+    // rather than ignored: a flag that silently does nothing is one an operator
+    // keeps passing, believing it worked.
+    const linkFlags = ['open', 'no-open', 'qr'] as const;
+    for (const flag of linkFlags) {
+      if (parsed.flags.has(flag) && parsed.flags.get(flag) !== true) {
+        throw new CliError('USAGE', `\`--${flag}\` takes no value.`);
+      }
+      if (parsed.flags.get(flag) === true && spec.name !== 'runtime.onboard') {
+        throw new CliError(
+          'USAGE',
+          `\`--${flag}\` applies to \`onboard\`, which is the only command with a link. \`${spec.cli}\` has none.`,
+          { command: spec.name },
+        );
+      }
     }
-    if (wantsBrowser && spec.name !== 'runtime.onboard') {
-      throw new CliError(
-        'USAGE',
-        `\`--open\` applies to \`onboard\`, which is the only command with a link to open. \`${spec.cli}\` has none.`,
-        { command: spec.name },
-      );
+    if (parsed.flags.get('open') === true && parsed.flags.get('no-open') === true) {
+      throw new CliError('USAGE', '`--open` and `--no-open` say opposite things. Pass one.');
     }
 
     const invocation = createContext(io, config, built.input, diagnostic, {
       approval: requireFlagValue(parsed.flags, 'approve'),
       approver: approverOf(parsed),
-      // Always a function when asked for, never a silent absence: a host with no
-      // opener has to be able to SAY so, and `undefined` here would be
-      // indistinguishable from the flag not being passed at all.
-      openInBrowser: wantsBrowser
-        ? (io.openUrl?.bind(io) ??
-          (() => {
-            throw new Error('this build has no way to open a browser');
-          }))
-        : undefined,
+      confirmed: parsed.flags.get('yes') === true,
+      // The page opens by itself now (ADR-0024), so this is present whenever
+      // this host can open one at all — `undefined` means "this build cannot",
+      // which is a thing a command has to be able to SAY rather than guess.
+      browser: {
+        forced: parsed.flags.get('open') === true,
+        suppressed: parsed.flags.get('no-open') === true,
+        refusedBecause: browserSuppressed(io.env),
+        open: io.openUrl?.bind(io),
+        openedRecently: (url) => {
+          const path = openedMemoryPath(io);
+          return path !== null && openedRecently(path, url, openMemoryIo(io));
+        },
+        remember: (url) => {
+          const path = openedMemoryPath(io);
+          if (path !== null) rememberOpened(path, url, openMemoryIo(io));
+        },
+      },
+      wantsQr: parsed.flags.get('qr') === true,
       runnerDir: requireFlagValue(parsed.flags, 'runner-dir'),
       exitAs,
+      pointTo,
       onSecret: (secret) => redactor.register(secret),
     });
     const context = invocation.context;
@@ -408,11 +454,11 @@ export async function run(io: CliIo): Promise<number> {
     if (spec.name === 'runtime.doctor') {
       const report = await runDoctor(context);
       if (report.failed === 0) {
-        emitEnvelope(io.streams, successEnvelope(command, requestId, report, meta), redactor);
+        emitEnvelope(io.streams, successEnvelope(command, requestId, report, withPointer(meta, nextCommand)), redactor);
         return EXIT_CODES.OK;
       }
       const failure = doctorFailure(report);
-      emitEnvelope(io.streams, errorEnvelope(command, requestId, failure.error, meta), redactor);
+      emitEnvelope(io.streams, errorEnvelope(command, requestId, failure.error, withPointer(meta, nextCommand)), redactor);
       return failure.exit;
     }
 
@@ -423,13 +469,13 @@ export async function run(io: CliIo): Promise<number> {
 
     emitEnvelope(
       io.streams,
-      successEnvelope(command, requestId, await handler(context), meta),
+      successEnvelope(command, requestId, await handler(context), withPointer(meta, nextCommand)),
       redactor,
     );
     return successExit;
   } catch (error: unknown) {
     const envelopeError = toEnvelopeError(error, timeoutMs);
-    emitEnvelope(io.streams, errorEnvelope(command, requestId, envelopeError, meta), redactor);
+    emitEnvelope(io.streams, errorEnvelope(command, requestId, envelopeError, withPointer(meta, nextCommand)), redactor);
     return resolveExit(error, envelopeError.source, envelopeError.code);
   } finally {
     closeRunner?.();
@@ -470,6 +516,12 @@ function buildMeta(
   return Object.keys(meta).length > 0 ? meta : undefined;
 }
 
+/** The same meta with this invocation's pointer on it. Never absent (ADR-0022). */
+const withPointer = (meta: EnvelopeMeta | undefined, nextCommand: string): EnvelopeMeta => ({
+  ...meta,
+  nextCommand,
+});
+
 /**
  * `--approver`, checked where it is read. It is required with `--approve`
  * (ADR-0018): an approval that does not say who gave it cannot be audited.
@@ -495,6 +547,35 @@ function approverOf(parsed: ParsedArgv): string | undefined {
   return approver;
 }
 
+/**
+ * Where `configure` may write, and how.
+ *
+ * The path is the file that was read, or — when nothing is configured yet — the
+ * first place `loadConfig` would look, because a host with no configuration is
+ * precisely the caller that needs to create one. Written through the same 0600
+ * seam the session cache uses: the file holds no secret today, and the mode
+ * costs nothing and is what keeps that true if it ever holds an account id
+ * somebody would rather not share.
+ */
+function configFileSeam(
+  io: CliIo,
+  config: ResolvedConfig,
+): CommandContext['configFile'] {
+  const write = io.writeSecretFile;
+  if (write === undefined) return undefined;
+  const path =
+    config.configPath ??
+    candidateConfigPaths({ env: io.env, readFile: io.readFile, homeDir: io.homeDir })[0];
+  if (path === undefined) return undefined;
+  return {
+    path,
+    read: () => io.readFile(path),
+    write: (contents) => {
+      write(path, contents);
+    },
+  };
+}
+
 function createContext(
   io: CliIo,
   config: ResolvedConfig,
@@ -503,9 +584,12 @@ function createContext(
   options: {
     approval: string | undefined;
     approver: string | undefined;
-    openInBrowser: ((url: string) => void) | undefined;
+    confirmed: boolean;
+    browser: CommandContext['browser'];
+    wantsQr: boolean;
     runnerDir: string | undefined;
     exitAs: (code: ExitCode) => void;
+    pointTo: (command: string) => void;
     onSecret: (secret: string) => void;
   },
 ): { context: CommandContext; close: () => void } {
@@ -637,12 +721,14 @@ function createContext(
       config,
       approval: options.approval,
       approver: options.approver,
-      openInBrowser: options.openInBrowser,
+      browser: options.browser,
+      wantsQr: options.wantsQr,
       gate,
       client: () => (session ??= open()),
       runner: () => (runner ??= openRunner()),
       signal: (atLeastMs?: number) => deadline(Math.max(config.timeoutMs, atLeastMs ?? 0)),
       exitAs: options.exitAs,
+      pointTo: options.pointTo,
       diagnostic,
       nodeVersion: io.nodeVersion,
       now: io.now,
@@ -655,6 +741,8 @@ function createContext(
         }
         return (ledgers ??= io.ledgers());
       },
+      confirmed: options.confirmed,
+      configFile: configFileSeam(io, config),
       probeKeystore: () =>
         probeKeystore(config, {
           env: io.env,
@@ -674,6 +762,24 @@ function createContext(
     },
   };
 }
+
+/**
+ * Where the "already opened" memory lives: beside the other ledgers, private to
+ * this user. `null` when this machine has nowhere to keep one, and then every
+ * run opens — one extra tab is not worth a failure.
+ */
+function openedMemoryPath(io: CliIo): string | null {
+  const named = io.env['WATERX_PREDICT_STATE_DIR'];
+  if (named !== undefined && named.trim() !== '') return `${named}/opened.json`;
+  const home = io.homeDir();
+  return home === null || home === '' ? null : `${home}/.waterx-predict/opened.json`;
+}
+
+const openMemoryIo = (io: CliIo): OpenMemoryIo => ({
+  readFile: (path) => io.readFile(path),
+  writeFile: (path, contents) => io.writeSecretFile?.(path, contents),
+  now: () => io.now().getTime(),
+});
 
 const noop = (): void => {
   /* nothing to do */

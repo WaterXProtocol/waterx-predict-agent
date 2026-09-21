@@ -482,6 +482,158 @@
       ]
     },
     {
+      "name": "runtime.configure",
+      "cli": "configure",
+      "summary": "Write the agent wallet and signer into this machine’s config file.",
+      "description": "Persists what an `export` cannot: a tool host runs each command as its own process, so a setting it exports is gone before the next call. This writes the same two settings into the config file instead, 0600, and reports the path and every key it changed. It is the ONLY command that writes configuration, and it writes just the two settings that name this agent to itself — the agent wallet, and the signer command that holds its key. It will not write the network, the policy or the account: those decide whether an order spends real funds, and they stay the operator’s to set (ADR-0020). fromKeystore takes both values from the keystore signer on this machine, which is how a host that has just run `keystore init` finishes its own setup; it fails rather than guessing if no keystore is there. An existing value is only replaced when replace is set, so a second call cannot silently repoint a configured runtime at another wallet. Nothing is sent anywhere and no key is read: the address in a keystore file is public.",
+      "classification": "write",
+      "sideEffects": [
+        "NONE"
+      ],
+      "longRunning": false,
+      "idempotency": {
+        "required": false,
+        "callerSupplied": "UNSUPPORTED",
+        "note": "Writing the same settings twice leaves the same file; the answer says nothing changed."
+      },
+      "confirmation": "NOT_REQUIRED",
+      "implementation": {
+        "kind": "runtime",
+        "note": "Local only: reads the keystore’s public address when asked, and rewrites the config file 0600. Issues no request and signs nothing."
+      },
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "fromKeystore": {
+            "title": "Take both settings from the keystore",
+            "description": "Read the agent wallet from the keystore signer’s file on this machine and point signerCommand at it. An error when no readable keystore is there — an invented address would be a wallet nobody holds.",
+            "type": "boolean"
+          },
+          "agentWallet": {
+            "$ref": "#/$defs/agentWallet"
+          },
+          "signerCommand": {
+            "title": "Signer argv",
+            "description": "The external signer as argv, first element the executable. Never a key, and never a shell string: this runtime does not invoke a shell.",
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 16,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            }
+          },
+          "replace": {
+            "title": "Replace what is already set",
+            "description": "Overwrite a setting the file already carries. Without it an existing value is kept and reported as unchanged, so a repeat call cannot repoint a working runtime at a different wallet.",
+            "type": "boolean"
+          }
+        }
+      },
+      "examples": [
+        {
+          "title": "Finish setup from the keystore just created",
+          "input": {
+            "fromKeystore": true
+          }
+        },
+        {
+          "title": "Name a wallet a custom signer holds",
+          "input": {
+            "agentWallet": "0x5555555555555555555555555555555555555555555555555555555555555555"
+          }
+        }
+      ]
+    },
+    {
+      "name": "runtime.policy",
+      "cli": "policy",
+      "summary": "What this runtime may sign today, the three modes it could be in, and what each allows.",
+      "description": "Reports the execution policy in force, where it came from, and the three modes as three — in rank order, each with what it allows, what it costs, and the exact command that takes it. They are not neutral alternatives: `delegated-auto` is the one where this process signs against real money with nobody watching, so it is listed with its prerequisite rather than hidden (hiding it leaves the people who need it unable to find it) and never presented as equal to the others. A mode whose prerequisite is not met says so where it is offered, instead of letting somebody walk into the refusal. This command changes nothing; `policy set` is what changes it, and that one is a person’s.",
+      "classification": "read",
+      "sideEffects": [
+        "NONE"
+      ],
+      "longRunning": false,
+      "idempotency": {
+        "required": false,
+        "callerSupplied": "UNSUPPORTED",
+        "note": "A read is safe to repeat; no key applies."
+      },
+      "confirmation": "NOT_REQUIRED",
+      "implementation": {
+        "kind": "runtime",
+        "note": "Local only: the resolved policy and the modes available from it. Issues no request and signs nothing."
+      },
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "examples": [
+        {
+          "title": "What may this runtime sign, and what else could it?",
+          "input": {}
+        }
+      ]
+    },
+    {
+      "name": "runtime.policy-set",
+      "cli": "policy set",
+      "summary": "Set the execution policy. Widening it is a person’s act and needs --yes.",
+      "description": "Writes `policy.mode` into the config file, 0600, so it outlives the process that set it — an `export` cannot, because a tool host runs every command in its own child process. THE PERSON RUNS THIS, not the agent: it decides what this runtime may sign with real funds, which is the one thing an agent may not widen for itself (ADR-0003, ADR-0017, ADR-0020). Narrowing — anything towards read-only — needs no confirmation and no ceremony. Widening refuses without the `--yes` flag, and names the exact command to repeat. `delegated-auto` is refused outright unless a scope is already configured, because an auto-approving policy with no stated ceilings authorizes everything: the refusal names the ceilings a scope must carry. Nothing is sent and nothing is signed; the answer says what the file now holds and whether the environment will shadow it.",
+      "classification": "write",
+      "sideEffects": [
+        "NONE"
+      ],
+      "longRunning": false,
+      "idempotency": {
+        "required": false,
+        "callerSupplied": "UNSUPPORTED",
+        "note": "Setting the same mode twice leaves the same file; the answer says nothing changed."
+      },
+      "confirmation": "NOT_REQUIRED",
+      "implementation": {
+        "kind": "runtime",
+        "note": "Local only: rewrites the `policy` block of the config file. Issues no request and signs nothing."
+      },
+      "input": {
+        "type": "object",
+        "required": [
+          "mode"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "title": "Execution policy mode",
+            "description": "read-only places no order; interactive signs one previewed order per human approval; delegated-auto signs inside a scope that was written down first. Run `policy` for what each allows.",
+            "type": "string",
+            "enum": [
+              "read-only",
+              "interactive",
+              "delegated-auto"
+            ]
+          }
+        }
+      },
+      "examples": [
+        {
+          "title": "Turn writes off. No confirmation needed.",
+          "input": {
+            "mode": "read-only"
+          }
+        },
+        {
+          "title": "Allow approved orders (needs --yes)",
+          "input": {
+            "mode": "interactive"
+          }
+        }
+      ]
+    },
+    {
       "name": "runtime.doctor",
       "cli": "doctor",
       "summary": "Check configuration, signer, reachability and authentication.",

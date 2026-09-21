@@ -11,15 +11,40 @@ operator which of the steps below is still undone.
 It is shaped like `ssh-agent`, for the same reason `ssh-agent` is shaped that way:
 
 ```
-waterx-predict-keystore init      # create an encrypted keystore
-waterx-predict-keystore agent     # unlock it ONCE; stays resident, holds the key
-export WATERX_PREDICT_SIGNER_COMMAND='["waterx-predict-keystore","sign"]'
+waterx-predict-keystore init            # create an encrypted keystore
+waterx-predict-keystore agent           # unlock it ONCE; stays resident, holds the key
+waterx-predict-keystore agent --detach  # …or in the background, for a machine with one terminal
+waterx-predict configure --fromKeystore # tell the CLI which wallet this is, and who signs
 ```
 
 `agent` is the only thing that ever sees the passphrase. `sign` is spawned per
 request, holds nothing, and forwards to the agent over a private socket — so the
 CLI and the Runner still never hold key material (ADR-0001 §7), and the operator
 types a passphrase once instead of once per order.
+
+## …or with no passphrase at all
+
+```
+waterx-predict-keystore init --no-passphrase
+waterx-predict configure --fromKeystore
+```
+
+`--no-passphrase` writes the key **in plaintext** in a `0600` file: no
+passphrase, no resident agent, `sign` opens the file itself. It exists because an
+unattended host has nobody to type a passphrase and nowhere to keep a process
+holding one unlocked, and it is the same posture the perp agent takes with
+`SUI_PRIVATE_KEY` in a `.env` (ADR-0020).
+
+|  | sealed (the default) | `--no-passphrase` |
+| --- | --- | --- |
+| Key at rest | AES-256-GCM under scrypt | plaintext |
+| Protected by | a passphrase nobody else has | the file mode, and nothing else |
+| Signing needs | a resident `agent` | the file |
+| Someone must type | the passphrase, once per start | nothing |
+
+Anything running as this user can read a plaintext keystore. The only key that
+belongs in one is a **delegated agent wallet** — never the owner's. That is the
+same rule as below, and it matters more here.
 
 ## The trade this makes, stated plainly
 
@@ -66,4 +91,11 @@ everything except the passphrase.
 
 The passphrase is read from the terminal, or from a `0600` file named by
 `WATERX_KEYSTORE_PASSPHRASE_FILE` for a machine that starts unattended. Never
-from an environment variable: `ps eww` shows those to anyone on the box.
+from an environment variable: `ps eww` shows those to anyone on the box. With
+`--detach` it is read by the process that still has a terminal and handed to the
+background child on a pipe, so it reaches neither `ps` nor the filesystem.
+
+A passphrase-less keystore is the same document with `protection: "NONE"`, the
+secret in `secretBase64`, and the warning written into the file so nothing has to
+infer it from a missing field. `openKeystore` reads both; `agent` refuses the
+plaintext one, because there is nothing to hold.
