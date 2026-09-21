@@ -80,6 +80,77 @@ const setCommand = (mode: PolicyMode, from: PolicyMode): string =>
 const SCOPE_REQUIREMENT =
   'a `policy.scope` in the config file first: accounts, sides, maxBuyAmount and maxCumulativeBuyAmount for BUY, maxSellShares for SELL, maxSlippageBps, maxLegs and notAfter. An auto-approving policy with no stated ceilings is refused.';
 
+/**
+ * Break prose to a width a terminal holds, so it does not wrap mid-sentence.
+ *
+ * A COMMAND never goes through this: a command split across a wrap is one
+ * nobody can copy, which is the rule the authorization link is already under
+ * (ADR-0024).
+ */
+const wrap = (text: string, width: number): string[] => {
+  const lines: string[] = [];
+  let line = '';
+  for (const word of text.split(' ')) {
+    if (line === '') line = word;
+    else if (`${line} ${word}`.length > width) {
+      lines.push(line);
+      line = word;
+    } else line = `${line} ${word}`;
+  }
+  if (line !== '') lines.push(line);
+  return lines;
+};
+
+/**
+ * The width a line may reach, indent included. Derived rather than guessed at:
+ * the prose is wrapped to what is left after the mode's column, so the whole
+ * screen fits an 80-column terminal by construction.
+ */
+const TERMINAL_WIDTH = 80;
+
+/**
+ * The choosing screen, as lines.
+ *
+ * Rendered rather than only serialized: the person making this decision is at a
+ * terminal, and the agent relaying it should be able to pass the screen on
+ * VERBATIM instead of paraphrasing three descriptions of what may be signed
+ * with real money (ADR-0026). A pure function, so what it says is a tested
+ * claim rather than a string typed into a diagnostic.
+ */
+export const renderChooser = (input: {
+  readonly current: PolicyMode;
+  readonly source: string;
+  readonly realFunds: boolean;
+  readonly configFile: string | null;
+  readonly choices: readonly PolicyChoice[];
+}): string[] => {
+  const lines: string[] = [
+    '',
+    `  policy     ${input.current}${input.realFunds ? ' \u2014 on mainnet, where an order spends real funds' : ''}`,
+    `  chosen by  ${input.source === 'DEFAULT' ? 'nobody: this is the default' : input.source.toLowerCase().replace(/_/gu, ' ')}`,
+    ...(input.configFile === null ? [] : [`  file       ${input.configFile}`]),
+    '',
+    "  Pick one. This is a person's decision, not the agent's:",
+    '',
+  ];
+  for (const choice of input.choices) {
+    const head = `  ${choice.current ? '\u2192' : ' '} ${choice.mode.padEnd(15)}`;
+    const pad = ' '.repeat(head.length);
+    const width = TERMINAL_WIDTH - pad.length;
+    const [first, ...rest] = wrap(choice.means, width);
+    lines.push(`${head}${first ?? ''}`);
+    for (const line of rest) lines.push(`${pad}${line}`);
+    for (const line of wrap(`costs: ${choice.costs}`, width)) lines.push(`${pad}${line}`);
+    if (choice.requires !== undefined) {
+      for (const line of wrap(`needs ${choice.requires}`, width)) lines.push(`${pad}${line}`);
+    }
+    // Unwrapped, always, and on a line of its own: this is what gets copied.
+    lines.push(`${pad}${choice.command}`);
+    lines.push('');
+  }
+  return lines;
+};
+
 export const policyChoices = (current: PolicyMode, hasScope: boolean): PolicyChoice[] =>
   POLICY_STRICTNESS.map((mode) => ({
     mode,
@@ -96,6 +167,20 @@ export function runtimePolicy(context: CommandContext): Promise<unknown> {
   // take a wider mode carry `--yes` — which `pointTo` refuses anyway (ADR-0022).
   context.pointTo('waterx-predict next');
   const realFunds = context.config.network === 'mainnet' || context.config.deploymentSource === 'DEFAULT';
+  const choices = policyChoices(policy.mode, policy.hasConfiguredScope);
+  // The screen, one line per call: a diagnostic is truncated past 2000
+  // characters, which would cut the third option off the bottom (ADR-0026).
+  for (const line of renderChooser({
+    current: policy.mode,
+    source: policy.source,
+    realFunds,
+    configFile: context.configFile?.path ?? null,
+    choices,
+  })) {
+    // No trailing newline: the diagnostic writer adds one, and a second would
+    // double-space the whole screen.
+    context.diagnostic(line);
+  }
   return Promise.resolve({
     current: {
       mode: policy.mode,
@@ -112,7 +197,7 @@ export function runtimePolicy(context: CommandContext): Promise<unknown> {
       policy.mode === 'read-only'
         ? 'This runtime places no order in read-only. The three modes below are the choice, and it is the operator’s.'
         : 'These are the modes this runtime can be in. Narrowing takes effect immediately and needs no confirmation.',
-    choices: policyChoices(policy.mode, policy.hasConfiguredScope),
+    choices,
   });
 }
 

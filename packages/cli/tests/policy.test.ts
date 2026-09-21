@@ -54,6 +54,69 @@ interface SetResult {
   realFunds?: string;
 }
 
+describe('the chooser as a person reads it', () => {
+  const screen = async (options: InvokeOptions = {}): Promise<string> =>
+    (await run(['policy'], options)).stderr;
+
+  it('prints all three, marks the current one, and never wraps a command', async () => {
+    // The person making this decision is at a terminal. Before this, `policy`
+    // answered only in JSON and the agent relaying it built its own table —
+    // a paraphrase of three descriptions of what may be signed with real
+    // money (ADR-0026).
+    const text = await screen();
+    for (const mode of ['read-only', 'interactive', 'delegated-auto']) {
+      expect(text, mode).toContain(mode);
+    }
+    expect(text).toContain("Pick one. This is a person's decision, not the agent's:");
+    // The current one is marked, and only it.
+    const marked = text.split('\n').filter((line) => line.includes('\u2192'));
+    expect(marked).toHaveLength(1);
+    expect(marked[0]).toContain('read-only');
+
+    // Every command is on a line of its own, unwrapped and copyable.
+    for (const mode of ['read-only', 'interactive', 'delegated-auto']) {
+      const command = `waterx-predict policy set --mode ${mode}`;
+      const line = text.split('\n').find((row) => row.includes(command));
+      expect(line, mode).toBeDefined();
+      expect(line?.trim().startsWith('waterx-predict'), mode).toBe(true);
+    }
+  });
+
+  it('keeps every line inside a terminal', async () => {
+    // A sentence that wraps is ugly; a command that wraps cannot be copied.
+    // The only lines allowed past 80 are commands, which are never broken.
+    for (const line of (await screen()).split('\n')) {
+      if (line.includes('waterx-predict')) continue;
+      expect(line.length, line).toBeLessThanOrEqual(80);
+    }
+  });
+
+  it('says what it would cost to take each one', async () => {
+    const text = await screen();
+    expect(text.match(/costs:/gu) ?? []).toHaveLength(3);
+    // …and, for the one that cannot be taken yet, what it needs first.
+    expect(text).toMatch(/needs a `policy\.scope`/u);
+  });
+
+  it('says whose choice it is and where it is recorded', async () => {
+    const text = await screen();
+    expect(text).toMatch(/chosen by\s+nobody: this is the default/u);
+    expect(text).toContain(CONFIG);
+    // On mainnet, what is at stake is on the first line.
+    expect(text).toMatch(/policy\s+read-only \u2014 on mainnet, where an order spends real funds/u);
+  });
+
+  it('survives the pipe a host actually uses', async () => {
+    // `| head -40` is what a session reached for. The screen is on stderr and
+    // comes first, so the three options and their commands are inside the
+    // first 40 lines even when the JSON below is cut off.
+    const head = (await screen()).split('\n').slice(0, 40).join('\n');
+    for (const mode of ['read-only', 'interactive', 'delegated-auto']) {
+      expect(head, mode).toContain(`--mode ${mode}`);
+    }
+  });
+});
+
 describe('the policy chooser', () => {
   it('shows all three, in rank order, each with what it allows and the command that takes it', async () => {
     const answer = (await run(['policy'])).envelope.data as Chooser;

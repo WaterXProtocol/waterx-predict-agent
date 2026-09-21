@@ -181,3 +181,15 @@ describe('what the instructions must keep saying', () => {
     expect(renderAgentInstructions()).toMatch(/no tooling here may do it for them/u);
   });
 });
+
+describe('the policy choice, in the documents a host reads', () => {
+  it('tells an agent to relay the three modes rather than recommend one', () => {
+    // A real session built its own table out of `policy --json` and, to its
+    // credit, refused to recommend. The instruction should not depend on the
+    // model being that careful (ADR-0026).
+    const skill = renderAgentSkill();
+    expect(skill).toMatch(/Relay the three modes; do not pick one/u);
+    expect(skill).toMatch(/do not run `policy set` yourself/u);
+    expect(skill).toMatch(/waterx-predict policy/u);
+  });
+});

@@ -49,7 +49,15 @@ The link grants nothing — no key, no token, no pre-authorization — and say s
 
 The page OPENS BY ITSELF on the machine running this. Do not pass `--no-open` on your own initiative: whether a browser opens here is the operator's call, and they have that flag if they want it. If the owner is somewhere else — the usual case — `waterx-predict onboard --qr` draws the link as a code they can scan with the phone their wallet is on. Say that option exists rather than deciding for them.
 
-### 4. Let the server name the market
+### 4. Relay the three modes; do not pick one
+
+`THE_POLICY_IS_A_CHOICE`
+
+The owner’s grant and the execution policy are two permissions from two people. The moment the grant lands, this runtime still places no order on mainnet: the policy defaults to read-only, and choosing what may be signed is the OPERATOR’s (ADR-0021, ADR-0025).
+
+`waterx-predict policy` prints the three modes as a screen — what each allows, what each costs, and the exact command that takes it. Relay that screen as it was printed. Do not summarise it into one recommendation and do not run `policy set` yourself: widening needs `--yes`, which is a person saying so, and an agent adding it on its own initiative is the thing that flag exists to prevent.
+
+### 5. Let the server name the market
 
 `RESOLVE_THE_MARKET`
 
@@ -59,7 +67,7 @@ The rounds of a recurring series ("BTC 5m Up or Down", twelve times) differ only
 
 Prices on the catalog are indicative. A tradeable price comes from `market.quote`, it lives seconds, and the order fetches its own.
 
-### 5. Get the size and the slippage bound from the user, in their words
+### 6. Get the size and the slippage bound from the user, in their words
 
 `CONFIRM_THE_SIZE_AND_THE_BOUND`
 
@@ -67,7 +75,7 @@ A BUY is sized in currency (`buyAmount`), a SELL in shares (`sellShares`), and t
 
 Say the direction back in words before acting: a BUY target is a ceiling ("buy below"), a SELL target is a floor ("sell above").
 
-### 6. Preview the order, then hand the approval to a person
+### 7. Preview the order, then hand the approval to a person
 
 `PREVIEW_THEN_HAND_OVER`
 
@@ -75,7 +83,7 @@ Say the direction back in words before acting: a BUY target is a ceiling ("buy b
 
 Through a tool adapter the write itself will be refused with `POLICY_DENIED`. That is the design, not a fault to route around; relay the refusal and the approval it expected. It is also specific to that surface — `POLICY_DENIED` is not an API error code, and a library caller whose delegation permits the order is not refused by it.
 
-### 7. Report the outcome the runtime reported
+### 8. Report the outcome the runtime reported
 
 `REPORT_WHAT_ACTUALLY_HAPPENED`
 
