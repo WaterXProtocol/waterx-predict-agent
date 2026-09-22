@@ -244,7 +244,10 @@ describe('next, before anything is configured', () => {
     // and the answer says so where a host cannot miss it.
     expect(answer.handOver?.settings?.map((setting) => setting.requirement)).toEqual(['agentWallet', 'signer']);
     expect(answer.handOver?.message).toMatch(/Do not do them yourself/u);
-    expect(answer.handOver?.message).toMatch(/production \(mainnet\).*real funds/u);
+    // Stated, not offered: mainnet is what this runtime is for, and the
+    // guardrail is the policy rather than a network somebody picks (ADR-0028).
+    expect(answer.handOver?.message).toMatch(/trades on mainnet, where orders spend real funds/u);
+    expect(answer.handOver?.message).not.toMatch(/Unless they name a network/u);
     expect(answer.facts.deployment).toEqual({
       source: 'DEFAULT',
       name: 'production',
@@ -1001,5 +1004,48 @@ describe('decideNext precedence', () => {
         expect(getCommand(suggestion.command)?.classification).toBe('read');
       }
     }
+  });
+});
+
+describe('a configured wallet that disagrees with the keystore', () => {
+  it('says where the configured one is written, not only what it says', async () => {
+    // A session met this message, went looking in `~/.waterx`, never found the
+    // config file, and concluded the address was a package-shipped default. It
+    // then passed `--replace` on that false premise (ADR-0027).
+    const HOME_DIR = '/home/op';
+    const KEYSTORE = `0x${'b'.repeat(63)}7`;
+    const CONFIG_PATH = `${HOME_DIR}/.config/waterx-predict/config.json`;
+    const { answer } = await next({
+      homeDir: HOME_DIR,
+      env: {},
+      executables: ['waterx-predict-keystore'],
+      files: {
+        [`${HOME_DIR}/.waterx/keystore/keystore.json`]: JSON.stringify({ version: 1, address: KEYSTORE }),
+        [CONFIG_PATH]: JSON.stringify({
+          agentWallet: AGENT_WALLET,
+          signerCommand: ['waterx-predict-keystore', 'sign'],
+        }),
+      },
+    });
+    expect(answer.state).toBe('SETUP_INCOMPLETE');
+    expect(answer.headline).toContain(CONFIG_PATH);
+    expect(answer.headline).toContain(KEYSTORE);
+  });
+
+  it('names the environment when that is what set it', async () => {
+    const HOME_DIR = '/home/op';
+    const KEYSTORE = `0x${'b'.repeat(63)}7`;
+    const { answer } = await next({
+      homeDir: HOME_DIR,
+      env: {
+        WATERX_PREDICT_AGENT_WALLET: AGENT_WALLET,
+        WATERX_PREDICT_SIGNER_COMMAND: '["waterx-predict-keystore","sign"]',
+      },
+      executables: ['waterx-predict-keystore'],
+      files: {
+        [`${HOME_DIR}/.waterx/keystore/keystore.json`]: JSON.stringify({ version: 1, address: KEYSTORE }),
+      },
+    });
+    expect(answer.headline).toContain('WATERX_PREDICT_AGENT_WALLET');
   });
 });

@@ -26,6 +26,7 @@ import {
 } from '@waterx/predict-agent-sdk';
 
 import { CliError } from '../errors.ts';
+import { policyChoices, renderChooser } from './policy.ts';
 import { qrLines } from '../qr.ts';
 import { CLI_NAME } from '../version.ts';
 import type { CommandContext } from '../context.ts';
@@ -250,5 +251,28 @@ export async function runtimeOnboard(context: CommandContext): Promise<unknown> 
   // A wait that ran out is not a refusal: the owner may sign a minute later,
   // and resuming means calling this again.
   pointOnward(result.status);
+
+  /**
+   * The grant has just landed, and this runtime still cannot sign. The choice
+   * that unblocks it is the operator's, and this is the moment their attention
+   * is on the screen — so the three modes are PRINTED here rather than left
+   * behind another command (ADR-0027).
+   *
+   * Printed, never applied: taking one is `policy set`, and widening it needs
+   * `--yes`, which is a person saying so. Nothing here asks a question either,
+   * because a prompt is something an unattended host cannot answer and an
+   * attended one should not have answered FOR the person who owns the decision.
+   */
+  if (result.status === 'READY' && context.config.policy.mode === 'read-only') {
+    for (const line of renderChooser({
+      current: context.config.policy.mode,
+      source: context.config.policy.source,
+      realFunds: context.config.network === 'mainnet' || context.config.deploymentSource === 'DEFAULT',
+      configFile: context.configFile?.path ?? null,
+      choices: policyChoices(context.config.policy.mode, context.config.policy.hasConfiguredScope),
+    })) {
+      context.diagnostic(line);
+    }
+  }
   return render(result, authorizationUrl, agentWallet, result.timedOut, context.config.mode === 'direct');
 }

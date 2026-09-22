@@ -48,6 +48,15 @@ export interface ResolvedConfig {
   readonly network: 'mainnet' | 'testnet' | undefined;
   readonly agentWallet: string | undefined;
   /**
+   * Where `agentWallet` came from.
+   *
+   * Reported because a value that conflicts with the keystore sends somebody
+   * looking for it, and a session that went looking checked `~/.waterx`, never
+   * found the config file, and concluded the address was a shipped default
+   * (ADR-0027). A setting that can be wrong has to say where it is written.
+   */
+  readonly agentWalletSource: 'ENVIRONMENT' | 'CONFIG_FILE' | 'NONE';
+  /**
    * The web console an OWNER opens to authorize this agent.
    *
    * Configured rather than derived-and-forgotten: `onboard` falls back to the
@@ -374,8 +383,17 @@ export function loadConfig(sources: ConfigSources): ResolvedConfig {
   if (defaulted) {
     // Every envelope, every command. A default that spends real money is not
     // something an operator should be able to miss by not reading `describe`.
+    //
+    // A STATEMENT, not a nudge. It used to end "Set …=testnet to practise",
+    // which read as a decision somebody still had to make — and was an `export`
+    // no tool host can perform. Mainnet is what this runtime is for; the
+    // guardrail is the read-only policy, not a network somebody picks
+    // (ADR-0028). How to practise is in `describe` and the README, where a
+    // developer looks for it.
     warnings.push(
-      `No deployment was named, so this runtime uses ${DEFAULT_DEPLOYMENT} (mainnet, ${PREDICT_AGENT_ENDPOINTS[DEFAULT_DEPLOYMENT]}): orders spend real funds. Set ${ENV_KEYS.environment}=testnet to practise.`,
+      // The policy is the next warning's job; saying it twice trains a reader
+      // to skim both.
+      `This runtime trades on ${DEFAULT_DEPLOYMENT} (mainnet, ${PREDICT_AGENT_ENDPOINTS[DEFAULT_DEPLOYMENT]}), where orders spend real funds.`,
     );
   }
 
@@ -441,6 +459,12 @@ export function loadConfig(sources: ConfigSources): ResolvedConfig {
     agentWallet:
       asString(env[ENV_KEYS.agentWallet], ENV_KEYS.agentWallet, 'the environment') ??
       asString(config.agentWallet, 'agentWallet', where),
+    agentWalletSource:
+      asString(env[ENV_KEYS.agentWallet], ENV_KEYS.agentWallet, 'the environment') !== undefined
+        ? 'ENVIRONMENT'
+        : asString(config.agentWallet, 'agentWallet', where) !== undefined
+          ? 'CONFIG_FILE'
+          : 'NONE',
     deploymentUrl:
       asString(env[ENV_KEYS.deploymentUrl], ENV_KEYS.deploymentUrl, 'the environment') ??
       asString(config.deploymentUrl, 'deploymentUrl', where),
