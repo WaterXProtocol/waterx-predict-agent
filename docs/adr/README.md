@@ -37,6 +37,7 @@ wins and the plan should be corrected.
 | [0024](0024-handing-the-link-over.md) | Handing the link over | Accepted | amends ADR-0022 |
 | [0025](0025-the-choice-after-the-signature.md) | The operator's choice comes right after the owner's signature | Accepted | amends ADR-0021, ADR-0022 |
 | [0026](0026-the-chooser-is-a-screen.md) | The chooser is a screen, not only a document | Accepted | amends ADR-0021, ADR-0025 |
+| [0027](0027-the-choice-shows-itself.md) | The choice shows itself, and is never answered for anybody | Accepted | amends ADR-0025, ADR-0026 |
 
 ## Status vocabulary
 

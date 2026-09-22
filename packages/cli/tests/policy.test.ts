@@ -334,6 +334,16 @@ describe('after the owner signs', () => {
     // grant does not change it.
     expect(result.stderr).not.toContain('may now trade');
     expect(result.stderr).toContain('still places no order');
+    // And the three are ON THAT SCREEN, not behind another command: this is the
+    // moment the operator is looking, and the choice is what unblocks it
+    // (ADR-0027).
+    expect(result.stderr).toContain("Pick one. This is a person's decision");
+    for (const mode of ['read-only', 'interactive', 'delegated-auto']) {
+      expect(result.stderr, mode).toContain(`policy set --mode ${mode}`);
+    }
+    // Printed, never taken: nothing was written, and nothing asked a question
+    // an unattended host would have to answer.
+    expect(result.secretWrites.filter((write) => write.contents.includes('policy'))).toEqual([]);
     // And it hands the loop onward rather than stopping on a half-truth:
     // `next` is where the account is adopted and the three modes are offered.
     expect(result.envelope.meta?.nextCommand).toBe('waterx-predict next');
