@@ -63,6 +63,7 @@ import { isDirectClient, toEnvelopeError } from '../client.ts';
 import { exposureNotes, type ExposureNote } from './exposure.ts';
 import type { CommandContext } from '../context.ts';
 import { CliError } from '../errors.ts';
+import { ENV_KEYS } from '../config.ts';
 import { resolveRequirements } from '../requirements.ts';
 import { KEYSTORE_LAYOUT, KEYSTORE_SIGNER_COMMAND, type KeystoreProbe } from '../keystore-probe.ts';
 import { isRunnerRefusal } from '../runner-ipc.ts';
@@ -269,6 +270,8 @@ export interface NextFacts {
   readonly requirements: readonly ResolvedRequirement[];
   /** The configured agent wallet, compared against the keystore's. */
   readonly agentWallet?: string;
+  /** Where that wallet is written, as a phrase: " (from …)". */
+  readonly agentWalletFrom?: string;
   /** Present when the keystore is, or could be, this runtime's signer. */
   readonly keystore?: KeystoreProbe;
   readonly writes: WritePosture;
@@ -838,7 +841,12 @@ function keystoreBlockers(facts: NextFacts): string[] {
   ) {
     // The agent refuses to sign for an address it does not hold, so this would
     // fail at the first signature — with a message about the wrong thing.
-    issues.push(`The agent wallet is ${facts.agentWallet}, but the keystore holds ${probe.keystore.address}`);
+    // WHERE it is written, not just what it says: a session that met this
+    // message went hunting, looked in the keystore directory, never found the
+    // config file, and concluded the address was a shipped default (ADR-0027).
+    issues.push(
+      `The agent wallet is ${facts.agentWallet}${facts.agentWalletFrom ?? ''}, but the keystore holds ${probe.keystore.address}`,
+    );
   }
   return issues;
 }
@@ -989,7 +997,17 @@ async function gatherFacts(context: CommandContext): Promise<NextFacts> {
     ...(config.policy.mode === 'read-only' && config.policy.source === 'DEFAULT' ? { readOnlyByDefault: true } : {}),
     ...(config.mode === 'direct' ? { direct: true } : {}),
     ...(named === undefined ? {} : { namedAccountId: named }),
-    ...(config.agentWallet === undefined ? {} : { agentWallet: config.agentWallet }),
+    ...(config.agentWallet === undefined
+      ? {}
+      : {
+          agentWallet: config.agentWallet,
+          agentWalletFrom:
+            config.agentWalletSource === 'ENVIRONMENT'
+              ? ` (from ${ENV_KEYS.agentWallet})`
+              : config.configPath === null
+                ? ''
+                : ` (from ${config.configPath})`,
+        }),
     ...(keystore === undefined ? {} : { keystore }),
   };
 
