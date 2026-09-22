@@ -98,7 +98,7 @@ describe('the stdout envelope', () => {
     for (const argv of [['describe'], ['command-schema'], ['market', 'list']]) {
       const result = await invoke(argv);
       expect(result.envelope.meta?.warnings?.join(' '), argv.join(' ')).toMatch(
-        /No deployment was named.*mainnet.*real funds/u,
+        /trades on production \(mainnet.*\), where orders spend real funds/u,
       );
     }
   });
@@ -169,5 +169,30 @@ describe('exit codes', () => {
 
     expect(result.envelope.error?.source).toBe('TRANSPORT');
     expect(result.exit).toBe(EXIT_CODES.TRANSPORT);
+  });
+});
+
+describe('what survives a truncated read', () => {
+  it('puts the envelope’s own fields before the payload', async () => {
+    // Key order carries no meaning in JSON and decides everything about what a
+    // reader sees when the document is CUT. Three real sessions piped this
+    // through `head -100`; `next` is ~143 lines, and the pointer ADR-0022
+    // promises on every answer used to sit on line 136 (ADR-0028).
+    const result = await invoke(['describe'], { env: { WATERX_PREDICT_ENVIRONMENT: 'testnet' } });
+    const lines = result.stdout.split('\n');
+    const lineOf = (needle: string): number => lines.findIndex((line) => line.includes(needle));
+
+    expect(lineOf('"nextCommand"')).toBeGreaterThan(-1);
+    expect(lineOf('"nextCommand"')).toBeLessThan(lineOf('"data"'));
+    for (const field of ['"schemaVersion"', '"ok"', '"command"', '"requestId"']) {
+      expect(lineOf(field), field).toBeLessThan(lineOf('"data"'));
+    }
+  });
+
+  it('keeps the refusal readable when only the first lines are read', async () => {
+    const refused = await invoke(['order', 'preview', '--input', '{}']);
+    const head = refused.stdout.split('\n').slice(0, 12).join('\n');
+    expect(head).toContain('"ok": false');
+    expect(head).toContain('"nextCommand"');
   });
 });

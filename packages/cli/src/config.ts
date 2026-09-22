@@ -383,8 +383,17 @@ export function loadConfig(sources: ConfigSources): ResolvedConfig {
   if (defaulted) {
     // Every envelope, every command. A default that spends real money is not
     // something an operator should be able to miss by not reading `describe`.
+    //
+    // A STATEMENT, not a nudge. It used to end "Set …=testnet to practise",
+    // which read as a decision somebody still had to make — and was an `export`
+    // no tool host can perform. Mainnet is what this runtime is for; the
+    // guardrail is the read-only policy, not a network somebody picks
+    // (ADR-0028). How to practise is in `describe` and the README, where a
+    // developer looks for it.
     warnings.push(
-      `No deployment was named, so this runtime uses ${DEFAULT_DEPLOYMENT} (mainnet, ${PREDICT_AGENT_ENDPOINTS[DEFAULT_DEPLOYMENT]}): orders spend real funds. Set ${ENV_KEYS.environment}=testnet to practise.`,
+      // The policy is the next warning's job; saying it twice trains a reader
+      // to skim both.
+      `This runtime trades on ${DEFAULT_DEPLOYMENT} (mainnet, ${PREDICT_AGENT_ENDPOINTS[DEFAULT_DEPLOYMENT]}), where orders spend real funds.`,
     );
   }
 

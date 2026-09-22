@@ -88,6 +88,16 @@ const withMeta = (meta: EnvelopeMeta | undefined): { meta?: EnvelopeMeta } => {
   return populated ? { meta } : {};
 };
 
+/**
+ * `meta` is serialized BEFORE `data`, and that ordering is load-bearing.
+ *
+ * Key order carries no meaning in JSON, but it decides what a reader sees when
+ * the document is cut. Three real sessions piped this through `head -100`, and
+ * `next`'s answer is about 143 lines: `meta.nextCommand` — the pointer ADR-0022
+ * promises on every answer — was on line 136, past the cut. The small, fixed
+ * fields go first so that a truncated document still carries the envelope's
+ * own guarantees; `data` is the part that grows, so it goes last.
+ */
 export function successEnvelope(
   command: string,
   requestId: string,
@@ -99,8 +109,8 @@ export function successEnvelope(
     ok: true,
     command,
     requestId,
-    data,
     ...withMeta(meta),
+    data,
   };
 }
 
@@ -115,7 +125,7 @@ export function errorEnvelope(
     ok: false,
     command,
     requestId,
-    error,
     ...withMeta(meta),
+    error,
   };
 }

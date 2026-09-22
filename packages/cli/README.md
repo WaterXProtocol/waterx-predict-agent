@@ -86,7 +86,7 @@ waterx-predict describe
 #    every answer. To practise, name testnet.
 #    Direct mode is the default (ADR-0013): public routes, no login, no Agent
 #    API. WATERX_PREDICT_MODE=agent-api selects the authenticated Agent API.
-export WATERX_PREDICT_ENVIRONMENT=testnet   # or mainnet; unset means mainnet
+export WATERX_PREDICT_ENVIRONMENT=testnet   # to practise; unset means mainnet, which is the default
 export WATERX_PREDICT_AGENT_WALLET='0x<64 hex>'
 export WATERX_PREDICT_SIGNER_COMMAND='/path/to/your-signer'
 #    …or persist the last two, which is what an unattended host does:

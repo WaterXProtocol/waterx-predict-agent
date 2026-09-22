@@ -181,10 +181,12 @@ mainnet, with no policy configured, the CLI is read-only until the operator
 chooses a policy — `waterx-predict policy` lists the three modes with what each
 allows, and `policy set --mode <mode> --yes` takes one (ADR-0017, ADR-0021).
 
-**The CLI uses mainnet unless told otherwise** (ADR-0011): with no
-`WATERX_PREDICT_ENVIRONMENT` or `WATERX_PREDICT_BASE_URL` it connects to
-production and says so on every answer. Set `WATERX_PREDICT_ENVIRONMENT=testnet`
-to practise. The SDK library still requires a deployment to be named.
+**The CLI trades on mainnet** (ADR-0011). That is the default and it is not a
+question anybody is asked: every answer says so, and what stands between a fresh
+install and a trade is the execution policy, which starts read-only and is the
+operator's to change (ADR-0017, ADR-0028). A developer who wants to practise
+sets `WATERX_PREDICT_ENVIRONMENT=testnet`; that is a development switch, not a
+setup step. The SDK library still requires a deployment to be named.
 
 ## Documentation
 

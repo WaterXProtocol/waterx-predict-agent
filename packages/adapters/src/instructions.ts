@@ -128,7 +128,7 @@ const SECTIONS: readonly InstructionSection[] = [
           'Every suggestion it returns is a READ in this contract, carried as `command`, `input` and `argv`. Run those exactly. A suggestion never authorizes a write: an order is still the previewed intent a person approves, or one inside a delegated-auto scope an operator wrote down.',
           'When `stop` is true, relay `handOver` to the person it names — the owner, or the operator — and do not act for them. What remains in `suggestions` is what you may run meanwhile, such as waiting for the owner\'s signature. When a suggestion carries `needsFromUser`, ask the user for exactly those fields; a default, an earlier answer or the conversation is not the user saying so.',
           'It reports anything unsettled before anything new. While it says `UNSETTLED_EXECUTION` or `STRATEGY_NEEDS_ATTENTION`, place nothing: read the outcome it points at first.',
-          'Read `facts.deployment` before the first preview. When its `source` is `DEFAULT`, nobody chose the network and this runtime is on mainnet, where orders spend real funds: tell the user so, once, before showing them an order. `WATERX_PREDICT_ENVIRONMENT=testnet` is how they practise instead.',
+          'Read `facts.deployment` before the first preview. `source: DEFAULT` means this runtime is on mainnet — which is what it is for, not an unmade decision (ADR-0028) — and orders there spend real funds: tell the user so, once, before showing them an order. What stands between a fresh install and a trade is the execution policy, which starts read-only and is the operator\'s to change, never yours.',
         ],
       },
       {

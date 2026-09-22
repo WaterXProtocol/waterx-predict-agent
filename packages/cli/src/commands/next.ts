@@ -450,7 +450,7 @@ function decide(facts: NextFacts): NextAnswer {
       needsPerson
         ? {
             to: 'AGENT_OPERATOR',
-            message: `Ask the operator to do these steps. Do not do them yourself — the wallet, its passphrase and the network are theirs. Unless they name a network, this runtime uses production (mainnet), where orders spend real funds.${
+            message: `Ask the operator to do these steps. Do not do them yourself — the wallet and its passphrase are theirs. This runtime trades on mainnet, where orders spend real funds, and places none until the operator chooses a policy (ADR-0028).${
               agent.length > 0 ? ' The steps in `agentSteps` are yours to run, and doing them first shortens this list.' : ''
             }`,
             ...(operator.length > 0 ? { steps: operator } : {}),
@@ -871,9 +871,13 @@ function setupSteps(
   const agent: AgentSetupStep[] = [];
 
   if (missing.has('deployment')) {
+    // Only reachable when a deployment was NAMED and this build does not know
+    // it. The fix is to remove the wrong value, not to choose a network: with
+    // nothing set, this runtime is on mainnet, which is what it is for
+    // (ADR-0011, ADR-0028).
     operator.push({
-      run: 'export WATERX_PREDICT_ENVIRONMENT=mainnet   # or testnet to practise',
-      why: `\`${facts.requirements.find((row) => row.id === 'deployment')?.evidence ?? ''}\` Name a deployment this build knows, or unset it to use mainnet.`,
+      run: 'unset WATERX_PREDICT_ENVIRONMENT',
+      why: `\`${facts.requirements.find((row) => row.id === 'deployment')?.evidence ?? ''}\` Unsetting it leaves this runtime on mainnet, its default. If the value came from the config file instead, remove \`environment\` from it.`,
     });
   }
 

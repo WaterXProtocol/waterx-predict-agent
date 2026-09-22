@@ -244,7 +244,10 @@ describe('next, before anything is configured', () => {
     // and the answer says so where a host cannot miss it.
     expect(answer.handOver?.settings?.map((setting) => setting.requirement)).toEqual(['agentWallet', 'signer']);
     expect(answer.handOver?.message).toMatch(/Do not do them yourself/u);
-    expect(answer.handOver?.message).toMatch(/production \(mainnet\).*real funds/u);
+    // Stated, not offered: mainnet is what this runtime is for, and the
+    // guardrail is the policy rather than a network somebody picks (ADR-0028).
+    expect(answer.handOver?.message).toMatch(/trades on mainnet, where orders spend real funds/u);
+    expect(answer.handOver?.message).not.toMatch(/Unless they name a network/u);
     expect(answer.facts.deployment).toEqual({
       source: 'DEFAULT',
       name: 'production',
