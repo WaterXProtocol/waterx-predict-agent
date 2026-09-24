@@ -68,6 +68,14 @@ Price history and order cancellation have no server endpoint on this API version
 
 Report the refusal and its stated alternative. An unavailable capability becomes available when the server grows an endpoint, never when you approximate one.
 
+### A position that stopped quoting may need claiming, and you cannot claim
+
+`A_RESOLVED_POSITION_IS_NOT_YOURS_TO_COLLECT`
+
+A position on a market that closed, resolved or paused has no sell-side quote. Its value and PnL are UNKNOWN, never zero, and it may not be exitable at any price. `runtime.next` reports it as `UNPRICED_POSITION` with how much cost is sitting there.
+
+If the market RESOLVED, the money comes back only by being claimed, and no command here claims. Say so and hand it to the account owner for the web app. Do not describe the position as worthless, do not report a PnL for it, and do not try to sell it repeatedly to find out.
+
 ### Use the commands, not a way around them
 
 `NO_SECOND_SURFACE`

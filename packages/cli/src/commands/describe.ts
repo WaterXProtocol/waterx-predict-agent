@@ -53,7 +53,7 @@ function describePolicy(config: ResolvedConfig): unknown {
       ? {
           scope,
           cumulativeBudget:
-            'maxCumulativeBuyAmount counts every BUY this exact scope authorized, across invocations, until notAfter (ADR-0014). A reservation is returned only when nothing was signed.',
+            'maxCumulativeBuyAmount counts every BUY this exact scope authorized, across invocations, until notAfter (ADR-0014). A reservation is returned only when nothing was signed. EDITING THE SCOPE STARTS THE COUNT AT ZERO — the total is kept against a digest of the scope, so changing an account, a market or the expiry begins a new budget rather than continuing this one. `order preview` reports what was authorized under a scope that is no longer configured.',
         }
       : {}),
     cannotWiden:

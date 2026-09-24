@@ -152,6 +152,32 @@ export interface SpendLedger {
   release(id: string): void;
   /** What is reserved against `scope` right now. */
   total(scope: string): string;
+  /**
+   * What this ledger has authorized under scopes that are NOT this one.
+   *
+   * The cumulative ceiling counts against a digest of the scope, so editing the
+   * scope at all — one account, one market, a later `notAfter` — starts a fresh
+   * budget at zero. That is the right rule: a ceiling belongs to the exact
+   * authority it was written under, and inheriting a total across a rewritten
+   * mandate would mean enforcing it against something nobody measured.
+   *
+   * It is also the rule most likely to surprise, in the direction that spends
+   * money: an operator narrowing a scope believes they tightened a ceiling and
+   * has in fact reset one. So the evidence is readable, and the surfaces that
+   * report a budget report this beside it.
+   */
+  elsewhere(scope: string): { readonly scopes: number; readonly total: string };
+}
+
+function elsewhereIn(records: readonly SpendRecord[], scope: string): { scopes: number; total: string } {
+  const others = new Set<string>();
+  let total = 0n;
+  for (const record of records) {
+    if (record.scope === scope || record.released) continue;
+    others.add(record.scope);
+    total += parseDecimal(record.amount) ?? 0n;
+  }
+  return { scopes: others.size, total: formatDecimal(total) };
 }
 
 function sumOf(records: readonly SpendRecord[], scope: string): bigint {
@@ -391,6 +417,7 @@ export function createFileLedgers(
           state.spend = state.spend.map((record) => (record.id === id ? { ...record, released: true } : record));
         }),
       total: (scope) => formatDecimal(sumOf(file.read().spend, scope)),
+      elsewhere: (scope) => elsewhereIn(file.read().spend, scope),
     },
   };
 }
@@ -427,6 +454,7 @@ export function createMemoryLedgers(): {
         state.spend = state.spend.map((record) => (record.id === id ? { ...record, released: true } : record));
       },
       total: (scope) => formatDecimal(sumOf(state.spend, scope)),
+      elsewhere: (scope) => elsewhereIn(state.spend, scope),
     },
   };
 }

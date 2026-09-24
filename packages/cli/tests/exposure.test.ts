@@ -72,6 +72,11 @@ describe('what the account is carrying', () => {
     expect(notes[1]?.says).toMatch(/unknown, not zero/u);
     // The total it does give is the one it can: cost, which does not need a quote.
     expect(notes[0]?.says).toContain('20');
+    // How much of it is stranded, said separately from the portfolio's cost:
+    // one position of the two here, so 10 rather than 20.
+    expect(notes[1]?.says).toContain('10 wxUSD of cost');
+    // And what a resolved one needs, which is not something this runtime does.
+    expect(notes[1]?.says).toMatch(/claimed, which this runtime cannot do/u);
   });
 
   it('calls out an order the keeper will never fill, before its age', () => {
