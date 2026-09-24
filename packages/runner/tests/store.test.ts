@@ -614,3 +614,124 @@ describe('what the store refuses to hold', () => {
     store = open();
   });
 });
+
+describe('what a mandate has committed', () => {
+  const SCOPE = 'mandate1_aaaaaaaaaaaaaaaaaaaaaaaa';
+
+  it('admits what fits, refuses what does not, and writes nothing when it refuses', async () => {
+    const lease = await claimed();
+    const first = await store.commitMandateSpend({
+      lease,
+      legIndex: 0,
+      scope: SCOPE,
+      amount: '40.000000',
+      ceiling: '60.000000',
+      at: T0,
+    });
+    expect(first).toEqual({ admitted: true, total: '40.000000' });
+
+    const second = await store.commitMandateSpend({
+      lease,
+      legIndex: 1,
+      scope: SCOPE,
+      amount: '20.000001',
+      ceiling: '60.000000',
+      at: T0,
+    });
+    // One millionth over is over. Money is compared exactly, never through a
+    // float that would make this pass.
+    expect(second).toEqual({ admitted: false, total: '40.000000', ceiling: '60.000000' });
+    expect(await store.totalMandateSpend(SCOPE)).toBe('40.000000');
+
+    const exact = await store.commitMandateSpend({
+      lease,
+      legIndex: 2,
+      scope: SCOPE,
+      amount: '20.000000',
+      ceiling: '60.000000',
+      at: T0,
+    });
+    expect(exact).toEqual({ admitted: true, total: '60.000000' });
+  });
+
+  it('counts one leg once, and cannot un-commit it by lowering the ceiling', async () => {
+    const lease = await claimed();
+    await store.commitMandateSpend({ lease, legIndex: 0, scope: SCOPE, amount: '40.000000', at: T0 });
+
+    // The replay of a leg already committed is the same commitment. It must not
+    // add again, and it must not be refused: the order it belongs to may already
+    // be on its way, and a refusal here would strand a job that cannot un-send it.
+    const replay = await store.commitMandateSpend({
+      lease,
+      legIndex: 0,
+      scope: SCOPE,
+      amount: '40.000000',
+      ceiling: '1.000000',
+      at: later(T0, 1000),
+    });
+    expect(replay).toEqual({ admitted: true, total: '40.000000' });
+    expect(await store.totalMandateSpend(SCOPE)).toBe('40.000000');
+  });
+
+  it('totals across a restart, because a budget a restart forgets is no budget', async () => {
+    const lease = await claimed();
+    await store.commitMandateSpend({ lease, legIndex: 0, scope: SCOPE, amount: '40.000000', at: T0 });
+    await store.close();
+    store = open();
+    expect(await store.totalMandateSpend(SCOPE)).toBe('40.000000');
+  });
+
+  it('gives a rewritten mandate its own budget, and commits with no ceiling at all', async () => {
+    const lease = await claimed();
+    await store.commitMandateSpend({ lease, legIndex: 0, scope: SCOPE, amount: '40.000000', at: T0 });
+    // A different authority is a different total: one an operator has since
+    // rewritten was never measured against what the old one spent.
+    expect(await store.totalMandateSpend('mandate1_bbbbbbbbbbbbbbbbbbbbbbbb')).toBe('0.000000');
+
+    // No ceiling refuses nothing, and still records what was bought — a total
+    // worth reporting even where nothing is enforcing it.
+    const uncapped = await store.commitMandateSpend({
+      lease,
+      legIndex: 1,
+      scope: SCOPE,
+      amount: '9999.000000',
+      at: T0,
+    });
+    expect(uncapped).toEqual({ admitted: true, total: '10039.000000' });
+  });
+
+  it('arrives by migration on a database an earlier build wrote', async () => {
+    // What an operator already has on disk is a v1 store. The budget has to
+    // reach it by upgrade; a table that only exists in a fresh database is a
+    // ceiling that silently does nothing on every Runner already running.
+    const lease = await claimed();
+    await store.commitMandateSpend({ lease, legIndex: 0, scope: SCOPE, amount: '40.000000', at: T0 });
+    await store.close();
+
+    const earlier = new DatabaseSync(dir.path);
+    earlier.exec('DROP TABLE mandate_spend');
+    earlier.exec('PRAGMA user_version = 1');
+    earlier.close();
+
+    store = open();
+    const recommitted = await store.commitMandateSpend({
+      lease,
+      legIndex: 0,
+      scope: SCOPE,
+      amount: '40.000000',
+      ceiling: '60.000000',
+      at: T0,
+    });
+    expect(recommitted).toEqual({ admitted: true, total: '40.000000' });
+  });
+
+  it('refuses to commit without a live lease, like every other write here', async () => {
+    const lease = await claimed();
+    const stale: JobLease = { ...lease, fence: lease.fence - 1 };
+    expect(
+      await code(() =>
+        store.commitMandateSpend({ lease: stale, legIndex: 0, scope: SCOPE, amount: '1.000000', at: T0 }),
+      ),
+    ).toBe('LEASE_LOST');
+  });
+});

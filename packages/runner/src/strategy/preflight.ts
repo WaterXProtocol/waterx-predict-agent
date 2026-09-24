@@ -92,6 +92,12 @@ export type LegSkipReason =
   | 'FRACTION_RESOLVES_TO_ZERO'
   /** The order is larger than the local policy that admitted the job allows. */
   | 'EXCEEDS_POLICY_ORDER_LIMIT'
+  /**
+   * The order fits the per-order ceiling but would take the mandate past what it
+   * may buy in total. Not retryable: the budget is spent, and a ceiling in a
+   * local file does not raise itself while a job waits.
+   */
+  | 'EXCEEDS_POLICY_RUN_LIMIT'
   /** The fresh quote is worse than this leg's own absolute bound. */
   | 'PRICE_WORSE_THAN_BOUND'
   /** The executable quote does not meet the target the indicative price did. */

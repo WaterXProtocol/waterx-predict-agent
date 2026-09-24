@@ -369,11 +369,24 @@ describe('the policy a strategy would be admitted under', () => {
     expect(isRunnerConfigError(error) && error.detail?.['key']).toBe('policy.notAfter');
   });
 
-  it('refuses a setting inside the block that this build does not enforce', () => {
-    // `maxRunNotional` is a real idea and nothing here checks it, so accepting it
-    // would be a limit an operator believes is in force while it is not.
+  it('carries the cumulative ceiling onto the mandate, and refuses one that is not a decimal', () => {
+    // `maxRunNotional` is now enforced, so it is accepted — and it has to reach
+    // the mandate verbatim, because a ceiling an operator believes is in force
+    // while the job carries nothing is worse than no ceiling at all.
+    const config = resolve(complete(), {
+      [fileAt()]: JSON.stringify({
+        policy: { mode: 'delegated-auto', maxOrderNotional: '25.000000', maxRunNotional: '250.000000' },
+      }),
+    });
+    expect(config.policy).toEqual({
+      mode: 'delegated-auto',
+      source: `file:${fileAt()}`,
+      maxOrderNotional: '25.000000',
+      maxRunNotional: '250.000000',
+    });
+
     const error = refusal(complete(), {
-      [fileAt()]: JSON.stringify({ policy: { maxRunNotional: '1000.00' } }),
+      [fileAt()]: JSON.stringify({ policy: { maxRunNotional: 1000 } }),
     });
     expect(isRunnerConfigError(error) && error.detail?.['key']).toBe('policy.maxRunNotional');
   });

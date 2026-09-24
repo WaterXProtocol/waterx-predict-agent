@@ -119,6 +119,29 @@ export const MIGRATIONS: readonly Migration[] = [
       ) STRICT;
     `,
   },
+  {
+    version: 2,
+    sql: `
+      -- What a mandate has committed, so a ceiling on a RUN can be enforced and
+      -- not merely written down. Keyed on (job_id, leg_index) rather than on the
+      -- idempotency key, because that pair is the identity of a logical order
+      -- from before the key is minted and survives every replay of it: a job
+      -- re-armed after a crash commits the same row again and it stays one
+      -- commitment. The scope is a digest of the mandate itself, so a mandate an
+      -- operator has since rewritten starts its own budget instead of silently
+      -- inheriting one.
+      CREATE TABLE mandate_spend (
+        job_id    TEXT NOT NULL,
+        leg_index INTEGER NOT NULL,
+        scope     TEXT NOT NULL,
+        amount    TEXT NOT NULL,
+        at        TEXT NOT NULL,
+        PRIMARY KEY (job_id, leg_index)
+      ) STRICT;
+
+      CREATE INDEX mandate_spend_scope ON mandate_spend(scope);
+    `,
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION: number = MIGRATIONS.reduce(

@@ -29,6 +29,8 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
+import { fromScaled, toScaled } from '@waterx/predict-agent-sdk';
+
 import { JobStoreError } from '../errors.ts';
 import type {
   JobLeg,
@@ -49,8 +51,10 @@ import { canTransition, JOB_STATES, type JobState } from '../state-machine.ts';
 import type {
   BeginSideEffectInput,
   ClaimJobInput,
+  CommitMandateSpendInput,
   CompleteSideEffectInput,
   CreateJobInput,
+  MandateSpend,
   JobFilter,
   JobStore,
   LegPatch,
@@ -460,6 +464,36 @@ export class SqliteJobStore implements JobStore {
     });
   }
 
+  // ----------------------------------------------------------- mandate budget
+
+  async commitMandateSpend(input: CommitMandateSpendInput): Promise<MandateSpend> {
+    return this.tx(() => {
+      this.assertLease(input.lease);
+      const committed = this.spendTotal(input.scope);
+      const already = this.db
+        .prepare('SELECT amount FROM mandate_spend WHERE job_id = ? AND leg_index = ?')
+        .get(input.lease.jobId, input.legIndex) as { amount?: string } | undefined;
+      // The same leg committing again is the same commitment. A replay after a
+      // crash must not spend the budget twice for the one order it is replaying,
+      // and the ceiling must not be able to refuse an order already on its way.
+      if (already?.amount !== undefined) return { admitted: true, total: fromScaled(committed) };
+
+      const amount = toScaled(input.amount);
+      const total = committed + amount;
+      if (input.ceiling !== undefined && total > toScaled(input.ceiling)) {
+        return { admitted: false, total: fromScaled(committed), ceiling: input.ceiling };
+      }
+      this.db
+        .prepare('INSERT INTO mandate_spend(job_id, leg_index, scope, amount, at) VALUES(?, ?, ?, ?, ?)')
+        .run(input.lease.jobId, input.legIndex, input.scope, input.amount, input.at);
+      return { admitted: true, total: fromScaled(total) };
+    });
+  }
+
+  async totalMandateSpend(scope: string): Promise<string> {
+    return this.tx(() => fromScaled(this.spendTotal(scope)));
+  }
+
   // ------------------------------------------------------------- side effects
 
   async beginSideEffect(input: BeginSideEffectInput): Promise<SideEffectAttempt> {
@@ -611,6 +645,14 @@ export class SqliteJobStore implements JobStore {
   }
 
   // ------------------------------------------------------------------ private
+
+  /** Exact, in base units: money is never summed through a float. */
+  private spendTotal(scope: string): bigint {
+    const rows = this.db
+      .prepare('SELECT amount FROM mandate_spend WHERE scope = ?')
+      .all(scope) as unknown as readonly { amount: string }[];
+    return rows.reduce((sum, row) => sum + toScaled(row.amount), 0n);
+  }
 
   private tx<T>(body: () => T): T {
     // IMMEDIATE, not DEFERRED: every one of these reads a row and writes it back,

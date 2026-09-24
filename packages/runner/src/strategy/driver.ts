@@ -82,6 +82,7 @@ import {
   type StrategySigner,
   type WatchKey,
 } from './gateway.ts';
+import { mandateDigest } from './mandate.ts';
 import {
   checkLocalPolicy,
   checkMarkets,
@@ -603,6 +604,45 @@ interface SignedLeg extends LiveLeg {
 }
 
 /**
+ * Commit one leg against its mandate's cumulative ceiling.
+ *
+ * Returns the skip when the leg does not fit, and nothing when it does. Every
+ * BUY commits, ceiling or no ceiling, because what a mandate has bought is
+ * worth knowing even where nothing refuses it; a SELL commits nothing at all,
+ * for the reason `maxOrderNotional` is BUY-only — it returns money rather than
+ * spending it, and bounding it would refuse to let a strategy close a position
+ * it is already exposed to.
+ */
+const commitSpend = async (
+  options: DriveJobOptions,
+  job: JobRecord,
+  leg: QuotedLeg,
+  at: string,
+): Promise<LegSkip | undefined> => {
+  const amount = leg.intent.buyAmount;
+  if (amount === undefined) return undefined;
+  const spend = await options.store.commitMandateSpend({
+    lease: options.lease,
+    legIndex: leg.legIndex,
+    scope: mandateDigest(job.policy),
+    amount,
+    ...(job.policy.maxRunNotional === undefined ? {} : { ceiling: job.policy.maxRunNotional }),
+    at,
+  });
+  if (spend.admitted) return undefined;
+  return {
+    reason: 'EXCEEDS_POLICY_RUN_LIMIT',
+    retryable: false,
+    detail: {
+      buyAmount: amount,
+      committed: spend.total,
+      maxRunNotional: spend.ceiling,
+      source: job.policy.source,
+    },
+  };
+};
+
+/**
  * Reserve, create, sign, submit — the part that can move money.
  *
  * The reservation is deliberately the last thing before the first write. Every
@@ -637,7 +677,26 @@ const execute = async (
       at,
     });
   }
-  for (const leg of skipped) {
+
+  // The cumulative mandate, committed here and nowhere else. This is the last
+  // moment a leg can still be refused for nothing: its key is on disk, so a
+  // replay is the same order, and no request has gone out, so a refusal costs
+  // the operator no money and the server no state. The store decides and
+  // records in one transaction, because a ceiling read in one call and written
+  // in the next is a ceiling two passes can both find room under.
+  const sending: QuotedLeg[] = [];
+  const overBudget: PreparedLeg[] = [];
+  for (const leg of quoted) {
+    const spend = await commitSpend(options, job, leg, at);
+    if (spend === undefined) {
+      sending.push(leg);
+      continue;
+    }
+    overBudget.push({ ...leg, skip: spend });
+  }
+  const passedOver = [...skipped, ...overBudget].sort((a, b) => a.legIndex - b.legIndex);
+
+  for (const leg of passedOver) {
     // Recorded as SKIPPED now, not left PENDING: the run is happening, this leg
     // is not in it, and a leg the reconciler would keep looking for is a job that
     // never concludes. A retryable skip is only retryable while the job is still
@@ -649,6 +708,11 @@ const execute = async (
       status: 'SKIPPED',
     });
   }
+
+  // Nothing survived to be sent, so the job must not enter CREATING to create
+  // nothing there. A job refused entirely by the cumulative ceiling ends rather
+  // than watching: the budget is spent, and waiting cannot bring it back.
+  if (sending.length === 0) return await noneLeft(options, job, passedOver);
 
   const legKeys = new Map(
     (await store.listLegs(job.jobId)).map((leg) => [leg.legIndex, leg.idempotencyKey]),
@@ -676,17 +740,17 @@ const execute = async (
     reason: 'LEGS_RESERVED',
     at,
     detail: {
-      creating: quoted.map((leg) => leg.legIndex),
-      ...(skipped.length === 0 ? {} : { skipped: skipped.map(toReport) }),
+      creating: sending.map((leg) => leg.legIndex),
+      ...(passedOver.length === 0 ? {} : { skipped: passedOver.map(toReport) }),
     },
   });
 
   const reports = new Map<number, DriveLegReport>(
-    skipped.map((leg) => [leg.legIndex, toReport(leg)]),
+    passedOver.map((leg) => [leg.legIndex, toReport(leg)]),
   );
   const live: LiveLeg[] = [];
 
-  for (const leg of quoted) {
+  for (const leg of sending) {
     const body = buildCreateRequest(job, leg.intent, leg.legIndex, leg.quote.quoteId);
     const attempt = await store.beginSideEffect({
       lease,

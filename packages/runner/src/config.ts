@@ -98,7 +98,12 @@ export const RUNNER_FILE_KEYS: readonly string[] = [
 ];
 
 /** The keys inside `policy`. Closed for the same reason the top level is. */
-export const RUNNER_POLICY_KEYS: readonly string[] = ['mode', 'maxOrderNotional', 'notAfter'];
+export const RUNNER_POLICY_KEYS: readonly string[] = [
+  'mode',
+  'maxOrderNotional',
+  'maxRunNotional',
+  'notAfter',
+];
 
 /**
  * The three modes a job may be admitted under, matching {@link JobPolicySnapshot}.
@@ -120,10 +125,12 @@ export type RunnerPolicyMode = (typeof RUNNER_POLICY_MODES)[number];
  * is written onto the durable job, so an audit reads the authority back rather
  * than a summary of it.
  *
- * `maxRunNotional` is absent on purpose. `JobPolicySnapshot` has the field and
- * nothing in this build enforces it — `preflight` reads `maxOrderNotional` and
- * the signer re-reads `notAfter`, and offering an operator a third setting that
- * bounds nothing would be a cap that exists only in a config file.
+ * `maxRunNotional` is the ceiling on everything this mandate buys, not on one
+ * order. Without it `maxOrderNotional` bounds a single order and nothing bounds
+ * a hundred of them, and a strategy is precisely a way to place orders without
+ * a person present for each. It is committed to the store before the first
+ * write of each leg and totalled per mandate, so it survives a restart and
+ * cannot be spent twice by a replay.
  */
 export interface RunnerPolicyConfig {
   readonly mode: RunnerPolicyMode;
@@ -131,6 +138,8 @@ export interface RunnerPolicyConfig {
   readonly source: string;
   /** Per-order ceiling on a BUY's committed budget. Decimal string, never a number. */
   readonly maxOrderNotional?: string;
+  /** Cumulative ceiling on everything this mandate buys, across jobs and restarts. */
+  readonly maxRunNotional?: string;
   /** The instant the mandate ends. Re-read by the signer at signing time. */
   readonly notAfter?: string;
 }
@@ -517,6 +526,7 @@ const resolvePolicy = (
   }
 
   const maxOrderNotional = asDecimal(block['maxOrderNotional'], 'policy.maxOrderNotional', where);
+  const maxRunNotional = asDecimal(block['maxRunNotional'], 'policy.maxRunNotional', where);
   const notAfter = asString(block['notAfter'], 'policy.notAfter', where);
   if (notAfter !== undefined && !isIsoInstant(notAfter)) {
     throw new RunnerConfigError(
@@ -537,6 +547,7 @@ const resolvePolicy = (
           ? `file:${filePath}`
           : 'default:interactive',
     ...(maxOrderNotional === undefined ? {} : { maxOrderNotional }),
+    ...(maxRunNotional === undefined ? {} : { maxRunNotional }),
     ...(notAfter === undefined ? {} : { notAfter }),
   };
 };
