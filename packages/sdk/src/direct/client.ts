@@ -316,6 +316,20 @@ const KEEPER_FILL_GRACE_MS = 300_000;
 /** How long before an order's own expiry its bytes stop being worth signing. */
 const SIGN_MARGIN_MS = 10_000;
 
+/**
+ * How far a settlement read will walk a per-account history before it gives up.
+ *
+ * Both the activity feed and the bet history are transaction logs, newest
+ * first, and one read of the first page is an assumption that the account has
+ * not traded since — which is false for exactly the accounts that trade. So
+ * they are walked; and because a walk over someone else's history has no
+ * natural end, it is bounded here and again by a timestamp at each call site.
+ * Running out of pages is never a verdict: it costs a read its evidence, never
+ * its caution.
+ */
+const HISTORY_PAGE = 100;
+const HISTORY_MAX_PAGES = 5;
+
 /** An order's outcome, plus what direct mode can say about one still open. */
 export interface DirectExecutionOutcome extends ExecutionOutcome {
   /**
@@ -1396,9 +1410,79 @@ export class PredictDirectClient {
     return { ...outcome, enforcedWorstPrice: known.enforcedWorstPrice ?? '', idempotencyKey, idempotencyKeyReplayed: true };
   }
 
-  private async activity(owner: string, signal?: AbortSignal): Promise<PublicActivityEntry[]> {
-    const response = await this.http.get<PublicActivityResponse>(R.activity, { address: owner, limit: 100 }, signal);
-    return response.activity;
+  private activity(owner: string, cursor: string | null = null, signal?: AbortSignal): Promise<PublicActivityResponse> {
+    return this.http.get<PublicActivityResponse>(
+      R.activity,
+      { address: owner, limit: HISTORY_PAGE, ...(cursor === null ? {} : { cursor }) },
+      signal,
+    );
+  }
+
+  /**
+   * The indexed bet an order became, whatever has happened to it since.
+   *
+   * `filter=all` is the whole point: this is asked when the registry no longer
+   * has the order, which is most often because its position was sold or
+   * claimed — and `active` answers "no such bet" for precisely that case.
+   *
+   * Bounded by pages, and by `notBefore` when the feed could name when the
+   * order was placed: rows arrive newest-first, so a page whose oldest row
+   * predates the order cannot be hiding it. Not finding it returns nothing,
+   * which reads as "no evidence" and settles no order either way.
+   */
+  private async betForOrder(
+    owner: string,
+    orderId: string,
+    notBefore: number | undefined,
+    signal?: AbortSignal,
+  ): Promise<PublicBet | undefined> {
+    let cursor: string | null = null;
+    for (let page = 0; page < HISTORY_MAX_PAGES; page += 1) {
+      const response: PublicBetsResponse = await this.http.get<PublicBetsResponse>(
+        R.bets,
+        { address: owner, filter: 'all', limit: HISTORY_PAGE, ...(cursor === null ? {} : { cursor }) },
+        signal,
+      );
+      const bet = response.bets.find((row) => row.orderId === orderId);
+      if (bet !== undefined) return bet;
+      cursor = response.nextCursor ?? null;
+      if (cursor === null) return undefined;
+      const oldest = response.bets.at(-1);
+      if (notBefore !== undefined && oldest !== undefined && oldest.placedAt < notBefore) return undefined;
+    }
+    return undefined;
+  }
+
+  /**
+   * The keeper's fill for a position, from further down the feed than the page
+   * a settlement read already holds.
+   *
+   * Only the fill's DETAIL is at stake here — the status was already decided by
+   * the bet. So it is walked no further than the bet's own placement: a fill
+   * cannot predate the order that produced it, and an account that has traded a
+   * great deal since is not worth a longer search for a transaction hash.
+   */
+  private async boughtFill(
+    owner: string,
+    bet: PublicBet,
+    from: string | null | undefined,
+    signal?: AbortSignal,
+  ): Promise<PredictExecutionFill | undefined> {
+    // `null` is the caller saying it already read the only page there is.
+    if (from === null) return undefined;
+    let cursor: string | null = from ?? null;
+    for (let page = 0; page < HISTORY_MAX_PAGES; page += 1) {
+      const response = await this.activity(owner, cursor, signal);
+      const row = response.activity.find(
+        (entry) => entry.kind === 'bought' && entry.positionIds.includes(bet.positionId),
+      );
+      if (row !== undefined) return fillOf(row);
+      cursor = response.nextCursor ?? null;
+      if (cursor === null) return undefined;
+      const oldest = response.activity.at(-1);
+      if (oldest !== undefined && oldest.timestampMs < bet.placedAt) return undefined;
+    }
+    return undefined;
   }
 
   /** The Agent API's raw execution shape, for surfaces that render it as such. */
@@ -1425,9 +1509,15 @@ export class PredictDirectClient {
    *   shares and cost;
    * - a sell whose close order is gone → `FILLED` if the position is gone with
    *   it, `CANCELLED` if the position is still there.
-   * The feed supplies fill details when it has them, and settles what the chain
-   * cannot — a buy whose order is gone (cancelled, or filled and since closed).
-   * Silence from both is non-terminal, never a guess.
+   * The feed supplies fill details when it has them, and settles a keeper's
+   * cancel, which it names by order id.
+   *
+   * A filled BUY is the one ending neither reader keeps: the feed's `bought`
+   * row is position-backed and carries no order id, and closing the position
+   * drops the registry's order→position index. So the indexed bet history is
+   * asked last, and only when the two readers above have not decided — it is
+   * the only one that still maps an order to what it became. Silence from all
+   * three is non-terminal, never a guess.
    */
   async readExecution(executionId: string, signal?: AbortSignal): Promise<DirectExecutionOutcome> {
     const ref = decodeExecutionId(executionId);
@@ -1445,14 +1535,14 @@ export class PredictDirectClient {
       fee: fill === undefined ? NO_FILL : EMBEDDED,
     });
 
-    let feed: PublicActivityEntry[] | undefined;
+    let feed: PublicActivityResponse | undefined;
     let feedError: unknown;
     try {
-      feed = await this.activity(ref.owner, signal);
+      feed = await this.activity(ref.owner, null, signal);
     } catch (error: unknown) {
       feedError = error;
     }
-    const indexed = feed === undefined ? undefined : feedOutcome(ref, feed);
+    const indexed = feed === undefined ? undefined : feedOutcome(ref, feed.activity);
     if (indexed?.status !== undefined) return done(indexed.status, indexed.fill);
 
     const landing = await this.chain.landing(ref.digest, signal);
@@ -1463,31 +1553,47 @@ export class PredictDirectClient {
     }
 
     const onChain = await this.chainOutcome(ref, indexed?.fill, feed, signal);
-    if (onChain !== undefined) return { ...done(onChain.status, onChain.fill), ...onChain.extra };
+    if (onChain.outcome !== undefined) {
+      return { ...done(onChain.outcome.status, onChain.outcome.fill), ...onChain.outcome.extra };
+    }
     if (feed === undefined) throw feedError;
+
+    // The chain named the order but not its ending, or could not be asked at
+    // all. Either way the order id is the key the bet history is indexed by,
+    // and it comes from whichever reader has it: the chain's own events, or
+    // the feed's pending row for this very submission.
+    const orderIds = onChain.orderId === undefined ? (indexed?.orderIds ?? []) : [onChain.orderId];
+    const settled = await this.betOutcome(ref, orderIds, indexed?.placedAt, feed, signal);
+    if (settled !== undefined) return done(settled.status, settled.fill);
     return done(indexed?.landed === true ? 'PENDING_FILL' : 'SUBMITTED');
   }
 
   /**
-   * The order's state from the registry, or `undefined` when this reader cannot
-   * say (no chain order reads, no placed order in the transaction, or a read
-   * that failed — which is not evidence of anything).
+   * What the registry can say about the order this transaction placed.
+   *
+   * `outcome` is absent whenever this reader cannot decide — no chain order
+   * reads, no placed order in the transaction, a read that failed, or an order
+   * gone from the registry with nothing naming which way it went. None of
+   * those is evidence of anything, so each one leaves the verdict to the next
+   * reader; `orderId` is handed on with it, because identifying the order is
+   * useful even when its ending is not there to be read.
    */
   private async chainOutcome(
     ref: ExecutionRef,
     indexedFill: PredictExecutionFill | undefined,
-    feed: readonly PublicActivityEntry[] | undefined,
+    feed: PublicActivityResponse | undefined,
     signal?: AbortSignal,
-  ): Promise<
-    | {
-        status: PredictExecutionStatus;
-        fill?: PredictExecutionFill | undefined;
-        extra?: Pick<DirectExecutionOutcome, 'openOrder'>;
-      }
-    | undefined
-  > {
+  ): Promise<{
+    outcome?: {
+      status: PredictExecutionStatus;
+      fill?: PredictExecutionFill | undefined;
+      extra?: Pick<DirectExecutionOutcome, 'openOrder'>;
+    };
+    orderId?: string;
+  }> {
     const chain = this.chain;
-    if (chain.placedOrders === undefined || chain.orderState === undefined) return undefined;
+    if (chain.placedOrders === undefined || chain.orderState === undefined) return {};
+    let orderId: string | undefined;
     try {
       const deployment = await this.deployment.load(signal);
       const placed = await chain.placedOrders(ref.digest, deployment.originals.prediction, signal);
@@ -1496,7 +1602,8 @@ export class PredictDirectClient {
           row.kind === (ref.side === 'BUY' ? 'OPEN' : 'CLOSE') &&
           normalizeSuiAddress(row.registry) === deployment.objects.marketRegistry,
       );
-      if (order === undefined) return undefined;
+      if (order === undefined) return {};
+      orderId = order.orderId;
       const state = await chain.orderState(order.registry, order.orderId, signal);
       if (state.state === 'OPEN') {
         const fillableUntil = state.expiryTs + KEEPER_FILL_GRACE_MS;
@@ -1507,36 +1614,101 @@ export class PredictDirectClient {
           cancellableAfter: new Date(Math.max(state.selfCancelAfterTs, fillableUntil)).toISOString(),
           escrow: formatScaled(BigInt(state.escrow), MONEY_DECIMALS),
         };
-        return this.now() >= fillableUntil
-          ? { status: 'EXPIRED', extra: { openOrder } }
-          : { status: 'PENDING_FILL', extra: { openOrder } };
+        const status = this.now() >= fillableUntil ? 'EXPIRED' : 'PENDING_FILL';
+        return { outcome: { status, extra: { openOrder } }, orderId };
       }
       if (ref.side === 'BUY') {
-        // The feed's fill or cancel carries the KEEPER's digest, not this
-        // submission's — so it is found by the order id the chain named.
-        const byOrder = (kind: string): PublicActivityEntry | undefined =>
-          feed?.find((entry) => entry.kind === kind && entry.orderIds.includes(order.orderId));
-        const bought = byOrder('bought');
+        // Both of the feed's endings carry the KEEPER's digest rather than this
+        // submission's, so neither is found by it — but they are not found the
+        // same way as each other either, and the asymmetry is the server's:
+        //   - `bought_unfilled` has no position yet, so it carries the ORDER id;
+        //   - `bought` is position-backed, and the server keeps order ids out of
+        //     those rows on purpose, so its `orderIds` is always empty. A fill is
+        //     therefore joined by the POSITION, never by the order.
         if (state.state === 'FILLED') {
-          return { status: 'FILLED', fill: indexedFill ?? (bought === undefined ? undefined : fillOf(bought)) ?? positionFill(state.position) };
+          const row = feed?.activity.find(
+            (entry) => entry.kind === 'bought' && entry.positionIds.includes(state.positionId),
+          );
+          const fill = indexedFill ?? (row === undefined ? undefined : fillOf(row)) ?? positionFill(state.position);
+          return { outcome: { status: 'FILLED', fill }, orderId };
         }
-        // Gone from the registry: the feed says which way.
-        if (bought !== undefined) return { status: 'FILLED', fill: fillOf(bought) };
-        if (byOrder('bought_unfilled') !== undefined) return { status: 'CANCELLED' };
-        return undefined;
+        // Gone from the registry, which happens two ways and they are not the
+        // same ending: a cancel, which the feed does name by order id — or a
+        // fill whose position has since been sold or claimed, because closing a
+        // position drops the registry's order→position index with it
+        // (`remove_and_drop_position`). Once that row is gone the chain can
+        // never again say this order filled, however often it is asked. So the
+        // ending is left to the bet history, and the order id goes with it.
+        const cancelled = feed?.activity.find(
+          (entry) => entry.kind === 'bought_unfilled' && entry.orderIds.includes(order.orderId),
+        );
+        return cancelled === undefined ? { orderId } : { outcome: { status: 'CANCELLED' }, orderId };
       }
       // A close order that is no longer open: the position it closes decides
       // which way it went — still there, the close was cancelled; gone, it was
       // confirmed. For a partial close that is the split-off position, which is
       // why the id comes from the event and not from the execution id.
-      if (order.positionId === undefined || chain.positionOpen === undefined) return undefined;
+      if (order.positionId === undefined || chain.positionOpen === undefined) return { orderId };
       const stillOpen = await chain.positionOpen(order.registry, order.positionId, signal);
-      return stillOpen
-        ? { status: 'CANCELLED' }
-        : { status: 'FILLED', ...(indexedFill === undefined ? {} : { fill: indexedFill }) };
+      return {
+        outcome: stillOpen
+          ? { status: 'CANCELLED' }
+          : { status: 'FILLED', ...(indexedFill === undefined ? {} : { fill: indexedFill }) },
+        orderId,
+      };
     } catch {
-      return undefined;
+      // A read that failed is not evidence, so this decides nothing — but an
+      // order id learned before the failure is still worth handing on.
+      return orderId === undefined ? {} : { orderId };
     }
+  }
+
+  /**
+   * What the indexed bet history says became of a BUY.
+   *
+   * The last reader asked, and the only one whose record outlives the position:
+   * the registry drops its order→position index the moment a position is sold
+   * or claimed, and from then on this is the sole remaining proof that the buy
+   * ever filled. Without it such an order reads as pending for good, and a
+   * runtime that refuses to trade while something is unsettled stops there.
+   *
+   * A SELL needs none of this — its close order names the position, and the
+   * position's absence is itself the answer.
+   *
+   * A failed read decides nothing, exactly as a failed chain read does not: the
+   * caller falls back to a non-terminal status, which is the true report that
+   * this order's ending is not yet known.
+   */
+  private async betOutcome(
+    ref: ExecutionRef,
+    orderIds: readonly string[],
+    placedAt: number | undefined,
+    feed: PublicActivityResponse | undefined,
+    signal?: AbortSignal,
+  ): Promise<{ status: PredictExecutionStatus; fill?: PredictExecutionFill } | undefined> {
+    if (ref.side !== 'BUY') return undefined;
+    // The verifier admits exactly one trading call per transaction, so this is
+    // one id in practice; it is a list only because the feed groups rows, and
+    // it is sliced so a surprising row cannot turn a settlement into a scan.
+    for (const orderId of orderIds.slice(0, 4)) {
+      const bet = await this.betForOrder(ref.owner, orderId, placedAt, signal).catch(() => undefined);
+      if (bet === undefined) continue;
+      // `positionId` is empty for an order that never became a position. That is
+      // an ending only once the history says it ended; still pending reads as
+      // the non-verdict it is.
+      if (bet.positionId === '') {
+        if (bet.outcome === 'unfilled') return { status: 'CANCELLED' };
+        continue;
+      }
+      const row = feed?.activity.find(
+        (entry) => entry.kind === 'bought' && entry.positionIds.includes(bet.positionId),
+      );
+      const fill =
+        (row === undefined ? undefined : fillOf(row)) ??
+        (await this.boughtFill(ref.owner, bet, feed?.nextCursor, signal).catch(() => undefined));
+      return { status: 'FILLED', ...(fill === undefined ? {} : { fill }) };
+    }
+    return undefined;
   }
 
   async waitForExecution(
@@ -1742,27 +1914,36 @@ export class PredictDirectClient {
 
 /**
  * What the activity feed alone says. `status` only when it shows an end;
- * `landed` when it shows the submission at all.
+ * `landed` when it shows the submission at all; `orderIds` and `placedAt` are
+ * what the submission's own row hands to the readers that come after.
  */
 function feedOutcome(
   ref: ExecutionRef,
   feed: readonly PublicActivityEntry[],
-): { status?: PredictExecutionStatus; fill?: PredictExecutionFill; landed: boolean } {
+): {
+  status?: PredictExecutionStatus;
+  fill?: PredictExecutionFill;
+  landed: boolean;
+  /** The orders this submission placed, as the feed recorded them. */
+  orderIds?: readonly string[];
+  /** When the submission landed — the floor for any walk back through history. */
+  placedAt?: number;
+} {
   if (ref.side === 'BUY') {
     const submitted = feed.find((entry) => entry.txDigest === ref.digest);
     if (submitted === undefined) return { landed: false };
     const orders = new Set(submitted.orderIds);
-    const related = (kind: string): PublicActivityEntry | undefined =>
-      feed.find((entry) => entry.kind === kind && entry.orderIds.some((id) => orders.has(id)));
-    const filled = submitted.kind === 'bought' ? submitted : related('bought');
-    if (filled !== undefined) {
-      const fill = fillOf(filled);
-      return { status: 'FILLED', landed: true, ...(fill === undefined ? {} : { fill }) };
-    }
-    if (submitted.kind === 'bought_unfilled' || related('bought_unfilled') !== undefined) {
-      return { status: 'CANCELLED', landed: true };
-    }
-    return { landed: true };
+    const base = { landed: true, orderIds: submitted.orderIds, placedAt: submitted.timestampMs };
+    // A CANCEL is joinable from here: it has no position yet, so the server
+    // gives it the order id. A FILL is not, and deliberately so — `bought` is
+    // position-backed, which means the server leaves its `orderIds` empty, and
+    // it is stamped with the keeper's digest rather than this submission's. So
+    // neither key on it reaches this order, and the feed on its own can say a
+    // buy was cancelled but never that it filled. `betOutcome` reads that one.
+    const cancelled =
+      submitted.kind === 'bought_unfilled' ||
+      feed.some((entry) => entry.kind === 'bought_unfilled' && entry.orderIds.some((id) => orders.has(id)));
+    return cancelled ? { ...base, status: 'CANCELLED' } : base;
   }
   const position = ref.positionId;
   const byPosition = (kind: string): PublicActivityEntry | undefined =>
