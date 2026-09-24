@@ -319,6 +319,7 @@ const SECTIONS: readonly InstructionSection[] = [
         body: [
           'A strategy only progresses while a Runner process is running on this device and the device is awake and online. There is no managed runner and nothing server-side takes over. If the Runner reports `driving: false`, it is reachable but not driving anything — say so plainly rather than calling the strategy active.',
           'Never tell a user their strategy will fire while their laptop is asleep. It will not.',
+          'The Runner is also a SEPARATE binary that a standard install does not contain, so on a fresh setup every strategy tool answers `RUNNER_UNREACHABLE`. That is not a bug and not a transient outage: nobody has started one. Say so, and point the user at their operator or at building it from the repository, rather than retrying.',
         ],
       },
       {

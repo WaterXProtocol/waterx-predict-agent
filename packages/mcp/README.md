@@ -22,8 +22,11 @@ waterx-predict-mcp [--config <path>] [--policy <mode>] [--runner-dir <path>] [--
 
 The process speaks newline-delimited JSON-RPC 2.0 on stdin and stdout, one
 request at a time, and exits when its client closes stdin. It starts no daemon
-and holds no key. If a strategy needs a local Runner, the operator starts one
-separately — see `@waterx/predict-agent-runner`.
+and holds no key. A strategy needs a local Runner, and **no install provides
+one**: `@waterx/predict-agent-runner` is private to this workspace and is not
+published, so until an operator builds and starts it themselves every
+`strategy_*` tool answers `RUNNER_UNREACHABLE`. The tool descriptions say so,
+because a model told only "unreachable" retries an outage that is not one.
 
 The flags are the operator's, pinned for the whole session, and passed to the
 command core unchanged.

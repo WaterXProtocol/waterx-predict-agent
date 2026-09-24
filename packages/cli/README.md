@@ -524,8 +524,12 @@ CLI carries the symbolic refusal (`EXPIRY_REQUIRED`, `EXPIRY_TOO_FAR`,
 strategy signs and trades later, unattended, so this process will not arm one.
 
 Under `describe`, `runner` remains **not implemented**: starting, stopping and
-supervising the daemon is backlog 2.6. Run `runnerd` yourself, and keep the
-device awake and online — a sleeping machine is a strategy that is not watching.
+supervising the daemon is backlog 2.6. The daemon is not shipped here either, so
+the five `strategy` capabilities carry a `requires` block naming what has to be
+running — they are built and callable, which is not the same as callable now.
+Build it from the repository (`pnpm install && pnpm build`) and run
+`node packages/runner/dist/src/bin/runnerd.js` yourself, and keep the device
+awake and online — a sleeping machine is a strategy that is not watching.
 
 ## Input
 
@@ -719,9 +723,13 @@ key file. This is covered by `tests/secrets.test.ts`.
 - `serverCapabilities` in `describe` is this build's own static knowledge, not
   something the server advertised — there is no capability document to query
   (backlog B7). Prefer the server's own errors when they disagree.
-- A strategy needs a `runnerd` running on this machine, and this CLI cannot
-  start one (backlog 2.6). It also cannot keep the device awake: a laptop that
-  sleeps is a strategy that stops watching, without saying so.
+- A strategy needs a `runnerd` running on this machine, and **this install does
+  not contain one**: `@waterx/predict-agent-runner` is private and unpublished,
+  and the install carries `waterx-predict` and `waterx-predict-keystore` only.
+  Until you build and start a Runner yourself, every `strategy` command answers
+  `RUNNER_UNREACHABLE`. This CLI cannot start one either (backlog 2.6), nor keep
+  the device awake: a laptop that sleeps is a strategy that stops watching,
+  without saying so.
 - Supported platforms are macOS and Linux. Windows is not claimed.
 
 ## Development

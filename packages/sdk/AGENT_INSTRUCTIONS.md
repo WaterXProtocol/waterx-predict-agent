@@ -228,6 +228,8 @@ A strategy only progresses while a Runner process is running on this device and 
 
 Never tell a user their strategy will fire while their laptop is asleep. It will not.
 
+The Runner is also a SEPARATE binary that a standard install does not contain, so on a fresh setup every strategy tool answers `RUNNER_UNREACHABLE`. That is not a bug and not a transient outage: nobody has started one. Say so, and point the user at their operator or at building it from the repository, rather than retrying.
+
 ### Every strategy expires, and you never extend one silently
 
 `EXPIRY_IS_MANDATORY`
