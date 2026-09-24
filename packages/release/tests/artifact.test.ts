@@ -87,9 +87,13 @@ describe('the operator artifact SBOMs', () => {
     expect(readdirSync(bundleDir).filter((name) => name.endsWith('.cdx.json')).sort()).toEqual(
       bundles.map((artifact) => artifact.fileName).sort(),
     );
+    // In install order, and the Runner last because it is the optional one
+    // (ADR-0029): an operator installs the first two or nothing works, and the
+    // third only if they want strategies and are on Node 24.
     expect(bundles.map((artifact) => artifact.packageName)).toEqual([
       '@waterx/predict-agent-cli',
       '@waterx/predict-agent-signer-keystore',
+      '@waterx/predict-agent-runner',
     ]);
     for (const artifact of bundles) {
       expect(readFileSync(join(bundleDir, artifact.fileName), 'utf8'), `${artifact.fileName} is stale`).toBe(

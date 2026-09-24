@@ -42,13 +42,22 @@ import { join } from 'node:path';
 
 import { buildBundleSbom } from './artifacts.ts';
 import { tarballName } from './consumer.ts';
-import { BUNDLE_ROOT_PACKAGE, KEYSTORE_ROOT_PACKAGE, readWorkspacePackages, type WorkspacePackage } from './workspace.ts';
+import {
+  BUNDLE_ROOT_PACKAGE,
+  KEYSTORE_ROOT_PACKAGE,
+  RUNNER_ROOT_PACKAGE,
+  readWorkspacePackages,
+  type WorkspacePackage,
+} from './workspace.ts';
 
 /** The decision that authorizes handing the CLI bundle to anyone. */
 export const BUNDLE_ADR_PATH = join('docs', 'adr', '0010-operator-cli-bundle.md');
 
 /** The decision that authorizes handing the keystore signer to anyone. */
 export const KEYSTORE_ADR_PATH = join('docs', 'adr', '0012-operator-keystore-signer.md');
+
+/** The decision that authorizes handing the Runner to anyone. */
+export const RUNNER_ADR_PATH = join('docs', 'adr', '0029-the-runner-is-an-optional-artifact.md');
 
 /**
  * What an operator installs, one tarball each.
@@ -66,6 +75,17 @@ export interface OperatorArtifactSpec {
   readonly adr: string;
   /** Paths under `package/` the tarball must contain, beyond the manifest and SBOM. */
   readonly required: readonly string[];
+  /**
+   * Whether a release may go out without it (ADR-0029).
+   *
+   * The setup sentence installs the CLI and the signer, so neither is optional
+   * and an unaccepted decision about either refuses the release. Nothing stops
+   * without the Runner — `next` reaches READY, orders are previewed, approved
+   * and placed — so an unaccepted decision about IT must hold back that one
+   * tarball and not the release. Otherwise a daemon nobody has reviewed yet
+   * keeps the CLI from shipping.
+   */
+  readonly optional?: true;
 }
 
 export const OPERATOR_ARTIFACTS: readonly OperatorArtifactSpec[] = [
@@ -78,6 +98,12 @@ export const OPERATOR_ARTIFACTS: readonly OperatorArtifactSpec[] = [
     root: KEYSTORE_ROOT_PACKAGE,
     adr: KEYSTORE_ADR_PATH,
     required: ['dist/src/bin/keystore.js'],
+  },
+  {
+    root: RUNNER_ROOT_PACKAGE,
+    adr: RUNNER_ADR_PATH,
+    required: ['dist/src/bin/runnerd.js'],
+    optional: true,
   },
 ];
 
@@ -170,33 +196,66 @@ export function adrStatus(text: string): AdrStatus {
     : 'UNKNOWN';
 }
 
+/** The status of the decision that authorizes one artifact. Missing file reads as UNKNOWN. */
+function statusOf(repoRoot: string, spec: OperatorArtifactSpec): AdrStatus | 'MISSING' {
+  try {
+    return adrStatus(readFileSync(join(repoRoot, spec.adr), 'utf8'));
+  } catch {
+    return 'MISSING';
+  }
+}
+
+const authorized = (repoRoot: string, spec: OperatorArtifactSpec): boolean =>
+  statusOf(repoRoot, spec) === 'Accepted';
+
 /**
- * Whether a release may carry the operator artifacts, read from the decisions
- * themselves.
+ * Whether a release may go out at all, read from the decisions themselves.
  *
  * Read rather than remembered: a workflow input that said "yes" would be a
- * second place the decision lives, and the one nobody reviews. All or nothing,
- * because the setup sentence installs both: a CLI released without a signer is
- * a CLI that stops at its first question.
+ * second place the decision lives, and the one nobody reviews.
+ *
+ * All or nothing across the REQUIRED artifacts, because the setup sentence
+ * installs both: a CLI released without a signer is a CLI that stops at its
+ * first question. An optional one is not in that sentence, so an unaccepted
+ * decision about it is not a reason to withhold the release — it is a reason to
+ * withhold that tarball, which {@link heldBackArtifacts} reports and
+ * {@link releasableArtifacts} leaves out (ADR-0029).
  */
 export function releaseRefusal(repoRoot: string): string | undefined {
   const refusals: string[] = [];
   for (const spec of OPERATOR_ARTIFACTS) {
-    let text: string;
-    try {
-      text = readFileSync(join(repoRoot, spec.adr), 'utf8');
-    } catch {
-      refusals.push(`${spec.adr} does not exist, so nothing authorizes distributing ${spec.root}.`);
-      continue;
-    }
-    const status = adrStatus(text);
-    if (status !== 'Accepted') {
-      refusals.push(`${spec.adr} is ${status}, not Accepted, so ${spec.root} cannot be released.`);
-    }
+    if (spec.optional === true) continue;
+    const status = statusOf(repoRoot, spec);
+    refusals.push(
+      status === 'MISSING'
+        ? `${spec.adr} does not exist, so nothing authorizes distributing ${spec.root}.`
+        : status === 'Accepted'
+          ? ''
+          : `${spec.adr} is ${status}, not Accepted, so ${spec.root} cannot be released.`,
+    );
   }
-  return refusals.length === 0
+  const stated = refusals.filter((line) => line !== '');
+  return stated.length === 0
     ? undefined
-    : `${refusals.join(' ')} ADR-0009 D-28 keeps these private until then; they can be built and checked, and not released.`;
+    : `${stated.join(' ')} ADR-0009 D-28 keeps these private until then; they can be built and checked, and not released.`;
+}
+
+/** The artifacts a release may carry right now. */
+export function releasableArtifacts(repoRoot: string): readonly OperatorArtifactSpec[] {
+  return OPERATOR_ARTIFACTS.filter((spec) => spec.optional !== true || authorized(repoRoot, spec));
+}
+
+/**
+ * The optional artifacts a release is leaving out, and why.
+ *
+ * Reported rather than dropped in silence: an operator artifact that quietly
+ * stops being attached is a capability that quietly stops being installable,
+ * and the release output is where anyone would notice.
+ */
+export function heldBackArtifacts(repoRoot: string): readonly string[] {
+  return OPERATOR_ARTIFACTS.filter((spec) => spec.optional === true && !authorized(repoRoot, spec)).map(
+    (spec) => `${spec.root} is NOT in this release: ${spec.adr} is ${statusOf(repoRoot, spec)}, not Accepted.`,
+  );
 }
 
 /** Paths an operator artifact must never carry. Source and tests are not what an operator runs. */
@@ -365,8 +424,15 @@ function buildArtifact(
  * tarball is checked against its promised shape before it is reported, so an
  * artifact that comes back from this function has its binary in it.
  */
-export function buildBundle(repoRoot: string, outDir: string): BuiltBundle {
+export function buildBundle(
+  repoRoot: string,
+  outDir: string,
+  specs: readonly OperatorArtifactSpec[] = OPERATOR_ARTIFACTS,
+): BuiltBundle {
   const packages = readWorkspacePackages(repoRoot);
+  // Every artifact, not only the ones being built: a version that has drifted is
+  // a fact about the workspace, and a release that happened to leave the drifted
+  // one out would not report it.
   const versions = new Set(
     OPERATOR_ARTIFACTS.map((spec) => packages.find((pkg) => pkg.name === spec.root)?.version),
   );
@@ -377,7 +443,7 @@ export function buildBundle(repoRoot: string, outDir: string): BuiltBundle {
   mkdirSync(outDir, { recursive: true });
   const scratch = mkdtempSync(join(outDir, '.bundle-'));
   try {
-    const artifacts = OPERATOR_ARTIFACTS.map((spec) => buildArtifact(repoRoot, spec, packages, outDir, scratch));
+    const artifacts = specs.map((spec) => buildArtifact(repoRoot, spec, packages, outDir, scratch));
     const checksumsPath = join(outDir, 'SHA256SUMS');
     writeFileSync(
       checksumsPath,
@@ -393,7 +459,23 @@ export function buildBundle(repoRoot: string, outDir: string): BuiltBundle {
 /**
  * The one-sentence setup, spelled for the download URLs of the CLI and the
  * signer. One `npm install`, so both binaries land in one `.bin`.
+ *
+ * The Runner is deliberately not in it (ADR-0029). It needs Node 24 where these
+ * need Node 20, and nothing in this sentence stops without it, so putting it
+ * here would raise the floor of the minimum setup to buy a capability the
+ * minimum setup does not use.
  */
 export function installSentence(urls: readonly string[]): string {
   return `Run \`npm install ${urls.join(' ')}\`, then \`npx --no waterx-predict next --json\`, and do what it says.`;
+}
+
+/**
+ * The second sentence, for an operator who wants durable strategies.
+ *
+ * Separate because its prerequisite is: `runnerd` is the only artifact here
+ * that will refuse to install on Node 20 or 22, and an operator who reads one
+ * sentence and gets an `EBADENGINE` has been told the wrong thing.
+ */
+export function runnerSentence(url: string): string {
+  return `For durable strategies, on Node 24 or newer: \`npm install ${url}\`, then run \`npx --no waterx-predict-runnerd\` and leave it running.`;
 }
