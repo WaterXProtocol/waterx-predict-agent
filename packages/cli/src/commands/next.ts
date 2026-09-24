@@ -224,6 +224,14 @@ export type WritePosture =
   | 'NEEDS_APPROVAL'
   /** Delegated-auto, and the scope is still open. */
   | 'WITHIN_SCOPE'
+  /**
+   * Delegated-auto, and the scope does not name the account this runtime is
+   * authorized on. Reported BEFORE expiry, because the two are separate gates
+   * and an operator who is shown only the date fixes only the date: renewing
+   * `notAfter` then reads as success here and is refused by
+   * `policy.ts`'s per-leg account check at the moment of the first real order.
+   */
+  | 'SCOPE_ACCOUNT_MISMATCH'
   /** Delegated-auto, and its `notAfter` has passed. */
   | 'SCOPE_EXPIRED';
 
@@ -275,6 +283,14 @@ export interface NextFacts {
   /** Present when the keystore is, or could be, this runtime's signer. */
   readonly keystore?: KeystoreProbe;
   readonly writes: WritePosture;
+  /**
+   * The accounts the delegated-auto scope names, so a mismatch can say what the
+   * scope DOES allow rather than only that this account is not it. Absent under
+   * the other modes, which have no scope.
+   */
+  readonly scopeAccounts?: readonly string[];
+  /** When the scope's window closes, for the same reason. */
+  readonly scopeNotAfter?: string;
   /** Read-only only because nothing was configured on mainnet (ADR-0017). */
   readonly readOnlyByDefault?: boolean;
   /** Direct mode (ADR-0013): the grant is the on-chain delegation alone. */
@@ -790,10 +806,7 @@ function decide(facts: NextFacts): NextAnswer {
       suggestions,
     );
   }
-  const posture =
-    facts.writes === 'SCOPE_EXPIRED'
-      ? ' The delegated-auto window has closed, so this runtime authorizes no order until the operator renews it.'
-      : '';
+  const posture = scopePosture(facts, accountId);
   return answer(
     'READY',
     `Authorized on ${accountId} with nothing in flight.${posture} Ask the user what to trade.`,
@@ -947,13 +960,53 @@ function setupSteps(
 export const EXECUTION_SCAN = 50;
 const POSITION_SCAN = 50;
 
-function writePosture(context: CommandContext): WritePosture {
+/**
+ * What this runtime would do with a write, as of now.
+ *
+ * `accountId` is optional because this is also answered before an account has
+ * been resolved — and when it IS known it changes the answer, because a
+ * delegated-auto scope has two gates that fail independently: a validity
+ * window checked here, and an account allowlist checked per leg at the moment
+ * of the write. Reporting only the window is what sends an operator to renew a
+ * date that was never the whole problem, so the allowlist is checked first.
+ */
+function writePosture(context: CommandContext, accountId?: string): WritePosture {
   const { mode, scope } = context.config.policy;
   if (mode === 'read-only') return 'REFUSED';
   if (mode === 'interactive') return 'NEEDS_APPROVAL';
+  if (scope !== undefined && accountId !== undefined && !scope.accounts.includes(accountId)) {
+    return 'SCOPE_ACCOUNT_MISMATCH';
+  }
   const notAfter = scope === undefined ? Number.NaN : Date.parse(scope.notAfter);
   return Number.isNaN(notAfter) || context.now().getTime() > notAfter ? 'SCOPE_EXPIRED' : 'WITHIN_SCOPE';
 }
+
+/**
+ * What a delegated-auto scope would do with a write on THIS account, said in
+ * full.
+ *
+ * Both gates are named when both are shut. Reporting one at a time is what
+ * turns a scope that names another account into an operator renewing a date:
+ * the renewal succeeds, this sentence goes quiet, and the refusal arrives from
+ * `policy.ts` on the first real order instead.
+ */
+const scopePosture = (facts: NextFacts, accountId: string): string => {
+  if (facts.writes === 'SCOPE_ACCOUNT_MISMATCH') {
+    const allows = facts.scopeAccounts ?? [];
+    // One clock for the whole answer, as everywhere else here.
+    const now = (facts.now ?? new Date()).getTime();
+    const closed = facts.scopeNotAfter !== undefined && Date.parse(facts.scopeNotAfter) < now;
+    return ` The delegated-auto scope does NOT name this account: it allows ${
+      allows.length === 0 ? 'no account at all' : allows.join(', ')
+    }, so every order here is refused however the window is set.${
+      closed ? ` Its window closed at ${facts.scopeNotAfter} as well — renewing that alone changes nothing.` : ''
+    } Point \`policy.scope.accounts\` at ${accountId}, or have the owner grant the account the scope already names.`;
+  }
+  if (facts.writes === 'SCOPE_EXPIRED') {
+    return ' The delegated-auto window has closed, so this runtime authorizes no order until the operator renews it.';
+  }
+  return '';
+};
 
 const codeOf = (error: unknown): string => toEnvelopeError(error, 0).code;
 
@@ -993,8 +1046,10 @@ async function gatherFacts(context: CommandContext): Promise<NextFacts> {
   const { config } = context;
   const named = typeof context.input.accountId === 'string' ? context.input.accountId : undefined;
   const keystore = context.probeKeystore();
+  const scope = config.policy.scope;
   const base = {
     writes: writePosture(context),
+    ...(scope === undefined ? {} : { scopeAccounts: scope.accounts, scopeNotAfter: scope.notAfter }),
     // One clock for the whole answer, so the age of an unsettled order is not
     // measured against a different instant than the rest of it.
     now: context.now(),
@@ -1072,10 +1127,14 @@ async function gatherFacts(context: CommandContext): Promise<NextFacts> {
   }
 
   const accountId = onboarding.account.accountId;
+  // The account is known from here on, so the posture can see the second gate.
+  // Everything above answers without one, and says so by leaving it unchecked
+  // rather than by assuming it holds.
+  const settledOn = { ...settled, writes: writePosture(context, accountId) };
   const client = await context.client();
   if (isDirectClient(client)) {
     const adoption = adopt(context, onboarding.account.accountId, onboarding.account.ownerAddress, named);
-    if (adoption.status === 'CONFLICT') return { ...settled, adoption };
+    if (adoption.status === 'CONFLICT') return { ...settledOn, adoption };
     // Direct mode: what is unsettled is what this runtime's own intent journal
     // sent and has not seen settle. There is no mandate and no blocker list.
     const [unsettled, positions, runner] = await Promise.allSettled([
@@ -1087,10 +1146,10 @@ async function gatherFacts(context: CommandContext): Promise<NextFacts> {
       runner.status === 'fulfilled' ? runner.value : { status: 'UNREADABLE', code: codeOf(runner.reason) };
     if (unsettled.status === 'rejected' || positions.status === 'rejected') {
       const reason = unsettled.status === 'rejected' ? unsettled.reason : (positions as PromiseRejectedResult).reason;
-      return { ...settled, account: { failed: codeOf(reason) }, runner: runnerFact };
+      return { ...settledOn, account: { failed: codeOf(reason) }, runner: runnerFact };
     }
     return {
-      ...settled,
+      ...settledOn,
       account: { limits: null, unsettled: unsettled.value, positions: positions.value.positions },
       runner: runnerFact,
       adoption,
@@ -1110,13 +1169,13 @@ async function gatherFacts(context: CommandContext): Promise<NextFacts> {
   if (limits.status === 'rejected' || executions.status === 'rejected' || positions.status === 'rejected') {
     const reason = [limits, executions, positions].find((result) => result.status === 'rejected');
     return {
-      ...settled,
+      ...settledOn,
       account: { failed: reason?.status === 'rejected' ? codeOf(reason.reason) : 'UNKNOWN' },
       runner: runnerFact,
     };
   }
   return {
-    ...settled,
+    ...settledOn,
     account: {
       limits: limits.value,
       unsettled: executions.value.executions.filter(

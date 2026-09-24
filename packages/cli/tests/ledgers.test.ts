@@ -90,3 +90,32 @@ describe('the file ledger', () => {
     expect(Date.now() - started).toBeGreaterThanOrEqual(4_900);
   }, 15_000);
 });
+
+describe('a budget belongs to the scope it was written under', () => {
+  it('reports what an edited scope left behind, rather than starting silently at zero', () => {
+    // The surprise this exists for: an operator narrowing a scope believes they
+    // tightened a ceiling, and has in fact reset one. The reset is correct — a
+    // ceiling inherited across a rewritten mandate would be enforced against
+    // something nobody measured — so the fix is that it is visible.
+    const path = ledgerPath();
+    const ledgers = createFileLedgers(path);
+    ledgers.spend.reserve('scope1_old', '30.000000', '50.000000', NOW);
+    expect(ledgers.spend.total('scope1_old')).toBe('30');
+
+    const edited = createFileLedgers(path);
+    expect(edited.spend.total('scope1_new')).toBe('0');
+    expect(edited.spend.elsewhere('scope1_new')).toEqual({ scopes: 1, total: '30' });
+    // And nothing is reported for the scope that holds the spend itself.
+    expect(edited.spend.elsewhere('scope1_old')).toEqual({ scopes: 0, total: '0' });
+  });
+
+  it('does not count a reservation that was released', () => {
+    const path = ledgerPath();
+    const ledgers = createFileLedgers(path);
+    const reserved = ledgers.spend.reserve('scope1_old', '30.000000', '50.000000', NOW);
+    ledgers.spend.release(reserved.id);
+    // Nothing was signed under the old scope, so there is nothing to report
+    // having left behind.
+    expect(createFileLedgers(path).spend.elsewhere('scope1_new')).toEqual({ scopes: 0, total: '0' });
+  });
+});
