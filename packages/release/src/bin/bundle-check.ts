@@ -298,8 +298,12 @@ async function main(argv: readonly string[]): Promise<number> {
   const project = join(staging, 'consumer');
   // Short on purpose: the agent's socket path has a ~100-byte OS limit.
   const keystoreDir = mkdtempSync('/tmp/wxk-');
+  // Short for the same reason: a Unix socket path has a ~100-byte OS limit, and
+  // the Runner asserts its runtime directory rather than repairing it.
+  const runnerDir = mkdtempSync('/tmp/wxr-');
   const walk = new Walk();
   let agent: ChildProcess | undefined;
+  let runner: ChildProcess | undefined;
   let stub: Stub | undefined;
 
   try {
@@ -464,6 +468,40 @@ async function main(argv: readonly string[]): Promise<number> {
       walk.expect(verify.status === 0, `the login signature did not verify: ${(verify.stderr ?? '').split('\n')[0] ?? ''}`);
     }
 
+    // 9. The third artifact, which is the only one that is a daemon: start it
+    //    from the same install and have the CLI reach it over its socket. Two
+    //    tarballs that each work alone and cannot talk to each other would pass
+    //    every other check here (ADR-0029).
+    runner = spawn(join(project, 'node_modules', '.bin', 'waterx-predict-runnerd'), [], {
+      cwd: project,
+      env: {
+        PATH: process.env['PATH'] ?? '',
+        npm_config_update_notifier: 'false',
+        WATERX_RUNNER_DIR: runnerDir,
+        WATERX_RUNNER_STORE: join(runnerDir, 'jobs.sqlite'),
+      },
+      stdio: ['ignore', 'ignore', 'ignore'],
+    });
+    walk.expect(await waitFor(join(runnerDir, 'runner.sock'), 30_000), 'the Runner never opened its socket');
+
+    const strategies = await run(project, { ...direct, WATERX_RUNNER_DIR: runnerDir }, [
+      'waterx-predict',
+      'strategy',
+      'list',
+      '--json',
+    ]);
+    const listed = JSON.parse(strategies.stdout.trim() || '{}') as {
+      ok?: boolean;
+      data?: { runner?: { driving?: boolean } };
+    };
+    walk.expect(listed.ok === true, `strategy list against the installed Runner: ${strategies.stderr.slice(0, 200)}`);
+    // Configured with nothing, so it answers and drives nothing — which is the
+    // honest answer and the one an operator must be able to tell from silence.
+    walk.expect(
+      listed.data?.runner?.driving === false,
+      `the Runner reported driving ${String(listed.data?.runner?.driving)} with no driver configured`,
+    );
+
     for (const artifact of bundle.artifacts) {
       process.stderr.write(`  ${artifact.name}@${artifact.version}  sha256 ${artifact.sha256}\n`);
     }
@@ -473,17 +511,19 @@ async function main(argv: readonly string[]): Promise<number> {
       return 1;
     }
     process.stderr.write(
-      '\nInstalled with npm alone and scripts off; followed `next` from SETUP_INCOMPLETE through keystore init and agent to AWAITING_OWNER and READY against a local stub — with the Agent API login signed by the keystore and verified, and again in direct mode with no login and no Agent API request.\n',
+      '\nInstalled with npm alone and scripts off; followed `next` from SETUP_INCOMPLETE through keystore init and agent to AWAITING_OWNER and READY against a local stub — with the Agent API login signed by the keystore and verified, and again in direct mode with no login and no Agent API request; then started the installed `runnerd`, reached it from the installed CLI over its socket, and had it report that it is driving nothing.\n',
     );
     return 0;
   } finally {
+    runner?.kill('SIGTERM');
     agent?.kill('SIGTERM');
     stub?.server.close();
     if (keep) {
-      process.stderr.write(`kept: ${staging} and ${keystoreDir}\n`);
+      process.stderr.write(`kept: ${staging}, ${keystoreDir} and ${runnerDir}\n`);
     } else {
       rmSync(staging, { recursive: true, force: true });
       rmSync(keystoreDir, { recursive: true, force: true });
+      rmSync(runnerDir, { recursive: true, force: true });
     }
   }
 }

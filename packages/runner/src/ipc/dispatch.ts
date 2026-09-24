@@ -33,6 +33,7 @@ import type { RecoveryReport } from '../recovery.ts';
 import type { JobState } from '../state-machine.ts';
 import type { JobStore } from '../store.ts';
 import { isStrategyError } from '../strategy/errors.ts';
+import { mandateDigest } from '../strategy/mandate.ts';
 import type { StrategyRequest } from '../strategy/intent.ts';
 import { cancelStrategy, type StrategyService } from '../strategy/service.ts';
 import type { LeaseKeeper } from '../supervisor.ts';
@@ -173,6 +174,16 @@ const status = async (context: RunnerCommandContext): Promise<unknown> => {
     // see without having to call `runner.drain` to find out.
     draining: await context.drain.state(),
     prices: priceHealth(context),
+    // What this machine's mandate may buy, and what it has bought under it. A
+    // cumulative ceiling an operator cannot read the balance of is one they find
+    // out about by having an order refused.
+    mandate: {
+      mode: context.admissionPolicy.mode,
+      source: context.admissionPolicy.source,
+      maxOrderNotional: context.admissionPolicy.maxOrderNotional ?? null,
+      maxRunNotional: context.admissionPolicy.maxRunNotional ?? null,
+      committed: await context.store.totalMandateSpend(mandateDigest(context.admissionPolicy)),
+    },
     jobs: { total: all.length, byState },
     leasedHere: context.leases.held(),
     recovery:
@@ -330,7 +341,17 @@ const createStrategy = async (
   const strategy = await context.strategies.create(request);
   return {
     strategy,
-    policy: { mode: context.admissionPolicy.mode, source: context.admissionPolicy.source },
+    policy: {
+      mode: context.admissionPolicy.mode,
+      source: context.admissionPolicy.source,
+      // The ceilings a strategy is actually bounded by, reported when one is
+      // armed rather than when an order is refused against them. They are this
+      // host's, and they are NOT the CLI's execution policy: that one bounds
+      // what the CLI itself signs and can neither see nor reach this budget.
+      maxOrderNotional: context.admissionPolicy.maxOrderNotional ?? null,
+      maxRunNotional: context.admissionPolicy.maxRunNotional ?? null,
+      committed: await context.store.totalMandateSpend(mandateDigest(context.admissionPolicy)),
+    },
     driving: context.driving,
     driverGaps: [...context.driverGaps],
   };

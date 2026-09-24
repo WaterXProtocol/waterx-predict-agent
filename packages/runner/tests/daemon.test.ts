@@ -666,13 +666,28 @@ describe('strategies over the socket', () => {
 
     const reply = (await client.request('strategy.create', createBody())) as {
       strategy: { jobId: string; state: string; expiry: { expiresAt: string } };
-      policy: { mode: string; source: string };
+      policy: {
+        mode: string;
+        source: string;
+        maxOrderNotional: string | null;
+        maxRunNotional: string | null;
+        committed: string;
+      };
       driving: boolean;
       driverGaps: string[];
     };
 
     expect(reply.strategy.state).toBe('DRAFT');
-    expect(reply.policy).toEqual({ mode: 'delegated-auto', source: DELEGATED.source });
+    // The ceilings come back with it. A strategy is bounded by THIS host's
+    // mandate and by nothing the client holds, so the reply is where a caller
+    // finds out what binds it — including, as here, that nothing caps the total.
+    expect(reply.policy).toEqual({
+      mode: 'delegated-auto',
+      source: DELEGATED.source,
+      maxOrderNotional: DELEGATED.maxOrderNotional ?? null,
+      maxRunNotional: null,
+      committed: '0.000000',
+    });
     // A durable job now exists that nothing in this process will ever advance, and
     // the reply says so in the same breath as the job id.
     expect(reply.driving).toBe(false);

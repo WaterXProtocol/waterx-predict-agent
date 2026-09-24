@@ -75,6 +75,46 @@ const round = {
 };
 
 
+/**
+ * A bet the history keeps after its order filled.
+ *
+ * This row outlives the position it names: the registry drops its
+ * order→position index when the position is sold or claimed, and after that
+ * this is the only place the two are still tied together.
+ */
+function filledBet(overrides: Record<string, unknown> = {}) {
+  return {
+    betId: `${ONCHAIN}:9`,
+    orderId: '77',
+    marketId: 'cat-1',
+    roundId: ROUND,
+    positionId: '9',
+    marketSlug: 'us-iran',
+    cardSnapshot: { kind: 'politics' },
+    side: 'up',
+    lockedOddsCents: 43,
+    avgFillPriceCents: 43.1,
+    stake: { amountUsd: 5, token: 'USD' },
+    placedAt: NOW,
+    settledAt: null,
+    outcome: 'pending',
+    submissionState: 'confirmed',
+    payoutUsd: null,
+    shares: 11.6,
+    roundEndsAt: null,
+    ...overrides,
+  };
+}
+
+/** The server's own paging: newest first, an opaque cursor, a null at the end. */
+function paged(rows: any[], call: Call, key: 'activity' | 'bets') {
+  const limit = Number(call.query['limit'] ?? '100');
+  const from = call.query['cursor'] === undefined ? 0 : Number(call.query['cursor']);
+  const page = rows.slice(from, from + limit);
+  const next = from + limit < rows.length ? String(from + limit) : null;
+  return { [key]: page, nextCursor: next };
+}
+
 function fakeWaterx(overrides: Record<string, Handler> = {}) {
   const calls: Call[] = [];
   const activity: any[] = [];
@@ -91,8 +131,10 @@ function fakeWaterx(overrides: Record<string, Handler> = {}) {
     'GET predict/quotes': () => ({ data: { [ROUND]: { up: 43, down: 58 } } }),
     'GET predict/quotes/bid': () => ({ data: { [ROUND]: { up: 41, down: 56 } } }),
     'GET predict/quotes/no': () => ({ data: {} }),
-    'GET predict/bets/me/activity': () => ({ data: { activity, nextCursor: null } }),
-    'GET predict/bets/me': () => ({ data: { bets, nextCursor: null } }),
+    // Both histories page, because the real ones do: the client must not assume
+    // that one read of the newest hundred rows is the whole account.
+    'GET predict/bets/me/activity': (call) => ({ data: paged(activity, call, 'activity') }),
+    'GET predict/bets/me': (call) => ({ data: paged(bets, call, 'bets') }),
     'POST sponsor/execute': (call) => ({ data: { digest: call.body.digest } }),
     ...overrides,
   };
@@ -317,14 +359,23 @@ describe('placing a buy', () => {
     expect(await store.pending()).toHaveLength(0);
   });
 
-  it('follows the order to its fill through the activity feed', async () => {
+  it('follows the order to its fill, which the feed alone cannot name', async () => {
+    // The shape here is the server's, not a convenience: a `bought` row is
+    // position-backed, so its `orderIds` is EMPTY and its digest is the
+    // keeper's. Nothing on it points back at this submission, so the feed can
+    // show the fill and still not be able to say it is ours. The bet history
+    // is what joins the two, and this client has no chain order reads at all.
     const { client, waterx } = setup();
     const id = await marketId(client);
     const first = await client.executeMarketOrder({ ...BUY, marketId: id });
     const digest = decodeExecutionId(first.executionId).digest;
     waterx.activity.push({ kind: 'bought_pending', txDigest: digest, orderIds: ['77'], positionIds: [], timestampMs: NOW, roundId: ROUND, side: 'up', shares: null, amountUsd: 5, oddsCents: 43 });
     expect((await client.readExecution(first.executionId)).status).toBe('PENDING_FILL');
-    waterx.activity.unshift({ kind: 'bought', txDigest: 'FillDigest', orderIds: ['77'], positionIds: ['9'], timestampMs: NOW + 1000, roundId: ROUND, side: 'up', shares: 11.6, amountUsd: 5, oddsCents: 43.1 });
+
+    waterx.activity.unshift({ kind: 'bought', txDigest: 'FillDigest', orderIds: [], positionIds: ['9'], timestampMs: NOW + 1000, roundId: ROUND, side: 'up', shares: 11.6, amountUsd: 5, oddsCents: 43.1 });
+    expect((await client.readExecution(first.executionId)).status).toBe('PENDING_FILL');
+
+    waterx.bets.push(filledBet({ orderId: '77', positionId: '9' }));
     const settled = await client.readExecution(first.executionId);
     expect(settled).toMatchObject({
       status: 'FILLED',
@@ -332,6 +383,9 @@ describe('placing a buy', () => {
       fee: { available: false, reason: 'EMBEDDED_IN_PRICE' },
       fill: { filledAmount: '5', filledShares: '11.6', avgFillPrice: '0.431', txDigest: 'FillDigest' },
     });
+    // Asked of the whole history, never of `active`: the case this read exists
+    // for is a position that is no longer active.
+    expect(waterx.calls.some((call) => call.path === 'predict/bets/me' && call.query['filter'] === 'all')).toBe(true);
   });
 
   it('reports a cancelled order as cancelled, and a failed transaction as rejected', async () => {
@@ -844,6 +898,91 @@ describe('settlement read from the registry', () => {
     expect(await client.readExecution(placed.executionId)).toMatchObject({ status: 'CANCELLED', terminal: true, fill: undefined });
   });
 
+  it('settles a filled buy whose position has since been sold', async () => {
+    // The ending this whole path exists for. Closing a position drops the
+    // registry's order→position index with it, so the chain that could once
+    // prove the fill now says only GONE — the same answer it gives a cancel.
+    // Left there, the buy reads as pending for good and a runtime that will
+    // not trade past something unsettled never trades again.
+    const { client, chain, waterx } = withRegistry();
+    const id = await marketId(client);
+    const placed = await client.executeMarketOrder({ ...BUY, marketId: id });
+    const digest = decodeExecutionId(placed.executionId).digest;
+    chain.order = { state: 'GONE' };
+    waterx.activity.push(
+      { kind: 'bought', txDigest: 'KeeperDigest', orderIds: [], positionIds: ['9'], timestampMs: NOW + 1_000, roundId: ROUND, side: 'up', shares: 11.6, amountUsd: 5, oddsCents: 43.1 },
+      { kind: 'bought_pending', txDigest: digest, orderIds: ['1857'], positionIds: [], timestampMs: NOW, roundId: ROUND, side: 'up', shares: null, amountUsd: 5, oddsCents: 43 },
+    );
+    expect((await client.readExecution(placed.executionId)).status).toBe('PENDING_FILL');
+
+    waterx.bets.push(filledBet({ orderId: '1857', positionId: '9', outcome: 'pending' }));
+    expect(await client.readExecution(placed.executionId)).toMatchObject({
+      status: 'FILLED',
+      terminal: true,
+      fill: { filledAmount: '5', filledShares: '11.6', txDigest: 'KeeperDigest' },
+    });
+  });
+
+  it('settles a filled buy even when the fill itself is past the feed, without inventing one', async () => {
+    // Status and detail are separate facts. The history proves the buy filled;
+    // the keeper's row is where the amounts and its digest come from, and when
+    // that row is no longer reachable the fill is reported absent rather than
+    // guessed from the bet, which carries no fill time to guess it with.
+    const { client, chain, waterx } = withRegistry();
+    const id = await marketId(client);
+    const placed = await client.executeMarketOrder({ ...BUY, marketId: id });
+    chain.order = { state: 'GONE' };
+    waterx.bets.push(filledBet({ orderId: '1857', positionId: '9' }));
+    expect(await client.readExecution(placed.executionId)).toMatchObject({
+      status: 'FILLED',
+      terminal: true,
+      fill: undefined,
+      fee: { available: false, reason: 'NO_FILL_OBSERVED' },
+    });
+  });
+
+  it('reads an order the history calls unfilled as cancelled, and a pending one as nothing', async () => {
+    const { client, chain, waterx } = withRegistry();
+    const id = await marketId(client);
+    const placed = await client.executeMarketOrder({ ...BUY, marketId: id });
+    chain.order = { state: 'GONE' };
+    // No position, and the history has not ended it: that is not a verdict.
+    const pending = filledBet({ orderId: '1857', positionId: '', outcome: 'pending', shares: 0 });
+    waterx.bets.push(pending);
+    expect((await client.readExecution(placed.executionId)).terminal).toBe(false);
+
+    pending.outcome = 'unfilled';
+    expect(await client.readExecution(placed.executionId)).toMatchObject({ status: 'CANCELLED', terminal: true });
+  });
+
+  it('walks the history past the first page, but never past the order it is looking for', async () => {
+    const { client, chain, waterx } = withRegistry();
+    const id = await marketId(client);
+    const placed = await client.executeMarketOrder({ ...BUY, marketId: id });
+    const digest = decodeExecutionId(placed.executionId).digest;
+    chain.order = { state: 'GONE' };
+    waterx.activity.push({ kind: 'bought_pending', txDigest: digest, orderIds: ['1857'], positionIds: [], timestampMs: NOW, roundId: ROUND, side: 'up', shares: null, amountUsd: 5, oddsCents: 43 });
+    // A hundred newer bets, then ours: one page is not the account.
+    for (let i = 0; i < 100; i += 1) {
+      waterx.bets.push(filledBet({ betId: `filler-${String(i)}`, orderId: `90${String(i)}`, positionId: `90${String(i)}`, placedAt: NOW + 1 }));
+    }
+    waterx.bets.push(filledBet({ orderId: '1857', positionId: '9' }));
+    expect((await client.readExecution(placed.executionId)).status).toBe('FILLED');
+
+    // Same bet, but now everything ahead of it predates the order. A page whose
+    // oldest row is older than the order cannot be hiding it, so the walk stops
+    // there rather than reading an account's whole history back.
+    const { client: bounded, chain: boundedChain, waterx: older } = withRegistry();
+    const second = (await bounded.executeMarketOrder({ ...BUY, marketId: await marketId(bounded) })).executionId;
+    boundedChain.order = { state: 'GONE' };
+    older.activity.push({ kind: 'bought_pending', txDigest: decodeExecutionId(second).digest, orderIds: ['1857'], positionIds: [], timestampMs: NOW, roundId: ROUND, side: 'up', shares: null, amountUsd: 5, oddsCents: 43 });
+    for (let i = 0; i < 100; i += 1) {
+      older.bets.push(filledBet({ betId: `old-${String(i)}`, orderId: `80${String(i)}`, positionId: `80${String(i)}`, placedAt: NOW - 10_000 }));
+    }
+    older.bets.push(filledBet({ orderId: '1857', positionId: '9' }));
+    expect((await bounded.readExecution(second)).terminal).toBe(false);
+  });
+
   it('prefers the feed’s fill, which names the keeper’s transaction', async () => {
     const { client, chain, waterx } = withRegistry();
     const id = await marketId(client);
@@ -851,8 +990,8 @@ describe('settlement read from the registry', () => {
     chain.order = { state: 'FILLED', positionId: '9' };
     const digest = decodeExecutionId(placed.executionId).digest;
     waterx.activity.push(
-      { kind: 'bought', txDigest: 'KeeperDigest', orderIds: ['77'], positionIds: ['9'], timestampMs: NOW, roundId: ROUND, side: 'up', shares: 11.6, amountUsd: 5, oddsCents: 43.1 },
-      { kind: 'bought_pending', txDigest: digest, orderIds: ['77'], positionIds: [], timestampMs: NOW, roundId: ROUND, side: 'up', shares: null, amountUsd: 5, oddsCents: 43 },
+      { kind: 'bought', txDigest: 'KeeperDigest', orderIds: [], positionIds: ['9'], timestampMs: NOW, roundId: ROUND, side: 'up', shares: 11.6, amountUsd: 5, oddsCents: 43.1 },
+      { kind: 'bought_pending', txDigest: digest, orderIds: ['1857'], positionIds: [], timestampMs: NOW, roundId: ROUND, side: 'up', shares: null, amountUsd: 5, oddsCents: 43 },
     );
     expect((await client.readExecution(placed.executionId)).fill?.txDigest).toBe('KeeperDigest');
   });

@@ -121,13 +121,19 @@ function reachableDefs(schema: JsonSchema): Record<string, JsonSchema> {
 const titleFor = (spec: AgentCommandSpec): string => spec.summary.replace(/\.$/u, '');
 
 /**
- * The description a model reads. The contract's own prose, plus the two facts
- * that are structural rather than descriptive: that a write is gated, and how
- * the intent is keyed. Both are things a model that skips them gets wrong in a
- * way that costs money.
+ * The description a model reads. The contract's own prose, plus the facts that
+ * are structural rather than descriptive: that a write is gated, that a command
+ * needs a process nobody has installed, and how the intent is keyed. Each is
+ * something a model that skips it gets wrong in a way that costs money — or, in
+ * the Runner's case, something it will read as an outage and retry for ever.
  */
 function descriptionFor(spec: AgentCommandSpec): string {
   const parts = [spec.summary, spec.description];
+  if (spec.implementation.kind === 'runner') {
+    parts.push(
+      'This needs a Runner process on the user’s own machine, and a standard install does NOT contain one — it is a separate binary an operator installs and starts themselves. So on a fresh setup this tool answers RUNNER_UNREACHABLE, and that is a missing process rather than an outage: do not retry it, and do not describe it as a temporary failure. There is no managed runner and nothing server-side takes over.',
+    );
+  }
   if (spec.classification === 'write') {
     parts.push(
       'This is a WRITE. It is refused outright under a read-only policy, and under the default interactive policy it requires an operator approval this adapter cannot supply — see the host-neutral instructions before offering it to a user.',

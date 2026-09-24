@@ -111,6 +111,20 @@ describe('the tool registry', () => {
     expect(execute?.description).toContain('approval');
     expect(getTool(toolNameFor('market.list'))?.description).not.toContain('WRITE');
   });
+
+  it('warns that a Runner tool needs a process no install provides', () => {
+    // These five are advertised to every host that lists tools, and on a
+    // standard install every one of them fails: the Runner is a separate binary
+    // that is not published and not installed. A model told only "unreachable"
+    // reads an outage and retries; it has to be told there is nothing to reach.
+    const runnerTools = AGENT_TOOLS.filter((tool) => tool.annotations.implementation.kind === 'runner');
+    expect(runnerTools.length).toBeGreaterThan(0);
+    for (const tool of runnerTools) {
+      expect(tool.description, tool.name).toContain('does NOT contain one');
+      expect(tool.description, tool.name).toContain('do not retry');
+    }
+    expect(getTool(toolNameFor('market.list'))?.description).not.toContain('RUNNER_UNREACHABLE');
+  });
 });
 
 describe('the MCP hints', () => {

@@ -14,6 +14,7 @@
  * - **Every mutating job method takes a `JobLease`.** Writing without a claim is
  *   not a convenience, it is the duplicate-Runner failure, so it has no API.
  */
+import type { DecimalString } from '@waterx/predict-agent-sdk';
 import type {
   JobLeg,
   JobLegIntent,
@@ -122,6 +123,36 @@ export interface CompleteSideEffectInput {
   readonly leg?: LegPatch;
 }
 
+/**
+ * A leg's claim on a mandate's cumulative budget.
+ *
+ * `amount` is the money the order COMMITS, which is why only a BUY brings one:
+ * a SELL returns money rather than spending it, and bounding it would stop a
+ * strategy closing a position it is already exposed to.
+ */
+export interface CommitMandateSpendInput {
+  readonly lease: JobLease;
+  readonly legIndex: number;
+  /** A digest of the mandate, so a rewritten one does not inherit its total. */
+  readonly scope: string;
+  readonly amount: DecimalString;
+  /** Absent means the mandate names no cumulative ceiling, and nothing refuses. */
+  readonly ceiling?: DecimalString;
+  readonly at: string;
+}
+
+/**
+ * Either the leg is inside the mandate's cumulative ceiling and its claim is now
+ * on disk, or it is not and nothing was written.
+ *
+ * `total` is the scope's committed total INCLUDING this leg when admitted, and
+ * excluding it when refused — in both cases the number the next decision is made
+ * against.
+ */
+export type MandateSpend =
+  | { readonly admitted: true; readonly total: DecimalString }
+  | { readonly admitted: false; readonly total: DecimalString; readonly ceiling: DecimalString };
+
 export interface JobFilter {
   readonly states?: readonly JobState[];
   readonly accountId?: string;
@@ -170,6 +201,17 @@ export interface JobStore {
   listTransitions(jobId: string): Promise<readonly JobTransitionRecord[]>;
 
   reserveLeg(input: ReserveLegInput): Promise<JobLeg>;
+  /**
+   * Commit a leg's spend against its mandate's cumulative ceiling, or refuse it.
+   *
+   * One transaction, and that is the whole point: a ceiling read in one call and
+   * written in the next is a ceiling two passes can both find room under. The
+   * commitment is idempotent per (job, leg), so replaying a crashed pass under
+   * the same persisted key commits the same money once rather than twice.
+   */
+  commitMandateSpend(input: CommitMandateSpendInput): Promise<MandateSpend>;
+  /** What a mandate has committed so far. For `runner status`, not for deciding. */
+  totalMandateSpend(scope: string): Promise<DecimalString>;
   listLegs(jobId: string): Promise<readonly JobLeg[]>;
   updateLeg(input: UpdateLegInput): Promise<JobLeg>;
 

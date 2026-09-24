@@ -134,4 +134,35 @@ describe('capability negotiation', () => {
       expect(capability.command, capability.id).toBeTypeOf('string');
     }
   });
+
+  it('says of every strategy command that the process it needs is not in this install', () => {
+    // `AVAILABLE` means built and callable. It does not mean the Runner is
+    // running, and it does not mean the Runner is even installed — it is a
+    // separate, unpublished binary. A host that reads `AVAILABLE` and nothing
+    // else advertises five tools that always fail on a standard install.
+    const strategies = CAPABILITIES.filter((capability) => capability.id.startsWith('strategy '));
+    expect(strategies).toHaveLength(5);
+    for (const capability of strategies) {
+      expect(capability.status, capability.id).toBe('AVAILABLE');
+      expect(capability.requires?.kind, capability.id).toBe('LOCAL_RUNNER');
+      expect(capability.requires?.says, capability.id).toContain('does NOT ship');
+      expect(capability.requires?.check, capability.id).toBeTypeOf('string');
+    }
+  });
+
+  it('prints a check for a requirement that is runnable as printed', async () => {
+    // The instruction that was wrong for a year told an operator to install a
+    // package that is not published. Whatever a requirement prints has to be a
+    // command this build actually answers.
+    const [printed] = new Set(
+      CAPABILITIES.flatMap((capability) =>
+        capability.requires === undefined ? [] : [capability.requires.check],
+      ),
+    );
+    const argv = String(printed).split(' ').slice(1);
+    const result = await invoke(argv, { env: CONFIGURED_ENV });
+
+    expect(result.envelope.error?.code).not.toBe('UNKNOWN_COMMAND');
+    expect(result.exit).not.toBe(EXIT_CODES.USAGE);
+  });
 });

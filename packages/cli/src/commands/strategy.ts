@@ -94,6 +94,26 @@ export async function strategyCreate(context: CommandContext): Promise<unknown> 
   }
 
   const reply = withRunner(session, result);
+
+  // The two budgets are separate books and neither can see the other: this
+  // CLI's ledger bounds what THIS process signs, and the Runner's mandate
+  // bounds what the RUNNER signs later, unattended. This is the one moment an
+  // operator has both numbers in front of them, and an unbounded mandate under
+  // a bounded local policy is a cap they will otherwise believe covers this.
+  const mandate = reply['policy'];
+  const cumulative = context.config.policy.scope?.maxCumulativeBuyAmount;
+  if (
+    cumulative !== undefined &&
+    mandate !== null &&
+    typeof mandate === 'object' &&
+    (mandate as Record<string, unknown>)['maxRunNotional'] === null
+  ) {
+    const source = String((mandate as Record<string, unknown>)['source'] ?? 'its configuration');
+    context.diagnostic(
+      `This CLI caps cumulative BUYs at ${cumulative} wxUSD and that cap does NOT apply here: a strategy is signed by the Runner, under the mandate in ${source}, which names no cumulative ceiling. Set \`policy.maxRunNotional\` there to bound what it may buy in total.`,
+    );
+  }
+
   // `driving` from the reply is the authoritative one — it is read at the moment
   // the job was written, where the handshake's was read at connect. They agree
   // in practice; when they do not, the pessimistic reading is the safe one.

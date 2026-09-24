@@ -32,6 +32,24 @@ export type CapabilityStatus =
   /** Planned, and not built in this version. */
   | 'NOT_IMPLEMENTED';
 
+/**
+ * Something outside this process that a capability needs at the moment it is
+ * called.
+ *
+ * `AVAILABLE` means the command is built, tested and callable. It does not mean
+ * the thing the command talks to is running, and it does not mean that thing is
+ * even installed — the Runner is a separate binary this install does not carry.
+ * A host that cannot tell those apart advertises a tool that always fails, which
+ * is worse than advertising no tool at all.
+ */
+export interface CapabilityRequirement {
+  /** Symbolic, so a host can branch on it without reading English. */
+  readonly kind: 'LOCAL_RUNNER';
+  readonly says: string;
+  /** How to find out whether it is there. Runnable as printed. */
+  readonly check: string;
+}
+
 export interface Capability {
   /** The CLI invocation, e.g. `market list`. */
   readonly id: string;
@@ -44,9 +62,28 @@ export interface Capability {
   readonly detail?: string;
   /** What to do instead. Absent when there is nothing honest to suggest. */
   readonly alternative?: string;
+  /** What must be running elsewhere for this to work. See {@link CapabilityRequirement}. */
+  readonly requires?: CapabilityRequirement;
   /** The backlog or decision id that tracks closing the gap. */
   readonly tracking?: string;
 }
+
+/**
+ * The Runner every `strategy` command talks to.
+ *
+ * It is a SEPARATE process and a separate binary, and this install does not
+ * contain it: `@waterx/predict-agent-runner` is private and unpublished, and
+ * the documented install carries `waterx-predict` and `waterx-predict-keystore`
+ * and nothing else. So these commands are built and callable, and on a stock
+ * install every one of them answers `RUNNER_UNREACHABLE` until an operator has
+ * built and started a Runner themselves.
+ */
+const RUNNER_REQUIRED: CapabilityRequirement = {
+  kind: 'LOCAL_RUNNER',
+  says:
+    'A Runner must be running on this machine. It is a separate binary that this install does NOT ship: build it from the repository (`pnpm install && pnpm build`) and run `node packages/runner/dist/src/bin/runnerd.js`. Until one is listening every strategy command answers RUNNER_UNREACHABLE, and nothing server-side holds a price target in the meantime.',
+  check: 'waterx-predict strategy list --json',
+};
 
 export const CAPABILITIES: readonly Capability[] = [
   {
@@ -236,12 +273,14 @@ export const CAPABILITIES: readonly Capability[] = [
     status: 'AVAILABLE',
     summary:
       'Arm a durable conditional job on the local Runner. Requires a Runner listening on this machine; nothing server-side stores a price target, so a stopped Runner is a strategy that is not watching.',
+    requires: RUNNER_REQUIRED,
   },
   {
     id: 'strategy get',
     command: 'strategy.get',
     status: 'AVAILABLE',
     summary: 'Read one strategy from the local Runner, including what is still unaccounted for.',
+    requires: RUNNER_REQUIRED,
   },
   {
     id: 'strategy list',
@@ -249,6 +288,7 @@ export const CAPABILITIES: readonly Capability[] = [
     status: 'AVAILABLE',
     summary:
       'List the strategies one Runner holds. Scoped to that runtime directory: a job created against another is elsewhere, not absent.',
+    requires: RUNNER_REQUIRED,
   },
   {
     id: 'strategy cancel',
@@ -256,6 +296,7 @@ export const CAPABILITIES: readonly Capability[] = [
     status: 'AVAILABLE',
     summary:
       'Record a cancellation, and report whether it was applied. A job with a write already in flight cannot be recalled.',
+    requires: RUNNER_REQUIRED,
   },
   {
     id: 'strategy events',
@@ -263,6 +304,7 @@ export const CAPABILITIES: readonly Capability[] = [
     status: 'AVAILABLE',
     summary:
       'The transition and side-effect feed for one strategy, as of now. A snapshot, not a subscription.',
+    requires: RUNNER_REQUIRED,
   },
   {
     id: 'runner',
@@ -270,9 +312,9 @@ export const CAPABILITIES: readonly Capability[] = [
     summary: 'Start, stop and inspect the local job runner from this CLI.',
     reason: 'NOT_BUILT',
     detail:
-      'The strategy commands above reach a Runner that is already listening; managing the daemon itself is not built here. Start one with the `runnerd` binary in `@waterx/predict-agent-runner`, and read its health with `runner.status` over its socket. This CLI cannot start, stop or supervise one, and the device must stay awake and online for any job to progress.',
+      'The strategy commands above reach a Runner that is already listening; managing the daemon itself is not built here. Nor is the daemon INSTALLED: `@waterx/predict-agent-runner` is private and unpublished, and this install carries `waterx-predict` and `waterx-predict-keystore` only — so `npm install` alone leaves every strategy command answering RUNNER_UNREACHABLE. Build the Runner from the repository and run it yourself; this CLI cannot start, stop or supervise one, and the device must stay awake and online for any job to progress.',
     alternative:
-      'Run `runnerd` yourself, then use `strategy list` to confirm this CLI can reach it.',
+      'Clone the repository, `pnpm install && pnpm build`, run `node packages/runner/dist/src/bin/runnerd.js`, then `waterx-predict strategy list` to confirm this CLI can reach it.',
     tracking: '2.6',
   },
 ];

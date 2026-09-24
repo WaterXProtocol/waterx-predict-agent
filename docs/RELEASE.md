@@ -240,20 +240,44 @@ Run `npm install <cli.tgz-url> <keystore.tgz-url>`, then `npx --no waterx-predic
 `--no` is required in every published copy of that sentence: without it, `npx`
 looks the name up on the public registry when nothing is installed.
 
+### The third artifact, and why it is optional
+
+ADR-0029 (**Proposed**) adds the Runner, which is what the five `strategy`
+commands talk to. It is built and checked with the other two and is **not
+released while that ADR says Proposed** — held back by name in the output, not
+by refusing the release. Two reasons it is shaped that way:
+
+- its Node floor is 24 where the CLI's and the signer's are 20 (ADR-0007), and
+  separate tarballs let npm refuse it to a Node 20 operator without refusing
+  them the CLI;
+- nothing in the setup sentence stops without it, so an undecided daemon must
+  not be able to hold back the CLI.
+
+It is therefore a **second** sentence, never part of the first:
+
+```
+For durable strategies, on Node 24 or newer: `npm install <runner.tgz-url>`, then run `npx --no waterx-predict-runnerd` and leave it running.
+```
+
 ```sh
 pnpm build
-pnpm cli:bundle              # dist/bundle/: both .tgz, SHA256SUMS, both SBOMs
-pnpm cli:bundle:check        # install both, scripts off; walk `next` to READY against a local stub
-pnpm cli:bundle -- --release # the same, refused unless ADR-0010 and ADR-0012 are Accepted
+pnpm cli:bundle              # dist/bundle/: three .tgz, SHA256SUMS, three SBOMs
+pnpm cli:bundle:check        # install all three, scripts off; walk `next` to READY against a local stub
+pnpm cli:bundle -- --release # refused unless ADR-0010 and ADR-0012 are Accepted;
+                             # carries the Runner only if ADR-0029 is too, and names it when it does not
 ```
 
 What each artifact is: `private: true` (unpublishable), no lifecycle scripts,
 third-party dependencies installed from the registry, and its SBOM inside it
-and at `sbom/bundle/`. The CLI carries the two libraries as
+and at `sbom/bundle/`. The CLI and the Runner each carry the two libraries as
 `bundleDependencies`; the keystore carries nothing of the workspace and brings
-the Sui SDK. `cli:bundle:check` runs in CI on every push: it runs `keystore
-init` and `agent` in a throwaway directory, follows `next` from SETUP_INCOMPLETE
-to READY against a stub on 127.0.0.1, and verifies the login signature.
+the Sui SDK; the Runner brings nothing third-party of its own, which is
+ADR-0007's other half. `cli:bundle:check` runs in CI on every push: it runs
+`keystore init` and `agent` in a throwaway directory, follows `next` from
+SETUP_INCOMPLETE to READY against a stub on 127.0.0.1, verifies the login
+signature, and then starts the installed `runnerd` and reaches it from the
+installed CLI over its socket — because three tarballs that each work alone and
+cannot talk to each other would pass every other check here.
 
 To attach them to a release: tag the commit, push the tag, then dispatch
 `release.yml` with dry-run **false** and `cli-bundle` **true**. `npm-publish`

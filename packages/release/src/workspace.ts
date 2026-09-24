@@ -74,8 +74,21 @@ export const BUNDLE_ROOT_PACKAGE = '@waterx/predict-agent-cli';
 /** The signer that ships beside it, as its own release asset (ADR-0012). */
 export const KEYSTORE_ROOT_PACKAGE = '@waterx/predict-agent-signer-keystore';
 
+/**
+ * The Runner, a third release asset and the only OPTIONAL one (ADR-0029).
+ *
+ * Its own tarball rather than a passenger in the CLI's, because its Node floor
+ * is 24 and the CLI's is 20 (ADR-0007): separate tarballs let npm refuse the
+ * Runner to a Node 20 operator without refusing them the CLI.
+ */
+export const RUNNER_ROOT_PACKAGE = '@waterx/predict-agent-runner';
+
 /** Every private package distributed as a release asset, in install order. */
-export const OPERATOR_ROOT_PACKAGES: readonly string[] = [BUNDLE_ROOT_PACKAGE, KEYSTORE_ROOT_PACKAGE];
+export const OPERATOR_ROOT_PACKAGES: readonly string[] = [
+  BUNDLE_ROOT_PACKAGE,
+  KEYSTORE_ROOT_PACKAGE,
+  RUNNER_ROOT_PACKAGE,
+];
 
 export const publishedPackages = (repoRoot: string): readonly WorkspacePackage[] =>
   readWorkspacePackages(repoRoot).filter((pkg) => pkg.published);

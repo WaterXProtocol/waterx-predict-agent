@@ -821,6 +821,11 @@ export async function orderExecute(context: CommandContext): Promise<unknown> {
      */
     executionId: result.executionId,
     idempotencyKey: result.idempotencyKey,
+    // The same floor `order preview` reports, repeated on the write. A caller
+    // that skipped the preview — every `delegated-auto` one does — would
+    // otherwise learn it from an order that sat and was cancelled, and the
+    // escrow is held until someone cancels it.
+    ...fillRisk(leg),
     ...openOrderNotice(result as typeof result & Pick<DirectExecutionOutcome, 'openOrder'>),
     policy: policyRecord(context, authorization),
     ...(result.timedOut

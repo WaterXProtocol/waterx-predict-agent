@@ -30,6 +30,7 @@ import { SqliteJobStore } from '../src/sqlite/store.ts';
 import type { JobState } from '../src/state-machine.ts';
 import type { JobStore, TransitionInput } from '../src/store.ts';
 import { driveJob, type DriveResult } from '../src/strategy/driver.ts';
+import { mandateDigest } from '../src/strategy/mandate.ts';
 import type { PriceObserver, StrategyGateway, StrategySigner } from '../src/strategy/gateway.ts';
 import {
   Crash,
@@ -1124,5 +1125,114 @@ describe('what a pass refuses to decide', () => {
     expect(result.action).toBe('NOT_DRIVABLE');
     expect(result.reason).toBe('AWAITING_RECOVERY');
     expect(await stateOf()).toBe('CREATING');
+  });
+});
+
+/* ── The cumulative mandate ────────────────────────────────────────────────── */
+
+describe('what a mandate may buy in total', () => {
+  const BUY: JobLegIntent = {
+    marketId: MARKET,
+    outcomeId: 'YES',
+    side: 'BUY',
+    buyAmount: '40.000000',
+    maxSlippageBps: 50,
+  };
+  const CEILING = {
+    kind: 'PRICE',
+    targetPrice: '0.900000',
+    observe: 'ASK',
+    marketId: MARKET,
+    outcomeId: 'YES',
+    side: 'BUY',
+  } as const;
+  const MANDATE = {
+    mode: 'delegated-auto',
+    source: 'file:~/.waterx/policy.json',
+    maxOrderNotional: '100.000000',
+    maxRunNotional: '60.000000',
+  } as const;
+
+  const buying = () =>
+    gatewayOf({
+      quotes: [quote({ side: 'BUY', expectedPrice: '0.500000', expectedFillSize: '80.000000' })],
+      creates: [created('exe_1')],
+      submits: [{ executionId: 'exe_1', status: 'SUBMITTED', transactionDigest: '0xsubmit' }],
+      executions: { exe_1: { executionId: 'exe_1', status: 'PENDING_FILL' } },
+    });
+
+  /** A second job under the SAME mandate, claimed the way the scheduler claims one. */
+  const armAnother = async (jobId: string): Promise<void> => {
+    const job = await store.createJob(
+      jobInput({ jobId, strategyId: `strat_${jobId}`, intent: [BUY], trigger: CEILING, policy: MANDATE }),
+    );
+    lease = (await store.claimJob({
+      jobId: job.jobId,
+      instanceId: INSTANCE,
+      at: T0,
+      leaseTtlMs: 600_000,
+    })) as JobLease;
+    await store.transition({ lease, to: 'WATCHING', reason: 'SETUP', at: T0 });
+  };
+
+  it('refuses the order that would take the mandate past its total, and sends nothing for it', async () => {
+    // `maxOrderNotional` bounds ONE order. Without a cumulative ceiling a
+    // strategy is a way to place a hundred of them, each of them legal, with
+    // nobody present for any — which is the whole reason a mandate has a total.
+    await arm({ intent: [BUY], trigger: CEILING, policy: MANDATE });
+    expect((await drive(buying(), pricesAt('0.500000'))).action).toBe('EXECUTED');
+    expect(await store.totalMandateSpend(mandateDigest(MANDATE))).toBe('40.000000');
+
+    await armAnother('job_2');
+    const second = buying();
+    const result = await drive(second, pricesAt('0.500000'));
+
+    // Nothing was sent, and nothing can be: the budget does not come back, so
+    // the job ends rather than watching a price it would refuse to act on.
+    expect(second.createCalls).toEqual([]);
+    expect(second.quoteCalls).toHaveLength(1);
+    expect(result.action).toBe('ENDED');
+    expect(result.legs?.[0]?.skip).toMatchObject({
+      reason: 'EXCEEDS_POLICY_RUN_LIMIT',
+      retryable: false,
+      detail: { buyAmount: '40.000000', committed: '40.000000', maxRunNotional: '60.000000' },
+    });
+    expect((await store.getJob('job_2'))?.state).toBe('FAILED');
+    expect(await store.totalMandateSpend(mandateDigest(MANDATE))).toBe('40.000000');
+  });
+
+  it('counts a replayed leg once, however many times the pass is retried', async () => {
+    // The commitment is keyed on (job, leg) for the reason the idempotency key
+    // is persisted before the write: a pass that dies and runs again is the
+    // SAME order, and a budget that charged it twice would refuse the orders
+    // that came after it for money nobody ever spent.
+    await arm({ intent: [BUY], trigger: CEILING, policy: MANDATE });
+    const crashing = crashBeforeSideEffect(store, 0);
+    await expect(drive(buying(), pricesAt('0.500000'), { store: crashing })).rejects.toThrow(Crash);
+    expect(await store.totalMandateSpend(mandateDigest(MANDATE))).toBe('40.000000');
+
+    // Recovery reads the leg back, finds nothing was sent, and re-arms; the
+    // pass after that is the replay, under the key already on disk.
+    await restart();
+    expect((await drive(buying(), pricesAt('0.500000'))).reason).toBe('NOTHING_WAS_SENT');
+    expect((await drive(buying(), pricesAt('0.500000'))).action).toBe('EXECUTED');
+    expect(await store.totalMandateSpend(mandateDigest(MANDATE))).toBe('40.000000');
+  });
+
+  it('commits nothing for a SELL, which returns money rather than spending it', async () => {
+    // Bounding a SELL by a spending ceiling would refuse to let a strategy close
+    // a position it is already exposed to.
+    await arm({ policy: { ...MANDATE, maxRunNotional: '0.000001' } });
+    const gateway = gatewayOf({
+      quotes: [quote()],
+      creates: [created('exe_1')],
+      submits: [{ executionId: 'exe_1', status: 'SUBMITTED' }],
+      executions: { exe_1: { executionId: 'exe_1', status: 'PENDING_FILL' } },
+    });
+
+    expect((await drive(gateway, pricesAt('0.900000'))).action).toBe('EXECUTED');
+    expect(await store.totalMandateSpend(mandateDigest({ ...MANDATE, maxRunNotional: '0.000001' }))).toBe(
+      '0.000000',
+    );
   });
 });

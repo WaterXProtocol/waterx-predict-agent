@@ -21,7 +21,11 @@ import {
   checkBundleListing,
   installSentence,
   KEYSTORE_ADR_PATH,
+  heldBackArtifacts,
   OPERATOR_ARTIFACTS,
+  releasableArtifacts,
+  RUNNER_ADR_PATH,
+  runnerSentence,
   releaseRefusal,
   requiredInBundle,
 } from '../src/bundle.ts';
@@ -106,6 +110,7 @@ describe('bundleManifest', () => {
 
 const CLI_SPEC = OPERATOR_ARTIFACTS[0]!;
 const KEYSTORE_SPEC = OPERATOR_ARTIFACTS[1]!;
+const RUNNER_SPEC = OPERATOR_ARTIFACTS[2]!;
 
 describe('the tarball listing', () => {
   const bundled = [SCHEMA, SDK];
@@ -157,12 +162,21 @@ describe('the release gate', () => {
     expect(adrStatus('- Status: Approved\n')).toBe('UNKNOWN');
   });
 
-  const repoWith = (cli: string | undefined, keystore: string | undefined): string => {
+  const repoWith = (
+    cli: string | undefined,
+    keystore: string | undefined,
+    // `null`, not `undefined`: passing `undefined` would take the default and
+    // silently write the file this case exists to leave out.
+    runner: string | null = 'Accepted',
+  ): string => {
     const root = mkdtempSync(join(tmpdir(), 'bundle-gate-'));
     mkdirSync(join(root, 'docs', 'adr'), { recursive: true });
     if (cli !== undefined) writeFileSync(join(root, BUNDLE_ADR_PATH), `# ADR-0010\n\n- Status: ${cli}\n`, 'utf8');
     if (keystore !== undefined) {
       writeFileSync(join(root, KEYSTORE_ADR_PATH), `# ADR-0012\n\n- Status: ${keystore}\n`, 'utf8');
+    }
+    if (runner !== null) {
+      writeFileSync(join(root, RUNNER_ADR_PATH), `# ADR-0029\n\n- Status: ${runner}\n`, 'utf8');
     }
     return root;
   };
@@ -177,12 +191,38 @@ describe('the release gate', () => {
     expect(releaseRefusal(repoWith('Accepted', 'Accepted'))).toBeUndefined();
   });
 
+  it('holds back an optional artifact instead of refusing the release', () => {
+    // The asymmetry ADR-0029 turns on. The Runner is not in the setup sentence,
+    // so an undecided daemon must not be able to stop the CLI from shipping —
+    // and it must not slip out unnoticed either.
+    const undecided = repoWith('Accepted', 'Accepted', 'Proposed');
+    expect(releaseRefusal(undecided)).toBeUndefined();
+    expect(releasableArtifacts(undecided).map((spec) => spec.root)).toEqual([
+      CLI_SPEC.root,
+      KEYSTORE_SPEC.root,
+    ]);
+    expect(heldBackArtifacts(undecided)).toEqual([
+      expect.stringContaining('@waterx/predict-agent-runner is NOT in this release'),
+    ]);
+
+    const missing = repoWith('Accepted', 'Accepted', null);
+    expect(releaseRefusal(missing)).toBeUndefined();
+    expect(heldBackArtifacts(missing)[0]).toContain('MISSING');
+
+    const decided = repoWith('Accepted', 'Accepted', 'Accepted');
+    expect(releasableArtifacts(decided)).toHaveLength(OPERATOR_ARTIFACTS.length);
+    expect(heldBackArtifacts(decided)).toEqual([]);
+  });
+
   it('matches the decision this repository actually holds', () => {
-    // Whatever the ADR says today, the gate must read it — not a copy of it.
+    // Whatever the ADRs say today, the gate must read them — not a copy of them.
     const repoRoot = findRepoRoot();
-    const refusal = releaseRefusal(repoRoot);
-    expect(refusal === undefined).toBe(
-      OPERATOR_ARTIFACTS.every((spec) => adrStatus(readAdr(repoRoot, spec.adr)) === 'Accepted'),
+    const required = OPERATOR_ARTIFACTS.filter((spec) => spec.optional !== true);
+    expect(releaseRefusal(repoRoot) === undefined).toBe(
+      required.every((spec) => adrStatus(readAdr(repoRoot, spec.adr)) === 'Accepted'),
+    );
+    expect(releasableArtifacts(repoRoot).length + heldBackArtifacts(repoRoot).length).toBe(
+      OPERATOR_ARTIFACTS.length,
     );
   });
 });
@@ -198,6 +238,36 @@ describe('the workspace', () => {
     expect(Object.keys(manifest['dependencies'] as object)).toEqual(['@mysten/sui']);
   });
 
+
+  it('ships the Runner with its own Node floor and no third-party dependency', () => {
+    // The two facts ADR-0029 turns on. The floor travels IN the tarball, which
+    // is what lets a Node 20 operator install the CLI and be refused only this;
+    // and nothing third-party enters the process that decides what gets signed,
+    // which is ADR-0007's other half.
+    const { root, bundled } = bundledPackagesFor(readWorkspacePackages(findRepoRoot()), RUNNER_SPEC.root);
+    expect(root.name).toBe('@waterx/predict-agent-runner');
+    expect(bundled.map((pkg) => pkg.name).sort()).toEqual([SCHEMA, SDK]);
+
+    const manifest = bundleManifest(
+      root.manifest,
+      bundled.map((pkg) => pkg.manifest),
+    );
+    expect(manifest['private']).toBe(true);
+    expect(manifest['engines']).toEqual({ node: '>=24' });
+    expect(manifest['bin']).toEqual({ 'waterx-predict-runnerd': 'dist/src/bin/runnerd.js' });
+    expect(manifest['bundleDependencies']).toEqual([SCHEMA, SDK]);
+    // The SDK's one runtime dependency is lifted, and there is nothing else.
+    expect(Object.keys(manifest['dependencies'] as object).sort()).toEqual([SCHEMA, SDK, 'socket.io-client']);
+  });
+
+  it('keeps the Runner out of the sentence that installs the minimum setup', () => {
+    // Putting it there would raise the floor of the minimum setup to Node 24 to
+    // buy a capability the minimum setup does not use.
+    const sentence = installSentence(['<cli>', '<keystore>']);
+    expect(sentence).not.toContain('runner');
+    expect(runnerSentence('<runner>')).toContain('Node 24');
+    expect(runnerSentence('<runner>')).toContain('waterx-predict-runnerd');
+  });
 
   it('bundles exactly the published packages the CLI depends on', () => {
     const { root, bundled } = bundledPackagesFor(readWorkspacePackages(findRepoRoot()));
