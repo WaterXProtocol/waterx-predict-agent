@@ -152,6 +152,14 @@ Every order carries slippage protection. Set `maxSlippageBps` (or a worst accept
 
 For a BUY, the target price is the highest executable ask you will accept. For a SELL, it is the lowest executable bid you will accept. Repeat the direction back to the user in those words when you confirm an order or arm a strategy — "buy below", "sell above" — because a target read the wrong way trades immediately at the worst available price.
 
+### Under the keeper minimum an order is accepted, not filled
+
+`A_SMALL_BUY_IS_PLACED_AND_THEN_CANCELLED`
+
+The server accepts a BUY from 1 wxUSD, and the keeper will not fill one that costs less than its minimum — 2 wxUSD by default. Between the two, an order is built, signed, placed, and then cancelled unfilled, with its budget held until the cancel lands. That is not a rejection you can retry into a fill.
+
+`order.preview` and `order.execute` report it as `fillRisk.likelyCancelled` with the reason `BELOW_KEEPER_MIN_FILL`. Read it before you tell a user their order is on its way, and size a test order at or above the minimum rather than at the smallest amount that is accepted.
+
 ### A strategy trigger is a condition, not a price you will get
 
 `A_TRIGGER_IS_NOT_A_LIMIT_ORDER`

@@ -111,4 +111,4 @@ Each of these is a rule in `AGENT_INSTRUCTIONS.md`, quoted here so it is in fron
 
 ## Where the rest is
 
-This document is a route, not the rules. The rules are the 33 in `AGENT_INSTRUCTIONS.md`, shipped beside this file. Where a build disagrees with it, `waterx-predict describe` wins: it reports what THIS installation can do.
+This document is a route, not the rules. The rules are the 34 in `AGENT_INSTRUCTIONS.md`, shipped beside this file. Where a build disagrees with it, `waterx-predict describe` wins: it reports what THIS installation can do.

@@ -438,6 +438,40 @@ describe('direct mode', () => {
     expect(enough.envelope.data).not.toHaveProperty('fillRisk');
   });
 
+  it('repeats that warning on the write itself, for the caller that never previewed', async () => {
+    // Under `delegated-auto` nothing previews. Without this the first news of
+    // the floor is an order that sat and was cancelled, with its budget held
+    // until the cancel lands.
+    const { run } = setup();
+    const marketId = await resolveMarket(run);
+    const small = buy(marketId, { size: { buyAmount: '1' } });
+    const preview = await run(['order', 'preview', '--input', JSON.stringify(small)]);
+    const token = (preview.envelope.data as { policy: { approvalToken: string } }).policy.approvalToken;
+    const quote = await run([
+      'market',
+      'quote',
+      '--input',
+      JSON.stringify({ marketId, outcomeId: 'YES', side: 'BUY', size: { buyAmount: '1' } }),
+    ]);
+    const quoteId = (quote.envelope.data as { quote: { quoteId: string } }).quote.quoteId;
+
+    const placed = await run([
+      'order',
+      'execute',
+      '--approve',
+      token,
+      '--approver',
+      'tester',
+      '--input',
+      JSON.stringify({ ...small, referenceQuoteId: quoteId }),
+    ]);
+
+    expect(placed.envelope.data).toMatchObject({
+      placed: true,
+      fillRisk: { likelyCancelled: true, reason: 'BELOW_KEEPER_MIN_FILL' },
+    });
+  });
+
   it('places one approved order: one transaction signature, sponsored, and journaled', async () => {
     const { run, store, world } = setup();
     const marketId = await resolveMarket(run);
