@@ -77,9 +77,15 @@ export function exposureNotes(
       look: 'waterx-predict account positions',
     });
     if (unpriced.length > 0) {
+      // Its own total, not the portfolio's: this is the part of the cost whose
+      // present worth nobody here can state, and saying how much it is turns an
+      // abstraction into a number an operator can weigh.
+      let stranded = 0n;
+      for (const position of unpriced) stranded += parseDecimal(position.remainingCost) ?? 0n;
+      const unpricedCost = formatDecimal(stranded);
       notes.push({
         kind: 'UNPRICED_POSITION',
-        says: `No live sell-side quote for ${String(unpriced.length)} position(s): their value and PnL are unknown, not zero. A market that stopped quoting is usually closed, resolved or paused — an exit may not be available at any price.`,
+        says: `No live sell-side quote for ${String(unpriced.length)} position(s), holding ${unpricedCost} wxUSD of cost: their value and PnL are unknown, not zero. A market that stopped quoting is usually closed, resolved or paused — an exit may not be available at any price, and if it RESOLVED the money comes back only by being claimed, which this runtime cannot do (\`describe\` → \`position claim\`). Collect it from the web app as the account owner.`,
         look: 'waterx-predict market get',
       });
     }

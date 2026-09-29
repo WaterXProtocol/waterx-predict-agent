@@ -986,6 +986,34 @@ describe('decideNext precedence', () => {
     expect(decideNext(facts).state).toBe('TRADING_BLOCKED');
   });
 
+  it('names both scope gates, so renewing the date is not mistaken for the fix', () => {
+    // The shape a live mainnet session hit: a delegated-auto scope written for
+    // one account, a grant that landed on another, and an expiry in the past.
+    // Reporting the expiry alone sends the operator to renew a date that was
+    // never the whole problem — `policy.ts` refuses on the account anyway, at
+    // the moment of the first real order.
+    const clear = { ...everythingWrong, account: { ...blockedAccount, unsettled: [], limits: null }, runner: { status: 'ABSENT' } as const };
+    const mismatched: NextFacts = {
+      ...clear,
+      writes: 'SCOPE_ACCOUNT_MISMATCH',
+      scopeAccounts: [OTHER_ACCOUNT],
+      scopeNotAfter: '2020-01-01T00:00:00.000Z',
+      now: new Date('2026-09-24T00:00:00.000Z'),
+    };
+
+    const said = decideNext(mismatched).headline;
+    expect(said).toContain('does NOT name this account');
+    expect(said).toContain(OTHER_ACCOUNT);
+    expect(said).toContain(ACCOUNT_ID);
+    // And the closed window is named as well, rather than being the only thing.
+    expect(said).toContain('renewing that alone changes nothing');
+
+    // A scope that names this account and has merely expired still reads as it did.
+    const expired = decideNext({ ...mismatched, writes: 'SCOPE_EXPIRED', scopeAccounts: [ACCOUNT_ID] }).headline;
+    expect(expired).toContain('window has closed');
+    expect(expired).not.toContain('does NOT name this account');
+  });
+
   it('never suggests a write in any state', () => {
     const { account: _account, ...unread } = everythingWrong;
     const { session: _session, ...unconfigured } = everythingWrong;

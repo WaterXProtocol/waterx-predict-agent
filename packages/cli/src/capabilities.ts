@@ -268,6 +268,17 @@ export const CAPABILITIES: readonly Capability[] = [
     tracking: 'D-25',
   },
   {
+    id: 'position claim',
+    status: 'NOT_IMPLEMENTED',
+    summary: 'Collect a resolved position’s payout back into the account.',
+    reason: 'NOT_BUILT',
+    detail:
+      'A position on a market that resolved is no longer tradeable — it stopped quoting, so it cannot be sold, and its money comes back only by being claimed. The server has a route for it (`POST /predict/bets/claim`, authorized for the same trading-capable delegate this runtime already is), and nothing here calls it: claiming is N `claim_position` calls in one transaction, and the verifier that must approve every sponsored byte is built around one trading call per transaction. Widening it is a change to the boundary that gates money, not an addition to a command list. Until then this runtime can SEE such a position and report that its value is unknown, and cannot get the money back.',
+    alternative:
+      'Read what is held with `account positions` — a position with no live sell-side quote is reported as `UNPRICED_POSITION` — and collect it from the WaterX web app, signing as the account owner.',
+    tracking: 'B-CLAIM',
+  },
+  {
     id: 'strategy create',
     command: 'strategy.create',
     status: 'AVAILABLE',

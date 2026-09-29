@@ -386,12 +386,36 @@ const policyRecord = (context: CommandContext, authorization: Authorized): unkno
           authorizedUnderScope: authorization.spend.total,
           ceiling: context.config.policy.scope?.maxCumulativeBuyAmount ?? null,
           released: context.gate.stats.used === 0,
+          // The budget belongs to the EXACT scope, so a scope that was edited
+          // starts again at zero. Reported when this ledger holds spend under
+          // another one, because "0 of 50 authorized" on a machine that has
+          // been trading is a number an operator would otherwise read as a
+          // fresh start they chose.
+          ...spentElsewhere(context),
         },
       }
     : {}),
   signatures: context.gate.stats,
   note: 'An approval authorizes one exact intent, once, until it expires. It is not authentication and does not prove a person saw the order.',
 });
+
+/**
+ * What this ledger authorized under a scope that is no longer the configured
+ * one. Absent when there is none, so a machine with one scope says nothing.
+ */
+function spentElsewhere(context: CommandContext): Record<string, unknown> {
+  const scope = context.config.policy.scope;
+  if (scope === undefined) return {};
+  const other = context.ledgers().spend.elsewhere(scopeDigest(scope));
+  if (other.scopes === 0) return {};
+  return {
+    underOtherScopes: {
+      scopes: other.scopes,
+      total: other.total,
+      detail: `${other.total} wxUSD was authorized under ${String(other.scopes)} other scope(s) and does NOT count against this ceiling. A cumulative budget belongs to the exact scope it was written under, so editing one starts its count at zero.`,
+    },
+  };
+}
 
 /* ── order preview ─────────────────────────────────────────────────────────── */
 
