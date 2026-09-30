@@ -75,9 +75,9 @@ describe('parseDeployment reads the v2 document', () => {
 });
 
 describe('FetchedDeployment', () => {
-  it('defaults to the v2 hosts and names the URL when the document is refused', async () => {
-    expect(WATERX_CONFIG_URLS.mainnet).toBe('https://main-v2.waterx-config.pages.dev/mainnet.json');
-    expect(WATERX_CONFIG_URLS.testnet).toBe('https://staging-v2.waterx-config.pages.dev/testnet.json');
+  it('defaults to the v2 roots and names the URL when the document is refused', async () => {
+    expect(WATERX_CONFIG_URLS.mainnet).toBe('https://main-v2.waterx-config.pages.dev');
+    expect(WATERX_CONFIG_URLS.testnet).toBe('https://staging-v2.waterx-config.pages.dev');
     const requested: string[] = [];
     const fetch = (async (input: URL | string | Request) => {
       requested.push(String(input));
@@ -87,7 +87,23 @@ describe('FetchedDeployment', () => {
     await expect(source.load()).rejects.toThrow(
       /the deployment config at https:\/\/main-v2\.waterx-config\.pages\.dev\/mainnet\.json: waterx-config has no `schema_version`/u,
     );
-    expect(requested).toEqual([WATERX_CONFIG_URLS.mainnet]);
+    expect(requested).toEqual([`${WATERX_CONFIG_URLS.mainnet}/mainnet.json`]);
+  });
+
+  it('reads `${WATERX_CONFIG_URL}/${network}.json` and refuses a document URL or the retired `url` up front', async () => {
+    const requested: string[] = [];
+    const fetch = (async (input: URL | string | Request) => {
+      requested.push(String(input));
+      return new Response(JSON.stringify({ ...CONFIG, network: 'testnet' }), { status: 200 });
+    }) as typeof globalThis.fetch;
+    await new FetchedDeployment({ network: 'testnet', waterxConfigUrl: 'https://cdn.example.com/', fetch }).load();
+    expect(requested).toEqual(['https://cdn.example.com/testnet.json']);
+    expect(() => new FetchedDeployment({ network: 'mainnet', waterxConfigUrl: 'https://cdn.example.com/mainnet.json' })).toThrow(
+      /WATERX_CONFIG_URL must be a CDN ROOT with no filename/u,
+    );
+    expect(() => new FetchedDeployment({ network: 'mainnet', url: 'https://cdn.example.com/mainnet.json' } as never)).toThrow(
+      /`url` is retired; pass `waterxConfigUrl`/u,
+    );
   });
 
   it('loads a v2 document and caches it', async () => {

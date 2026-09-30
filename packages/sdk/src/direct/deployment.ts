@@ -22,20 +22,18 @@
  */
 import { normalizeSuiAddress } from '../sui-tx.ts';
 
+import { waterxConfigDocumentUrl, WATERX_CONFIG_URLS } from './config-url.ts';
+
 export type DirectNetwork = 'mainnet' | 'testnet';
 
 /** The schema this reader understands. Anything else is refused, not guessed at. */
 export const WATERX_CONFIG_SCHEMA_VERSION = 2;
 
 /**
- * The v2 hosts: production for mainnet, staging for testnet. The legacy hosts
- * (`config.waterx.app`, `staging.waterx-config.pages.dev`) serve the pre-v2
- * shape and are being retired; `raw.githubusercontent.com` is never a source.
+ * Where the document is read: a `WATERX_CONFIG_URL` ROOT (default per network,
+ * `main-v2` / `staging-v2`) with `${network}.json` appended. See `config-url.ts`.
  */
-export const WATERX_CONFIG_URLS: Readonly<Record<DirectNetwork, string>> = {
-  mainnet: 'https://main-v2.waterx-config.pages.dev/mainnet.json',
-  testnet: 'https://staging-v2.waterx-config.pages.dev/testnet.json',
-};
+export { WATERX_CONFIG_URLS } from './config-url.ts';
 
 /** Sui system objects every PTB may name. */
 export const SUI_CLOCK = normalizeSuiAddress('0x6');
@@ -108,7 +106,7 @@ export function parseDeployment(document: unknown, expected: DirectNetwork): Dir
     const found = schema === undefined ? 'no `schema_version`' : `\`schema_version\` ${JSON.stringify(schema)}`;
     throw new DirectDeploymentError(
       `waterx-config has ${found}; direct mode reads the consolidated schema_version ${String(WATERX_CONFIG_SCHEMA_VERSION)} document ` +
-        `(objects under \`objects.*\`, package identity under \`packages.*\`). Point the deployment URL at a v2 host: ` +
+        `(objects under \`objects.*\`, package identity under \`packages.*\`). Point WATERX_CONFIG_URL at a v2 root: ` +
         `${WATERX_CONFIG_URLS.mainnet} or ${WATERX_CONFIG_URLS.testnet}`,
     );
   }
@@ -190,7 +188,12 @@ export interface DeploymentSource {
 
 export interface FetchedDeploymentOptions {
   readonly network: DirectNetwork;
-  readonly url?: string;
+  /**
+   * `WATERX_CONFIG_URL`: a CDN ROOT, no filename (`${root}/${network}.json` is
+   * read). Unset: the network's default root. Replaces the former `url`, which
+   * took a whole document URL; passing `url` now throws.
+   */
+  readonly waterxConfigUrl?: string;
   readonly fetch?: typeof globalThis.fetch;
   readonly ttlMs?: number;
   readonly now?: () => number;
@@ -205,15 +208,25 @@ export class FetchedDeployment implements DeploymentSource {
   private cached: { at: number; value: DirectDeployment } | undefined;
   private readonly options: FetchedDeploymentOptions;
 
+  private readonly url: string;
+
   constructor(options: FetchedDeploymentOptions) {
+    if ((options as { url?: unknown }).url !== undefined) {
+      throw new DirectDeploymentError(
+        '`url` is retired; pass `waterxConfigUrl`, a CDN ROOT with no filename (e.g. https://main-v2.waterx-config.pages.dev; <network>.json is appended).',
+      );
+    }
     this.options = options;
+    // Validated here, not at the first fetch: a malformed root is a setup
+    // mistake and should stop the client being built.
+    this.url = waterxConfigDocumentUrl(options.network, options.waterxConfigUrl);
   }
 
   async load(signal?: AbortSignal): Promise<DirectDeployment> {
     const now = (this.options.now ?? Date.now)();
     const ttl = this.options.ttlMs ?? 5 * 60_000;
     if (this.cached !== undefined && now - this.cached.at < ttl) return this.cached.value;
-    const url = this.options.url ?? WATERX_CONFIG_URLS[this.options.network];
+    const url = this.url;
     const fetchImpl = this.options.fetch ?? globalThis.fetch.bind(globalThis);
     let response: Response;
     try {

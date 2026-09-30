@@ -199,6 +199,14 @@ export {
   WATERX_CONFIG_SCHEMA_VERSION,
   WATERX_CONFIG_URLS,
 } from './direct/deployment.ts';
+export {
+  assertNoRetiredWaterxConfigUrlEnv,
+  normalizeWaterxConfigRoot,
+  RETIRED_WATERX_CONFIG_URL_ENV,
+  WATERX_CONFIG_URL_ENV,
+  waterxConfigDocumentUrl,
+  WaterxConfigUrlError,
+} from './direct/config-url.ts';
 export { decodeMarketHandle, isMarketHandle, type MarketHandle } from './direct/handle.ts';
 export {
   type DirectExpectation,
