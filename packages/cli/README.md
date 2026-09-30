@@ -574,7 +574,7 @@ Precedence, lowest first: config file, environment, flags.
 | Mode: `direct` (default) or `agent-api` | `WATERX_PREDICT_MODE` | `mode` |
 | Sui network, for a host this build cannot name | `WATERX_PREDICT_NETWORK` | `network` |
 | Direct-mode state directory (intent journal, market ids) | `WATERX_PREDICT_STATE_DIR` | — *(default `~/.waterx-predict`)* |
-| Direct mode: deployment document, for a private deployment | `WATERX_PREDICT_DEPLOYMENT_URL` | `deploymentUrl` |
+| Direct mode: waterx-config CDN **root** (no filename; `<network>.json` is appended) | `WATERX_CONFIG_URL` | `waterxConfigUrl` |
 | Direct mode: Sui GraphQL endpoint | `WATERX_PREDICT_SUI_GRAPHQL_URL` | `suiGraphqlUrl` |
 | Environment label | `WATERX_PREDICT_ENVIRONMENT` | `environment` |
 | Agent wallet | `WATERX_PREDICT_AGENT_WALLET` | `agentWallet` |
@@ -587,6 +587,20 @@ Precedence, lowest first: config file, environment, flags.
 The file is `--config <path>`, else `$WATERX_PREDICT_CONFIG`, else
 `$XDG_CONFIG_HOME/waterx-predict/config.json`, else
 `~/.config/waterx-predict/config.json`.
+
+`WATERX_CONFIG_URL` defaults to the network's v2 root —
+`https://main-v2.waterx-config.pages.dev` on mainnet,
+`https://staging-v2.waterx-config.pages.dev` on testnet — and direct mode reads
+`${WATERX_CONFIG_URL}/${network}.json`. Set it only for a private deployment. A
+value ending in `.json` (a whole document URL), with a query, on plain `http://`
+or on a GitHub host is refused at startup with `CONFIG_INVALID`.
+
+> **Breaking.** `WATERX_PREDICT_DEPLOYMENT_URL` and the `deploymentUrl` config
+> key, which took a whole document URL, are retired: setting either is refused
+> with `CONFIG_INVALID` rather than ignored. Move the value to
+> `WATERX_CONFIG_URL` / `waterxConfigUrl` and drop the `/<network>.json` suffix.
+> `PREDICT_CONFIG_URL`, `E2E_CONFIG_URL`, `CONFIG_URL` and `WATERX_CONFIG_ROOT`
+> are refused the same way.
 
 **A config file containing a credential-shaped key is refused**, and the refusal
 names the key path and never the value. An unknown key is refused too, rather
@@ -606,7 +620,7 @@ token and no `/agent-api` request.
 - **Nothing is signed unread.** The sponsored bytes are decoded and checked
   against the intent: this wallet as sender, gas paid by someone else, only
   WaterX prediction calls at the deployment's current packages (the
-  `schema_version: 2` waterx-config at `main-v2.waterx-config.pages.dev`), the account, market, side, budget, price cap, share
+  `schema_version: 2` waterx-config at `${WATERX_CONFIG_URL}/${network}.json`, by default `main-v2.waterx-config.pages.dev/mainnet.json`), the account, market, side, budget, price cap, share
   floor and expiry this CLI asked for. A mismatch is `TRANSACTION_REFUSED`
   (exit 10) and nothing is signed.
 - **The ceiling is the execution policy.** There is no server-side risk
