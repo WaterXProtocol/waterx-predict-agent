@@ -605,8 +605,8 @@ token and no `/agent-api` request.
   wallet signed, the agent is still authorized.
 - **Nothing is signed unread.** The sponsored bytes are decoded and checked
   against the intent: this wallet as sender, gas paid by someone else, only
-  WaterX prediction calls at the deployment's current packages
-  (`config.waterx.app`), the account, market, side, budget, price cap, share
+  WaterX prediction calls at the deployment's current packages (the
+  `schema_version: 2` waterx-config at `main-v2.waterx-config.pages.dev`), the account, market, side, budget, price cap, share
   floor and expiry this CLI asked for. A mismatch is `TRANSACTION_REFUSED`
   (exit 10) and nothing is signed.
 - **The ceiling is the execution policy.** There is no server-side risk
