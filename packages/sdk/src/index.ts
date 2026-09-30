@@ -196,6 +196,7 @@ export {
   type DirectNetwork,
   FetchedDeployment,
   parseDeployment,
+  WATERX_CONFIG_SCHEMA_VERSION,
   WATERX_CONFIG_URLS,
 } from './direct/deployment.ts';
 export { decodeMarketHandle, isMarketHandle, type MarketHandle } from './direct/handle.ts';

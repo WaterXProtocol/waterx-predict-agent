@@ -1,8 +1,9 @@
 /**
  * The verifier, against transactions built by the SAME builder the backend uses.
  *
- * `@waterx/sdk` 5.0.0 is the version `bucket-backend-mono` pins at the deployed
- * commit, and it is a dev dependency here only. The shared objects its builder
+ * `@waterx/sdk` 6.0.0 is the version the backend builds with — the first that
+ * reads the consolidated `schema_version: 2` waterx-config — and it is a dev
+ * dependency here only. The shared objects its builder
  * leaves unresolved are filled in offline, so these are the bytes the backend
  * would return minus the object versions — which the verifier does not read.
  *
@@ -11,7 +12,7 @@
 import { readFileSync } from 'node:fs';
 
 import { Inputs, Transaction } from '@mysten/sui/transactions';
-import { PredictClient, placeOrder, requestClose, requestPartialClose } from '@waterx/sdk/prediction';
+import { parseConfigDocument, PredictClient, placeOrder, requestClose, requestPartialClose } from '@waterx/sdk/prediction';
 import { describe, expect, it } from 'vitest';
 
 import { parseDeployment } from '../src/direct/deployment.ts';
@@ -27,7 +28,7 @@ const CONFIG = JSON.parse(
   readFileSync(new URL('./fixtures/waterx-config-mainnet.json', import.meta.url), 'utf8'),
 ) as Record<string, any>;
 const deployment = parseDeployment(CONFIG, 'mainnet');
-const client = new PredictClient('MAINNET', CONFIG as never);
+const client = new PredictClient('MAINNET', parseConfigDocument(CONFIG, 'MAINNET'));
 
 const AGENT = normalizeSuiAddress(`0x${'a'.repeat(64)}`);
 const SPONSOR = normalizeSuiAddress(`0x${'b'.repeat(64)}`);

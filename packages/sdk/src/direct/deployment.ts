@@ -6,8 +6,15 @@
  * CURRENT `published_at` of the package it claims to be, and a shared object
  * whose id is not the one the deployment names for that role. Both lists come
  * from here, fetched from the same waterx-config document the backend builds
- * transactions from (`WATERX_CONFIG_URL` there; the defaults below are the ones
- * the perp agent uses, `waterx-agent` `src/config.ts:59-60`).
+ * transactions from (`WATERX_CONFIG_URL` there).
+ *
+ * The document is the consolidated `schema_version: 2` shape
+ * (`WaterXProtocol/waterx-config`, `schema/waterx-config.schema.json`): package
+ * IDENTITY (`published_at`, `original_id`, `version`) stays under `packages.*`,
+ * every shared-object id lives under `objects.<domain>.*`. The legacy
+ * per-package shape (ids beside `published_at`, no `schema_version`) is refused
+ * outright rather than read half-right: `@waterx/sdk` 6.0.0 — the builder the
+ * backend uses — rejects it at `create()` too.
  *
  * Fetched rather than shipped: a package upgrade moves `published_at`, and a
  * pinned copy would refuse every order the day after one — or, worse, keep
@@ -17,9 +24,17 @@ import { normalizeSuiAddress } from '../sui-tx.ts';
 
 export type DirectNetwork = 'mainnet' | 'testnet';
 
+/** The schema this reader understands. Anything else is refused, not guessed at. */
+export const WATERX_CONFIG_SCHEMA_VERSION = 2;
+
+/**
+ * The v2 hosts: production for mainnet, staging for testnet. The legacy hosts
+ * (`config.waterx.app`, `staging.waterx-config.pages.dev`) serve the pre-v2
+ * shape and are being retired; `raw.githubusercontent.com` is never a source.
+ */
 export const WATERX_CONFIG_URLS: Readonly<Record<DirectNetwork, string>> = {
-  mainnet: 'https://config.waterx.app/mainnet.json',
-  testnet: 'https://staging.waterx-config.pages.dev/testnet.json',
+  mainnet: 'https://main-v2.waterx-config.pages.dev/mainnet.json',
+  testnet: 'https://staging-v2.waterx-config.pages.dev/testnet.json',
 };
 
 /** Sui system objects every PTB may name. */
@@ -85,23 +100,42 @@ const optionalText = (object: Json | undefined, key: string): string | undefined
 /** Parse a waterx-config document. Pure, so the rules are testable offline. */
 export function parseDeployment(document: unknown, expected: DirectNetwork): DirectDeployment {
   const root = document as Json;
-  if (root?.['network'] !== expected) {
+  const schema = root?.['schema_version'];
+  if (schema !== WATERX_CONFIG_SCHEMA_VERSION) {
+    // The legacy per-package shape carries no `schema_version` and keeps every
+    // object id beside `published_at`. Reading it here would mean guessing at
+    // ids from the wrong place, so it is refused with the fix spelled out.
+    const found = schema === undefined ? 'no `schema_version`' : `\`schema_version\` ${JSON.stringify(schema)}`;
+    throw new DirectDeploymentError(
+      `waterx-config has ${found}; direct mode reads the consolidated schema_version ${String(WATERX_CONFIG_SCHEMA_VERSION)} document ` +
+        `(objects under \`objects.*\`, package identity under \`packages.*\`). Point the deployment URL at a v2 host: ` +
+        `${WATERX_CONFIG_URLS.mainnet} or ${WATERX_CONFIG_URLS.testnet}`,
+    );
+  }
+  if (root['network'] !== expected) {
     // A testnet document behind a mainnet URL (or the reverse) would admit the
     // wrong packages while every check passed.
     throw new DirectDeploymentError(
-      `waterx-config describes \`${String(root?.['network'])}\`, not \`${expected}\``,
+      `waterx-config describes \`${String(root['network'])}\`, not \`${expected}\``,
     );
   }
+  // Package identity — `published_at` and `original_id` — stays under `packages.*`.
   const packages = field(root, 'packages', '');
   const prediction = field(packages, 'waterx_prediction', 'packages');
   const framework = field(packages, 'bucket_framework', 'packages');
   const account = field(packages, 'waterx_account', 'packages');
   const custody = (packages['native_custody'] ?? undefined) as Json | undefined;
-  const credit = (packages['waterx_credit'] ?? undefined) as Json | undefined;
 
-  const registries = field(prediction, 'market_registries', 'packages.waterx_prediction');
-  const coins = field(prediction, 'settlement_coin_types', 'packages.waterx_prediction');
-  const coin = text(coins, 'USD', 'packages.waterx_prediction.settlement_coin_types');
+  // Every shared object id lives under `objects.<domain>`.
+  const objects = field(root, 'objects', '');
+  const predictionObjects = field(objects, 'prediction', 'objects');
+  const accountObjects = field(objects, 'account', 'objects');
+  const custodyObjects = (objects['custody'] ?? undefined) as Json | undefined;
+  const creditObjects = (objects['credit'] ?? undefined) as Json | undefined;
+
+  const registries = field(predictionObjects, 'market_registries', 'objects.prediction');
+  const coins = field(predictionObjects, 'settlement_coin_types', 'objects.prediction');
+  const coin = text(coins, 'USD', 'objects.prediction.settlement_coin_types');
   const parts = coin.split('::');
   if (parts.length !== 3) throw new DirectDeploymentError(`settlement coin type \`${coin}\` is not address::module::name`);
 
@@ -117,8 +151,11 @@ export function parseDeployment(document: unknown, expected: DirectNetwork): Dir
     }
   }
 
-  const custodyVault = optionalText(custody, 'vault');
-  const creditRegistry = optionalText(credit, 'credit_registry');
+  // The USD stack: `objects.custody.vault` / `objects.credit.registry` are the
+  // USD credit's, and the per-credit maps (`objects.credit.registries[USD]`)
+  // mirror them. The settlement coin read above is USD, so these are its objects.
+  const custodyVault = optionalText(custodyObjects, 'vault');
+  const creditRegistry = optionalText(creditObjects, 'registry');
   return {
     network: expected,
     callable: {
@@ -131,9 +168,9 @@ export function parseDeployment(document: unknown, expected: DirectNetwork): Dir
           : normalizeSuiAddress(text(custody, 'published_at', 'packages.native_custody')),
     },
     objects: {
-      predictionGlobalConfig: normalizeSuiAddress(text(prediction, 'global_config', 'packages.waterx_prediction')),
-      marketRegistry: normalizeSuiAddress(text(registries, 'USD', 'packages.waterx_prediction.market_registries')),
-      accountRegistry: normalizeSuiAddress(text(account, 'account_registry', 'packages.waterx_account')),
+      predictionGlobalConfig: normalizeSuiAddress(text(predictionObjects, 'global_config', 'objects.prediction')),
+      marketRegistry: normalizeSuiAddress(text(registries, 'USD', 'objects.prediction.market_registries')),
+      accountRegistry: normalizeSuiAddress(text(accountObjects, 'registry', 'objects.account')),
       custodyVault: custodyVault === undefined ? undefined : normalizeSuiAddress(custodyVault),
       creditRegistry: creditRegistry === undefined ? undefined : normalizeSuiAddress(creditRegistry),
     },
@@ -192,7 +229,14 @@ export class FetchedDeployment implements DeploymentSource {
     if (!response.ok) {
       throw new DirectDeploymentError(`the deployment config at ${url} answered HTTP ${String(response.status)}`);
     }
-    const value = parseDeployment(await response.json(), this.options.network);
+    let value: DirectDeployment;
+    try {
+      value = parseDeployment(await response.json(), this.options.network);
+    } catch (error: unknown) {
+      // Name the URL: a wrong schema or network is almost always a wrong host.
+      if (!(error instanceof DirectDeploymentError)) throw error;
+      throw new DirectDeploymentError(`the deployment config at ${url}: ${error.message}`);
+    }
     this.cached = { at: now, value };
     return value;
   }

@@ -1,7 +1,102 @@
 {
+  "schema_version": 2,
   "network": "mainnet",
   "chain_id": "35834a8a",
-  "coin_registry": "0xc",
+  "symbols": {
+    "BTCUSD": {
+      "kind": "perp"
+    },
+    "ETHUSD": {
+      "kind": "perp"
+    },
+    "SOLUSD": {
+      "kind": "perp"
+    },
+    "SUIUSD": {
+      "kind": "perp"
+    },
+    "BNBUSD": {
+      "kind": "perp"
+    },
+    "DOGEUSD": {
+      "kind": "perp"
+    },
+    "XRPUSD": {
+      "kind": "perp"
+    },
+    "HYPEUSD": {
+      "kind": "perp"
+    },
+    "DEEPUSD": {
+      "kind": "perp"
+    },
+    "LITUSD": {
+      "kind": "perp"
+    },
+    "WALUSD": {
+      "kind": "perp"
+    },
+    "ZECUSD": {
+      "kind": "perp"
+    },
+    "EURUSD": {
+      "kind": "fx"
+    },
+    "USDJPY": {
+      "kind": "fx"
+    },
+    "AAPLXUSD": {
+      "kind": "xstock"
+    },
+    "TSLAXUSD": {
+      "kind": "xstock"
+    },
+    "COINXUSD": {
+      "kind": "xstock"
+    },
+    "CRCLXUSD": {
+      "kind": "xstock"
+    },
+    "GOOGLXUSD": {
+      "kind": "xstock"
+    },
+    "HOODXUSD": {
+      "kind": "xstock"
+    },
+    "METAXUSD": {
+      "kind": "xstock"
+    },
+    "NVDAXUSD": {
+      "kind": "xstock"
+    },
+    "MSTRXUSD": {
+      "kind": "xstock"
+    },
+    "NFLXXUSD": {
+      "kind": "xstock"
+    },
+    "QQQXUSD": {
+      "kind": "xstock"
+    },
+    "SPYXUSD": {
+      "kind": "xstock"
+    },
+    "XAUTUSD": {
+      "kind": "spot"
+    },
+    "XAGUSD": {
+      "kind": "commodity"
+    },
+    "XAUUSD": {
+      "kind": "commodity"
+    },
+    "WTIUSD": {
+      "kind": "commodity"
+    },
+    "BRENTUSD": {
+      "kind": "commodity"
+    }
+  },
   "packages": {
     "bucket_framework": {
       "published_at": "0xe2d49d67ff42dc500275f2d84841bf35632aa6c1abdb70af66a10e1de93a4400",
@@ -11,478 +106,25 @@
     "waterx_referral": {
       "published_at": "0x17235897a9c2e977d60f3ded7b05e85724d7ee846b1519e6d8af7fdbc840da37",
       "original_id": "0x17235897a9c2e977d60f3ded7b05e85724d7ee846b1519e6d8af7fdbc840da37",
-      "version": 1,
-      "referral_table": "0xbbbfeed8ebdca08e4d43eaf6f2f937ddf193b3d08ee93a4864693dbfa0d0df7b"
+      "version": 1
     },
     "enclave": {
       "published_at": "0xbce5b23dc3bca7b514adc36954cd01ac5227d17c2e7764c36e9b3808364c6693",
       "original_id": "0xbce5b23dc3bca7b514adc36954cd01ac5227d17c2e7764c36e9b3808364c6693",
       "version": 1,
-      "upgrade_capability": "0x3feabd72d8ae3b4ad29bfb1658a204bc38a265d9f364b412d1db3873b624aea7",
-      "publish_digest": "A2kDr7vmUq1fQo7KmTCvXZFA8X2UqgYevbgi8tDHvRnR",
-      "publish_checkpoint": "304657684"
+      "upgrade_capability": "0x3feabd72d8ae3b4ad29bfb1658a204bc38a265d9f364b412d1db3873b624aea7"
     },
     "waterx_rule": {
-      "published_at": "0x0a974d1987f0538c4124da2071642586f06fcc9121b1de51497b568d7906001b",
+      "published_at": "0xd4b509374033f9e707fb60f5d83fa1cb1c055de34f371e05ecb039d7ddfc5689",
       "original_id": "0x1f1207ccde07c5c1c2c7395d0f5771370bf7e8a99acf28f0a341fbd1ed3f3384",
-      "version": 2,
-      "upgrade_capability": "0x7c5e7c23895ae73bf8bba06f28d609a3fb7f5f8c09507792a1809ca136885a81",
-      "config": "0x67ee3a737b6dc489a6077698d2ff2c2b5d9a20a14e5d0a38e72818c61ccaa2cd",
-      "enclave_config": "0xba1f2058363c68f1ce76a9801e1bd709f5b2400ad91c467e7e269921ff95baec",
-      "enclave_cap": "0x3202c262a2d22d8de874ab4884a8c3aa35ec5d126ac6aefb3112fc57d0584c53",
-      "enclave": "0x7c301232fbbabd37db4df7fba843d3ef1914a427afd11d30f3e8135e0e7b28a0",
-      "enclave_pubkey": "b8f5f5b2671cafeda2de770818a1cf335315e515a46022466b64ef5c8b38b520",
-      "publish_digest": "CBBJNUmB8QdEtp1RhjAALYvmSNq1zPNsRVX4eUosMWkL",
-      "publish_checkpoint": "304657879",
-      "register_digest": "2ezRmoSLRTvpAzkZ2ipoWxo71MTbghLqV3vdg1cGCVnb",
-      "register_checkpoint": "304660405",
-      "feeds": {
-        "BTCUSD": {
-          "ticker": "BTCUSDT",
-          "sources": [
-            { "name": "binance_usdm_perp_ws", "weight": 1 },
-            { "name": "bybit_linear_perp_ws", "weight": 1 },
-            { "name": "gateio_usdt_perp_ws", "weight": 1 }
-          ],
-          "method": "confidence",
-          "min_sources": 2,
-          "kind": "perp"
-        },
-        "ETHUSD": {
-          "ticker": "ETHUSDT",
-          "sources": [
-            { "name": "binance_usdm_perp_ws", "weight": 1 },
-            { "name": "bybit_linear_perp_ws", "weight": 1 },
-            { "name": "gateio_usdt_perp_ws", "weight": 1 }
-          ],
-          "method": "confidence",
-          "min_sources": 2,
-          "kind": "perp"
-        },
-        "SOLUSD": {
-          "ticker": "SOLUSDT",
-          "sources": [
-            { "name": "binance_usdm_perp_ws", "weight": 1 },
-            { "name": "bybit_linear_perp_ws", "weight": 1 },
-            { "name": "gateio_usdt_perp_ws", "weight": 1 }
-          ],
-          "method": "median",
-          "min_sources": 2,
-          "kind": "perp"
-        },
-        "SUIUSD": {
-          "ticker": "SUIUSDT",
-          "sources": [
-            { "name": "binance_usdm_perp_ws", "weight": 1 },
-            { "name": "bybit_linear_perp_ws", "weight": 1 },
-            { "name": "gateio_usdt_perp_ws", "weight": 1 }
-          ],
-          "method": "median",
-          "min_sources": 2,
-          "kind": "perp"
-        },
-        "BNBUSD": {
-          "ticker": "BNBUSDT",
-          "sources": [
-            { "name": "binance_usdm_perp_ws", "weight": 1 },
-            { "name": "bybit_linear_perp_ws", "weight": 1 },
-            { "name": "gateio_usdt_perp_ws", "weight": 1 }
-          ],
-          "method": "median",
-          "min_sources": 2,
-          "kind": "perp"
-        },
-        "DOGEUSD": {
-          "ticker": "DOGEUSDT",
-          "sources": [
-            { "name": "binance_usdm_perp_ws", "weight": 1 },
-            { "name": "bybit_linear_perp_ws", "weight": 1 },
-            { "name": "gateio_usdt_perp_ws", "weight": 1 }
-          ],
-          "method": "median",
-          "min_sources": 2,
-          "kind": "perp"
-        },
-        "XRPUSD": {
-          "ticker": "XRPUSDT",
-          "sources": [
-            { "name": "binance_usdm_perp_ws", "weight": 1 },
-            { "name": "bybit_linear_perp_ws", "weight": 1 },
-            { "name": "gateio_usdt_perp_ws", "weight": 1 }
-          ],
-          "method": "median",
-          "min_sources": 2,
-          "kind": "perp"
-        },
-        "HYPEUSD": {
-          "ticker": "HYPEUSDT",
-          "sources": [
-            { "name": "binance_usdm_perp_ws", "weight": 1 },
-            { "name": "bybit_linear_perp_ws", "weight": 1 },
-            { "name": "gateio_usdt_perp_ws", "weight": 1 }
-          ],
-          "method": "median",
-          "min_sources": 2,
-          "kind": "perp"
-        },
-        "DEEPUSD": {
-          "ticker": "DEEPUSDT",
-          "sources": [
-            { "name": "binance_usdm_perp_ws", "weight": 1 },
-            { "name": "bybit_linear_perp_ws", "weight": 1 }
-          ],
-          "method": "median",
-          "min_sources": 2,
-          "kind": "perp"
-        },
-        "LITUSD": {
-          "ticker": "LITUSDT",
-          "sources": [
-            { "name": "binance_usdm_perp_ws", "weight": 1 },
-            { "name": "bybit_linear_perp_ws", "weight": 1 },
-            { "name": "gateio_usdt_perp_ws", "weight": 1 }
-          ],
-          "method": "median",
-          "min_sources": 2,
-          "kind": "perp"
-        },
-        "WALUSD": {
-          "ticker": "WALUSDT",
-          "sources": [
-            { "name": "binance_usdm_perp_ws", "weight": 1 },
-            { "name": "bybit_linear_perp_ws", "weight": 1 }
-          ],
-          "method": "median",
-          "min_sources": 2,
-          "kind": "perp"
-        },
-        "ZECUSD": {
-          "ticker": "ZECUSDT",
-          "sources": [
-            { "name": "binance_usdm_perp_ws", "weight": 1 },
-            { "name": "bybit_linear_perp_ws", "weight": 1 },
-            { "name": "gateio_usdt_perp_ws", "weight": 1 }
-          ],
-          "method": "median",
-          "min_sources": 2,
-          "kind": "perp"
-        },
-        "EURUSD": {
-          "ticker": "EURUSD",
-          "sources": [
-            { "name": "hyperliquid_perp_ws", "weight": 1 }
-          ],
-          "method": "confidence",
-          "min_sources": 1,
-          "kind": "fx"
-        },
-        "USDJPY": {
-          "ticker": "USDJPY",
-          "sources": [
-            { "name": "hyperliquid_perp_ws", "weight": 1 }
-          ],
-          "method": "confidence",
-          "min_sources": 1,
-          "kind": "fx"
-        },
-        "AAPLXUSD": {
-          "ticker": "AAPLXUSDT",
-          "sources": [
-            { "name": "bybit_spot_ws", "weight": 1 },
-            { "name": "gateio_spot_ws", "weight": 1 }
-          ],
-          "method": "median",
-          "min_sources": 1,
-          "kind": "xstock"
-        },
-        "TSLAXUSD": {
-          "ticker": "TSLAXUSDT",
-          "sources": [
-            { "name": "bybit_spot_ws", "weight": 1 },
-            { "name": "gateio_spot_ws", "weight": 1 }
-          ],
-          "method": "median",
-          "min_sources": 1,
-          "kind": "xstock"
-        },
-        "COINXUSD": {
-          "ticker": "COINXUSDT",
-          "sources": [
-            { "name": "bybit_spot_ws", "weight": 1 },
-            { "name": "gateio_spot_ws", "weight": 1 }
-          ],
-          "method": "median",
-          "min_sources": 1,
-          "kind": "xstock"
-        },
-        "CRCLXUSD": {
-          "ticker": "CRCLXUSDT",
-          "sources": [
-            { "name": "bybit_spot_ws", "weight": 1 },
-            { "name": "gateio_spot_ws", "weight": 1 }
-          ],
-          "method": "median",
-          "min_sources": 1,
-          "kind": "xstock"
-        },
-        "GOOGLXUSD": {
-          "ticker": "GOOGLXUSDT",
-          "sources": [
-            { "name": "bybit_spot_ws", "weight": 1 },
-            { "name": "gateio_spot_ws", "weight": 1 }
-          ],
-          "method": "median",
-          "min_sources": 1,
-          "kind": "xstock"
-        },
-        "HOODXUSD": {
-          "ticker": "HOODXUSDT",
-          "sources": [
-            { "name": "bybit_spot_ws", "weight": 1 },
-            { "name": "gateio_spot_ws", "weight": 1 }
-          ],
-          "method": "median",
-          "min_sources": 1,
-          "kind": "xstock"
-        },
-        "METAXUSD": {
-          "ticker": "METAXUSDT",
-          "sources": [
-            { "name": "bybit_spot_ws", "weight": 1 },
-            { "name": "gateio_spot_ws", "weight": 1 }
-          ],
-          "method": "median",
-          "min_sources": 1,
-          "kind": "xstock"
-        },
-        "NVDAXUSD": {
-          "ticker": "NVDAXUSDT",
-          "sources": [
-            { "name": "bybit_spot_ws", "weight": 1 },
-            { "name": "gateio_spot_ws", "weight": 1 }
-          ],
-          "method": "median",
-          "min_sources": 1,
-          "kind": "xstock"
-        },
-        "MSTRXUSD": {
-          "ticker": "MSTRXUSDT",
-          "sources": [
-            { "name": "gateio_spot_ws", "weight": 1 }
-          ],
-          "method": "direct",
-          "min_sources": 1,
-          "kind": "xstock"
-        },
-        "NFLXXUSD": {
-          "ticker": "NFLXXUSDT",
-          "sources": [
-            { "name": "gateio_spot_ws", "weight": 1 }
-          ],
-          "method": "direct",
-          "min_sources": 1,
-          "kind": "xstock"
-        },
-        "QQQXUSD": {
-          "ticker": "QQQXUSDT",
-          "sources": [
-            { "name": "gateio_spot_ws", "weight": 1 }
-          ],
-          "method": "direct",
-          "min_sources": 1,
-          "kind": "xstock"
-        },
-        "SPYXUSD": {
-          "ticker": "SPYXUSDT",
-          "sources": [
-            { "name": "gateio_spot_ws", "weight": 1 }
-          ],
-          "method": "direct",
-          "min_sources": 1,
-          "kind": "xstock"
-        },
-        "XAUTUSD": {
-          "ticker": "XAUTUSDT",
-          "sources": [
-            { "name": "bybit_spot_ws", "weight": 1 },
-            { "name": "gateio_spot_ws", "weight": 1 }
-          ],
-          "method": "median",
-          "min_sources": 1,
-          "kind": "spot"
-        },
-        "XAGUSD": {
-          "ticker": "XAGUSDT",
-          "sources": [
-            { "name": "binance_usdm_perp_ws", "weight": 1 },
-            { "name": "bybit_linear_perp_ws", "weight": 1 },
-            { "name": "gateio_usdt_perp_ws", "weight": 1 }
-          ],
-          "method": "median",
-          "min_sources": 2,
-          "kind": "commodity"
-        },
-        "XAUUSD": {
-          "ticker": "XAUUSDT",
-          "sources": [
-            { "name": "binance_usdm_perp_ws", "weight": 1 },
-            { "name": "bybit_linear_perp_ws", "weight": 1 },
-            { "name": "gateio_usdt_perp_ws", "weight": 1 }
-          ],
-          "method": "median",
-          "min_sources": 2,
-          "kind": "commodity"
-        },
-        "WTIUSD": {
-          "ticker": "CLUSDT",
-          "sources": [
-            { "name": "binance_usdm_perp_ws", "weight": 1 },
-            { "name": "gateio_usdt_perp_ws", "weight": 1 }
-          ],
-          "method": "median",
-          "min_sources": 2,
-          "kind": "commodity"
-        },
-        "BRENTUSD": {
-          "ticker": "BZUSDT",
-          "sources": [
-            { "name": "binance_usdm_perp_ws", "weight": 1 },
-            { "name": "gateio_usdt_perp_ws", "weight": 1 }
-          ],
-          "method": "median",
-          "min_sources": 2,
-          "kind": "commodity"
-        }
-      }
+      "version": 5,
+      "upgrade_capability": "0x7c5e7c23895ae73bf8bba06f28d609a3fb7f5f8c09507792a1809ca136885a81"
     },
     "pyth_rule": {
       "published_at": "0x00d486565f8bf241035df334322af9d23e8b6b81f21d7702c32f35947958f50a",
       "original_id": "0xff84f40af43336967eecf342b85bbd9b38e78b6be09cda95ec537c31ed6c6438",
       "version": 2,
       "upgrade_capability": "0x49b16566af0305d08487317a3c9ee45ea8a5e6e0fe8b2292e0754efb44be5b36",
-      "config": "0x72e030dc7e6a92d4c8e47780d27700c3cf168424832916260c134fbba59666bf",
-      "feeds": {
-        "SUIUSD": {
-          "feed_id": "0x23d7315113f5b1d3ba7a83604c44b94d79f4fd69af77f804fc7f920a6dc65744",
-          "price_info_object": "0x801dbc2f0053d34734814b2d6df491ce7807a725fe9a01ad74a07e9c51396c37"
-        },
-        "BTCUSD": {
-          "feed_id": "0xe62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43",
-          "price_info_object": "0x9a62b4863bdeaabdc9500fce769cf7e72d5585eeb28a6d26e4cafadc13f76ab2"
-        },
-        "ETHUSD": {
-          "feed_id": "0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace",
-          "price_info_object": "0x9193fd47f9a0ab99b6e365a464c8a9ae30e6150fc37ed2a89c1586631f6fc4ab"
-        },
-        "SOLUSD": {
-          "feed_id": "0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d",
-          "price_info_object": "0x9d0d275efbd37d8a8855f6f2c761fa5983293dd8ce202ee5196626de8fcd4469"
-        },
-        "DEEPUSD": {
-          "feed_id": "0x29bdd5248234e33bd93d3b81100b5fa32eaa5997843847e2c2cb16d7c6d9f7ff",
-          "price_info_object": "0x8c7f3a322b94cc69db2a2ac575cbd94bf5766113324c3a3eceac91e3e88a51ed"
-        },
-        "WALUSD": {
-          "feed_id": "0xeba0732395fae9dec4bae12e52760b35fc1c5671e2da8b449c9af4efe5d54341",
-          "price_info_object": "0xeb7e669f74d976c0b99b6ef9801e3a77716a95f1a15754e0f1399ce3fb60973d"
-        },
-        "HYPEUSD": {
-          "feed_id": "0x4279e31cc369bbcc2faf022b382b080e32a8e689ff20fbc530d2a603eb6cd98b",
-          "price_info_object": "0x1c047be615eaa5a87afa0e111b20a512dd6c0f4a1f0f691693cf852c1768f35d"
-        },
-        "XRPUSD": {
-          "feed_id": "0xec5d399846a9209f3fe5881d70aae9268c94339ff9817e8d18ff19fa05eea1c8",
-          "price_info_object": "0x93bfda25cb6b1653a9c769e8216014bd2c06997f3edb479566761fbf2abf6ac2"
-        },
-        "BNBUSD": {
-          "feed_id": "0x2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f",
-          "price_info_object": "0x9c6e77f0ecfc46aac395e21c52ccb96518f85acacae743c5b47f4ca5e29826c3"
-        },
-        "ZECUSD": {
-          "feed_id": "0xbe9b59d178f0d6a97ab4c343bff2aa69caa1eaae3e9048a65788c529b125bb24",
-          "price_info_object": "0xcc0f04f341b08fa9f1079f760d6dee779e6fdd46e50594eb931bce07f80c05d3"
-        },
-        "DOGEUSD": {
-          "feed_id": "0xdcef50dd0a4cd2dcc17e45df1676dcb336a11a61c69df7a0299b0150c672d25c",
-          "price_info_object": "0xd59a5f5173424ba725a7d033d86f2eadf2745f87a908bd27e1d27339eff598ce"
-        },
-        "LITUSD": {
-          "feed_id": "0xc0c83f00c39165892d55dcd17ade2191e289697e2ac132d9ab721e20834e2a9e",
-          "price_info_object": "0x0a725ebbb6a13fd70f56dd9be248e1ef484b62a5b037b5815f04985688478147"
-        },
-        "QQQXUSD": {
-          "feed_id": "0x178a6f73a5aede9d0d682e86b0047c9f333ed0efe5c6537ca937565219c4054d",
-          "price_info_object": "0xcce836357b028bd85e866320f194980125b58e6117a2e86a24ed5c154df1e799"
-        },
-        "SPYXUSD": {
-          "feed_id": "0x2817b78438c769357182c04346fddaad1178c82f4048828fe0997c3c64624e14",
-          "price_info_object": "0x6a2d53a802faee96b26f5fa86d9ccf05d58008e4f32c95985d12edb60f5e23ea"
-        },
-        "NVDAXUSD": {
-          "feed_id": "0x4244d07890e4610f46bbde67de8f43a4bf8b569eebe904f136b469f148503b7f",
-          "price_info_object": "0x1ccc57727035cc40a122cecd95f15240de4fb3f2acd5542c8f2109ebc47871a1"
-        },
-        "TSLAXUSD": {
-          "feed_id": "0x47a156470288850a440df3a6ce85a55917b813a19bb5b31128a33a986566a362",
-          "price_info_object": "0x678fee0f8d449160f7df3a14db41d7318e917c3afae98eed434a87073cb80c6b"
-        },
-        "AAPLXUSD": {
-          "feed_id": "0x978e6cc68a119ce066aa830017318563a9ed04ec3a0a6439010fc11296a58675",
-          "price_info_object": "0x80c9fa9060e2682528a9b02e0facfd6c4816e1bb363bdc3c9a6e94224618e03d"
-        },
-        "GOOGLXUSD": {
-          "feed_id": "0xb911b0329028cd0283e4259c33809d62942bd2716a58084e5f31d64c00b5424e",
-          "price_info_object": "0xff0bda4e0c212f409b89c6c5714c1957f6a867eced1bcfde863bd074d2a0d54c"
-        },
-        "METAXUSD": {
-          "feed_id": "0xbf3e5871be3f80ab7a4d1f1fd039145179fb58569e159aee1ccd472868ea5900",
-          "price_info_object": "0x0cd398ea0262b504a946b3d4acde457a21bee9d41a27083ebf6ec19f99272155"
-        },
-        "MSTRXUSD": {
-          "feed_id": "0x53f95ba4e23ed15ea56083e2ee9a5eec48055d6f59033d4bb95f1ca2a2349c28",
-          "price_info_object": "0xab35f27f1118959cbf82e5ab907808df40b25c16c5745c21a1af721a2e0a926e"
-        },
-        "COINXUSD": {
-          "feed_id": "0x641435d5dffb5311140b480517c79986d8488d5cf08a11eec53b83ad02cab33f",
-          "price_info_object": "0xf19da6da74181c159f3619cc50fdd4dcc62d15538c707175464968a14cbb0464"
-        },
-        "HOODXUSD": {
-          "feed_id": "0xdd49a9ac6df5cbfa9d8fc6371f7ae927a74d5c6763c1c01b4220d70314c647f9",
-          "price_info_object": "0x1f0a01610d47dfe0506bb4cfd903335bf2d148adc86459c06385b97309e51d2a"
-        },
-        "CRCLXUSD": {
-          "feed_id": "0xc13184461c0c80d98ffcd89be627c2220b94a96c7c67f0c4b16bc12fd3b17758",
-          "price_info_object": "0x299b647faef2456b93155b5609ac5edc9ba18bb4f5f6a27383920a528b2ff052"
-        },
-        "NFLXXUSD": {
-          "feed_id": "0x02a67e6184e6c9dd65e14745a2a80df8b2b3d2ca91b4b191404936003d9929ae",
-          "price_info_object": "0x15a9c98690cc7c97c96208064d4de360fafd42f5bbc7d87a2990d5b5aca22548"
-        },
-        "XAUTUSD": {
-          "feed_id": "0x44465e17d2e9d390e70c999d5a11fda4f092847fcd2e3e5aa089d96c98a30e67",
-          "price_info_object": "0x96e73131630c4476aab2a467f57585456a8f063e9403b3caa5d013a3691c9400"
-        },
-        "XAGUSD": {
-          "feed_id": "0xf2fb02c32b055c805e7238d628e5e9dadef274376114eb1f012337cabe93871e",
-          "price_info_object": "0xd5c5afce92e988bf0a0940d618443c36c31dd7f239a545982db3166e963c9aa4"
-        },
-        "WTIUSD": {
-          "feed_id": "0x925ca92ff005ae943c158e3563f59698ce7e75c5a8c8dd43303a0a154887b3e6",
-          "price_info_object": "0x71e40a6e2af5a194e149a761ae11d43e987b9ecbee1834d65d61103721c72e02"
-        },
-        "BRENTUSD": {
-          "feed_id": "0x27f0d5e09a830083e5491795cac9ca521399c8f7fd56240d09484b14e614d57a",
-          "price_info_object": "0x65fcc9fea8b03bb93bb1b99e29ead4f49dd5ab6d4f0c5734104a224008b7f322"
-        },
-        "EURUSD": {
-          "feed_id": "0xa995d00bb36a63cef7fd2c287dc105fc8f3d93779f062f09551b0af3e81ec30b",
-          "price_info_object": "0xe3dfb7a7682ed51c9ba78e027ba92d2a27a59f4c574ebe03b543a544fc04fab7"
-        },
-        "USDJPY": {
-          "feed_id": "0xef2c98c804ba503c6a707e38be4dfbb16683775f195b091252bf24693042fd52",
-          "price_info_object": "0xde0e6088e7292f50738ecbdebd4502415d4f8de4cfe001918e29b3f4faf15baa"
-        }
-      },
       "mvr": {
         "name": "@waterx-protocol/pyth-rule",
         "package_info_id": "0xd285db86b173801d534cf1ab102bd3df10e4a6870805db39a320008c81bf41f1",
@@ -498,53 +140,215 @@
       "published_at": "0x5435e3b146de4083ecd3de9fb4638a397d1ba44db8f1f77b89f256f05f80cd5f",
       "original_id": "0xf9a4656ef1336509636f4d0325543bb723c40b8a127da52b3562528627da5fe9",
       "version": 2,
-      "upgrade_capability": "0x845d43431cb06ed694f873ac1af740703ae7e10d0c7601b84e96344c7e058bc0",
-      "config": "0x923443623006b448f7820197e19463c63ae5d05ab3b7955041c778340bc43cbd",
-      "state": "0xd0db9c1e9212a98120384bf78d8b8c985d87b9ee6921dffcf9d1394062911573",
-      "feeds": {
-        "SUIUSD": 11,
-        "BTCUSD": 1,
-        "ETHUSD": 2,
-        "SOLUSD": 6,
-        "DEEPUSD": 173,
-        "WALUSD": 624,
-        "HYPEUSD": 110,
-        "XRPUSD": 14,
-        "BNBUSD": 15,
-        "ZECUSD": 66,
-        "QQQXUSD": 1837,
-        "SPYXUSD": 1843,
-        "NVDAXUSD": 1833,
-        "TSLAXUSD": 1847,
-        "AAPLXUSD": 1792,
-        "GOOGLXUSD": 1808,
-        "METAXUSD": 1824,
-        "MSTRXUSD": 1827,
-        "COINXUSD": 1796,
-        "HOODXUSD": 1815,
-        "CRCLXUSD": 1798,
-        "NFLXXUSD": 2685,
-        "XAUTUSD": 172,
-        "DOGEUSD": 13,
-        "LITUSD": 2921
-      }
+      "upgrade_capability": "0x845d43431cb06ed694f873ac1af740703ae7e10d0c7601b84e96344c7e058bc0"
     },
     "constant_rule": {
       "published_at": "0x685dcb32ce65e0eaab691596bab72c6ace4f227f81277f83cc5bd59c6e574d09",
       "original_id": "0x685dcb32ce65e0eaab691596bab72c6ace4f227f81277f83cc5bd59c6e574d09",
       "version": 1,
-      "upgrade_capability": "0x0cb9d69784aba5a5418813a43ccd61727c9ca4b9a4ddd254b03841464be65e79",
-      "config": "0xa3d39ebf2b25c242b4589f54af2cb7e601b1356e5f4e57d93f17d043bf9785f1",
-      "feeds": {
-        "USDCUSD": {
-          "price": "1000000000"
-        }
-      }
+      "upgrade_capability": "0x0cb9d69784aba5a5418813a43ccd61727c9ca4b9a4ddd254b03841464be65e79"
     },
     "waterx_oracle": {
       "published_at": "0xd6fd5fa8be2f2cb3042fbb11f31f26c27280676f6a08681b16cbb5e4cb64f24e",
       "original_id": "0xd6fd5fa8be2f2cb3042fbb11f31f26c27280676f6a08681b16cbb5e4cb64f24e",
       "version": 1,
+      "upgrade_capability": "0x00a94e9ea3c4b283e2ebbe8610eb027432e150f2988fd1d786e3c0b515451d1d",
+      "mvr": {
+        "name": "@waterx-protocol/oracle",
+        "package_info_id": "0x333f47bd6f464f45198bf28d7e48e40e9a32c10db13c8dd60c6103b354e52dff",
+        "app_cap_id": "0x87adbff62cbc751dff647583b456307ef9b1ce2d5addcb4037a71259a7d8c1ce",
+        "git": {
+          "repo": "https://github.com/WaterXProtocol/waterx-contract",
+          "path": "waterx_oracle",
+          "version": 1
+        }
+      }
+    },
+    "waterx_perp": {
+      "published_at": "0x2d986babdac1ee98767c38c349d34402ddb85481152ac50ace0fc86e22b1fd47",
+      "original_id": "0x44dad8a2899167fe2806c2c298366c0824180fc382aa66cb8bd034b2e9aef96f",
+      "version": 3,
+      "upgrade_capability": "0x6ecbcb8c63d56c97ae7b8f10cf0dab83fea6ee537fa53f74f5c9a94513caf963",
+      "mvr": {
+        "name": "@waterx-protocol/perp",
+        "package_info_id": "0xcd25ffd710320745092d401bca3767f22e14a3baf2294fae0ce6056b181d7c48",
+        "app_cap_id": "0x2276b63aaa123a6e696c019acf54dd130de36d7a183a3062e587a1bc7f8414c2",
+        "git": {
+          "repo": "https://github.com/WaterXProtocol/waterx-contract",
+          "path": "waterx_perp",
+          "version": 2
+        }
+      }
+    },
+    "wlp": {
+      "published_at": "0x183b4cbecf29d6de0a94a90547e16ec7c3de7100c0852fbfbe73e61eed97e5cc",
+      "original_id": "0x183b4cbecf29d6de0a94a90547e16ec7c3de7100c0852fbfbe73e61eed97e5cc",
+      "version": 1,
+      "upgrade_capability": "0xc73a290cb8c3a00635ea91d64b0faf6cb5a41cb1f2e4e72f63f6a3c3e3d094f2"
+    },
+    "waterx_account": {
+      "published_at": "0x6cb6f3be75d37cd2b7db0e9fdac11b72ff0669765382cc9e00441d178b58bdbe",
+      "original_id": "0xe308bd40bd81aa42b9245e4b51b3fe63801c77c78a76be4ce5902aae549f7221",
+      "version": 2,
+      "upgrade_capability": "0x80a4247b73d6a704e003158d4384565c208f72103daaecb0d7cbebe06886da35",
+      "mvr": {
+        "name": "@waterx-protocol/account",
+        "package_info_id": "0x1767b4b9d79d534f283f204a086e5a3c29e9398eafb11b020c35db5143c9dcfe",
+        "app_cap_id": "0xa1a67c436e21c9389816420f4528468c1dd2837f07ce17ae6c8f979db42ce46a",
+        "git": {
+          "repo": "https://github.com/WaterXProtocol/waterx-contract",
+          "path": "waterx_account",
+          "version": 1
+        }
+      }
+    },
+    "waterx_perp_view": {
+      "published_at": "0xace3c08864acdbc7163de6f72347213ac2fe03044a8c2c4cc3bbeb80e2cf5cdb",
+      "original_id": "0xace3c08864acdbc7163de6f72347213ac2fe03044a8c2c4cc3bbeb80e2cf5cdb",
+      "version": 1,
+      "upgrade_capability": "0x5d5d9c474ef8cb6997a00697a922d63d541dbe614b0b91bd38a287bd66ad9332",
+      "mvr": {
+        "name": "@waterx-protocol/perp-view",
+        "package_info_id": "0xcde0a9c052cce154f507e6d67042e39be2072bf51858f014a67c0649d10b4025",
+        "app_cap_id": "0x2e4d2ae10d5c88a3bbcbb7556795c55f201e1017b4ac1b976216f061079df6b5",
+        "git": {
+          "repo": "https://github.com/WaterXProtocol/waterx-contract",
+          "path": "waterx_perp_view",
+          "version": 1
+        }
+      }
+    },
+    "waterx_staking": {
+      "published_at": "0xda968d77a68decca71f5c0b0d79d06be601374770380f39af90de6285d66ad20",
+      "original_id": "0x061d53088c7beede5b7f087ed950563b94722104f26f5f84ea5d51921b1b7bf4",
+      "version": 2,
+      "upgrade_capability": "0x415d266f6543b679b9780c747da05b0c27c378d37ee6b92dc6d7b41e3581e374",
+      "mvr": {
+        "name": "@waterx-protocol/staking",
+        "package_info_id": "0xee63c8df275ff5abe02c5b2d4dafd1aaa90413b44d871a417ece24dd60e113c1",
+        "app_cap_id": "0xdee56c71751827c70558adad7aa4d80a8e407e1d585cf592bb56d970d5b7ffc3",
+        "git": {
+          "repo": "https://github.com/WaterXProtocol/waterx-contract",
+          "path": "waterx_staking",
+          "version": 1
+        }
+      }
+    },
+    "waterx_credit": {
+      "published_at": "0xf22d3e583abf09f4b01733fe0abf5c056b5fe1d704d62607f42551ea1245704f",
+      "original_id": "0x86e05a9f95757ed4574cf209683e69e5e1fa4ac7ce7a529c91848343a232c989",
+      "version": 3,
+      "upgrade_capability": "0x9d90ffd5ff2b38c52f12b965465e3d5dcdfb4cac5119be570ff8cbdeced71c74",
+      "mvr": {
+        "name": "@waterx-protocol/credit",
+        "package_info_id": "0x21cc502370904fadfe8a5519e98794670e08fc19838137f96948a89b13b9684c",
+        "app_cap_id": "0x280b5745afeb1ad881a981754e4d66cc3d7936f1f6355f2702e4c4b96a870be8",
+        "git": {
+          "repo": "https://github.com/WaterXProtocol/waterx-contract",
+          "path": "waterx_credit/sui/credit",
+          "version": 2
+        }
+      }
+    },
+    "native_custody": {
+      "published_at": "0xb92ce2e086cd12366255695228fdb148b9f5af5e72ac74126fe23a64dcacf831",
+      "original_id": "0xebd4336ac8d5a12fc7d314b84f8c06a8190dcdfc3c9ef4133ffb53e0aed3c70a",
+      "version": 4,
+      "upgrade_capability": "0xde3946cd9575f19bd02b77af1c4f2ec8a85bacd145bcfab2d43a8c62a24913f0",
+      "mvr": {
+        "name": "@waterx-protocol/native-custody",
+        "package_info_id": "0xc453094e95dc518b75b2ff16934d3cb532af6c33a752cf27f9709ef07e82b60c",
+        "app_cap_id": "0x96dbf7b945c20a961ff8bf2a84bebabfb29eaf7930c1f7e72d7e933dc0eb0666",
+        "git": {
+          "repo": "https://github.com/WaterXProtocol/waterx-contract",
+          "path": "waterx_credit/sui/native_custody",
+          "version": 2
+        }
+      }
+    },
+    "wormhole_bridge": {
+      "published_at": "0x5df5483a84cba4c244e98ef6519c2358d690cd8316dc50f09278c709371f0ee9",
+      "original_id": "0xc6129ed341b014213284742d681766c48ea3cbb287f91685f0c0ccd608e17982",
+      "version": 3,
+      "upgrade_capability": "0x131b2e79dbdf2a8b7b728c70008443ed4fe55f077fcb227663a847df79ea41e8",
+      "mvr": {
+        "name": "@waterx-protocol/wormhole-bridge",
+        "package_info_id": "0x080c3f3d9503f4f844bb2beb548286766300bee1a74f232aea5aaf900ef26a26",
+        "app_cap_id": "0xd7f2ae43574470a89c63a807e1c34c62866e5405d020326fec5d299e2349ec65",
+        "git": {
+          "repo": "https://github.com/WaterXProtocol/waterx-contract",
+          "path": "waterx_credit/sui/wormhole_bridge",
+          "version": 2
+        }
+      }
+    },
+    "withdrawal_queue": {
+      "published_at": "0x5599b5f5de0d762920afb9158b1df8b3df84822394eecba617a6fbdf865b10cb",
+      "original_id": "0x257a2e2574ba118fb25ee2bb110db032a827a70e2b621dfc0005c8cffbc24a48",
+      "version": 5,
+      "upgrade_capability": "0x43a8a34d356baf96ad64be205a96bb072e8e4304271a95657e474f62358a6163",
+      "mvr": {
+        "name": "@waterx-protocol/withdrawal-queue",
+        "package_info_id": "0x2d0364578c81b65ec1e6345741cd91c1ef81321ca6212d05e6514c1fe0b2ad3f",
+        "app_cap_id": "0x24d18b7921cfa392281a535080c73c989e6878207f62d009eb5239c687af36d1",
+        "git": {
+          "repo": "https://github.com/WaterXProtocol/waterx-contract",
+          "path": "waterx_credit/sui/withdrawal_queue",
+          "version": 2
+        }
+      }
+    },
+    "waterx_prediction": {
+      "published_at": "0x082328867e8b188412f5214342de5fa1524a398d01acefbdeb00ac08003b1745",
+      "original_id": "0xa5cfafe6660a8bf37eedf1a09dba633048da374c30b835668473689668f9ef57",
+      "version": 7,
+      "upgrade_capability": "0x168e6d530c04a595736b4269d5100cb2d2df893b8ec629a6603b369992f5ae4a",
+      "mvr": {
+        "name": "@waterx-protocol/prediction",
+        "package_info_id": "0x590418f8b396848b8e7aa1133e734a5b60d2553df235b12d4992e601124e4e80",
+        "app_cap_id": "0x52a789a6538e9e3c4cca6cfaa771c5a2db01aea1ab8c79f9107a74e20ce93bd7",
+        "git": {
+          "repo": "https://github.com/WaterXProtocol/waterx-contract",
+          "path": "waterx_prediction",
+          "version": 1
+        }
+      }
+    },
+    "waterx_prediction_gift": {
+      "published_at": "0xb8095fcd57c81c96b7b7742111d9dde1a637d614d6acdfbc7ddf16a90032c560",
+      "original_id": "0x6f279e417396f0c1a2e003f2508f2da38bed7e1bfd275f2a897ca0edd671929e",
+      "version": 3,
+      "upgrade_capability": "0xdb55427e26d4642a462d69aebce48b6973b7c090ba8793b89667dc931c97c06a"
+    },
+    "usd_credit": {
+      "published_at": "0xc70a37eafe54712b520cb6566e5a2d2f60bc70f32eb9fb08cac40394b5a96bf4",
+      "original_id": "0xc70a37eafe54712b520cb6566e5a2d2f60bc70f32eb9fb08cac40394b5a96bf4",
+      "version": 1,
+      "upgrade_capability": "0xfc3f69f378e5e7196531ee0b2062292cccc22590448dc8191bb1e5c3c57f6130"
+    },
+    "sui_credit": {
+      "published_at": "0xea6415244a1548816dec9762e2a169b2c7dc298e14a85a95d365057adcfa5b64",
+      "original_id": "0xea6415244a1548816dec9762e2a169b2c7dc298e14a85a95d365057adcfa5b64",
+      "version": 1,
+      "upgrade_capability": "0xafd8e9dadc16be201341fb6fc037edfff2348b4eb4cb87e9271c66b713190bef"
+    },
+    "deep_credit": {
+      "published_at": "0x751a4363099bce4d6034fb182398ae62d5ecde0f90d8be1d21e876548c815cca",
+      "original_id": "0x751a4363099bce4d6034fb182398ae62d5ecde0f90d8be1d21e876548c815cca",
+      "version": 1,
+      "upgrade_capability": "0xa3eec37e33c935f9ec6728e48901357808a56f855b7a9f6a76189fc820cf1546"
+    },
+    "wal_credit": {
+      "published_at": "0x9b4bad4ee9207945724b2531d24a4b7f2d33224430351e8d88ba2d70eafc1bca",
+      "original_id": "0x9b4bad4ee9207945724b2531d24a4b7f2d33224430351e8d88ba2d70eafc1bca",
+      "version": 1,
+      "upgrade_capability": "0xf2ea251c28019416db87a02cdc3f3d8a71d1e144f01c14da34a809ef974d16de"
+    }
+  },
+  "objects": {
+    "oracle": {
+      "oracle": "0x53cb392436aa9c1a1ae59350e3426e5c22126e9e140a9967f6a897829d00e151",
+      "listing_cap": "0xfaa03cc36b34c8ffa54cb351d849bead0bfdee65fa94968d163e63131163a68c",
       "aggregators": {
         "SUIUSD": "0x84d23c5cb530c6d3c9750ac7bdee8e97a8a8d5af406350882f139f38b7f94347",
         "BTCUSD": "0x0b1d22c75f0780dc6ce66c573ffe80572a178bbc5164dd698d3f53346baf4f14",
@@ -577,28 +381,11 @@
         "EURUSD": "0xfd7108b572ccf73dba72b1bf435b591cb43dd052fd2711b163750d3dd6cbea19",
         "USDJPY": "0x60a9876ee5578cbd291cb0de147401650c3ceaf69db53e926b01b4d8209f5536",
         "USDCUSD": "0x4fca2f30cef42f0adfeb88c7b6eef04cf6c324ce6c51f7c7a2b28ad1856348f2"
-      },
-      "upgrade_capability": "0x00a94e9ea3c4b283e2ebbe8610eb027432e150f2988fd1d786e3c0b515451d1d",
-      "oracle": "0x53cb392436aa9c1a1ae59350e3426e5c22126e9e140a9967f6a897829d00e151",
-      "listing_cap": "0xfaa03cc36b34c8ffa54cb351d849bead0bfdee65fa94968d163e63131163a68c",
-      "publish_digest": "27BUEDeitk52L3czDkRmYnfe7QnmN36tLYWHoC5Tfp8J",
-      "publish_checkpoint": "282565926",
-      "mvr": {
-        "name": "@waterx-protocol/oracle",
-        "package_info_id": "0x333f47bd6f464f45198bf28d7e48e40e9a32c10db13c8dd60c6103b354e52dff",
-        "app_cap_id": "0x87adbff62cbc751dff647583b456307ef9b1ce2d5addcb4037a71259a7d8c1ce",
-        "git": {
-          "repo": "https://github.com/WaterXProtocol/waterx-contract",
-          "path": "waterx_oracle",
-          "version": 1
-        }
       }
     },
-    "waterx_perp": {
-      "published_at": "0x2d986babdac1ee98767c38c349d34402ddb85481152ac50ace0fc86e22b1fd47",
-      "original_id": "0x44dad8a2899167fe2806c2c298366c0824180fc382aa66cb8bd034b2e9aef96f",
-      "version": 3,
-      "upgrade_capability": "0x6ecbcb8c63d56c97ae7b8f10cf0dab83fea6ee537fa53f74f5c9a94513caf963",
+    "perp": {
+      "global_config": "0xf9110d82767c91c381d7be230bdad5a8c2e6107d02c8a243ab02e333fb29f7b4",
+      "admin_cap": "0x647dc890381d1514633e5958cfd7f2f9a718da031bb7c7b303bffdd1a3de8099",
       "market_registry_wlp": "0x6657a7d57c9a8769a81041ea53834d080204672f5098dc7e8d91c1f8d4e03735",
       "markets": {
         "SUIUSD": {
@@ -721,72 +508,18 @@
           "market": "0x69459359c402be7b9b34ebc77c26e1499cf4399ebcf15f7cbaf5f5f3ccf679fc",
           "config": "0x3d13d4e5c277c0b05952b95f3f09e0b819d680961e4b40a24805270625a2e2c4"
         }
-      },
-      "global_config": "0xf9110d82767c91c381d7be230bdad5a8c2e6107d02c8a243ab02e333fb29f7b4",
-      "admin_cap": "0x647dc890381d1514633e5958cfd7f2f9a718da031bb7c7b303bffdd1a3de8099",
-      "mvr": {
-        "name": "@waterx-protocol/perp",
-        "package_info_id": "0xcd25ffd710320745092d401bca3767f22e14a3baf2294fae0ce6056b181d7c48",
-        "app_cap_id": "0x2276b63aaa123a6e696c019acf54dd130de36d7a183a3062e587a1bc7f8414c2",
-        "git": {
-          "repo": "https://github.com/WaterXProtocol/waterx-contract",
-          "path": "waterx_perp",
-          "version": 2
-        }
       }
     },
     "wlp": {
-      "published_at": "0x183b4cbecf29d6de0a94a90547e16ec7c3de7100c0852fbfbe73e61eed97e5cc",
-      "original_id": "0x183b4cbecf29d6de0a94a90547e16ec7c3de7100c0852fbfbe73e61eed97e5cc",
-      "version": 1,
-      "upgrade_capability": "0xc73a290cb8c3a00635ea91d64b0faf6cb5a41cb1f2e4e72f63f6a3c3e3d094f2",
+      "pool": "0xfcf9c1beaae8274a32cf3cc4717ec24acf3f96195abb213f0db4d6c80055a545",
+      "aum": "0x5265d7ca9e725e935aab3624915edb1df3bd9ddeb36c5f55b7996595fdd1b371",
+      "currency_type": "0x7ede6728f1c9764de8f9642c05efea850f276df53c81ed8eaefa9a5669f7e14f",
       "metadata_cap": "0x2d6a2eed24a0d458ce5eb6dd65c4a579511d3e7f71c871bc77ad9409f3f9aa6b",
-      "currency": "0x7ede6728f1c9764de8f9642c05efea850f276df53c81ed8eaefa9a5669f7e14f",
-      "wlp_pool": "0xfcf9c1beaae8274a32cf3cc4717ec24acf3f96195abb213f0db4d6c80055a545",
       "pool_tokens": {
         "USDCUSD": "0xc70a37eafe54712b520cb6566e5a2d2f60bc70f32eb9fb08cac40394b5a96bf4::usd::USD"
-      },
-      "wlp_aum": "0x5265d7ca9e725e935aab3624915edb1df3bd9ddeb36c5f55b7996595fdd1b371"
-    },
-    "waterx_account": {
-      "published_at": "0x6cb6f3be75d37cd2b7db0e9fdac11b72ff0669765382cc9e00441d178b58bdbe",
-      "original_id": "0xe308bd40bd81aa42b9245e4b51b3fe63801c77c78a76be4ce5902aae549f7221",
-      "version": 2,
-      "upgrade_capability": "0x80a4247b73d6a704e003158d4384565c208f72103daaecb0d7cbebe06886da35",
-      "account_registry": "0x4bdad79586cad7617768bd991fd6988b796e88339d8ee4ff89c4e5652239bb45",
-      "admin_cap": "0x7b990d36868f191e575625036d737b23b20abd3a1b38e80a8734222b3a88cff8",
-      "mvr": {
-        "name": "@waterx-protocol/account",
-        "package_info_id": "0x1767b4b9d79d534f283f204a086e5a3c29e9398eafb11b020c35db5143c9dcfe",
-        "app_cap_id": "0xa1a67c436e21c9389816420f4528468c1dd2837f07ce17ae6c8f979db42ce46a",
-        "git": {
-          "repo": "https://github.com/WaterXProtocol/waterx-contract",
-          "path": "waterx_account",
-          "version": 1
-        }
       }
     },
-    "waterx_perp_view": {
-      "published_at": "0xace3c08864acdbc7163de6f72347213ac2fe03044a8c2c4cc3bbeb80e2cf5cdb",
-      "original_id": "0xace3c08864acdbc7163de6f72347213ac2fe03044a8c2c4cc3bbeb80e2cf5cdb",
-      "version": 1,
-      "upgrade_capability": "0x5d5d9c474ef8cb6997a00697a922d63d541dbe614b0b91bd38a287bd66ad9332",
-      "mvr": {
-        "name": "@waterx-protocol/perp-view",
-        "package_info_id": "0xcde0a9c052cce154f507e6d67042e39be2072bf51858f014a67c0649d10b4025",
-        "app_cap_id": "0x2e4d2ae10d5c88a3bbcbb7556795c55f201e1017b4ac1b976216f061079df6b5",
-        "git": {
-          "repo": "https://github.com/WaterXProtocol/waterx-contract",
-          "path": "waterx_perp_view",
-          "version": 1
-        }
-      }
-    },
-    "waterx_staking": {
-      "published_at": "0xda968d77a68decca71f5c0b0d79d06be601374770380f39af90de6285d66ad20",
-      "original_id": "0x061d53088c7beede5b7f087ed950563b94722104f26f5f84ea5d51921b1b7bf4",
-      "version": 2,
-      "upgrade_capability": "0x415d266f6543b679b9780c747da05b0c27c378d37ee6b92dc6d7b41e3581e374",
+    "staking": {
       "admin_cap": "0xc6fe782cb14fde8812a8fae2fc1e1c58af7f25bf99b51ad6487c2454e60797bb",
       "pools": {
         "WLP": "0x80c4aa85c9acf0ccf919fe020d97f6890aacb65afb246bd9433c37d5fb069413"
@@ -804,45 +537,49 @@
             "decimals": 6
           }
         }
-      },
-      "mvr": {
-        "name": "@waterx-protocol/staking",
-        "package_info_id": "0xee63c8df275ff5abe02c5b2d4dafd1aaa90413b44d871a417ece24dd60e113c1",
-        "app_cap_id": "0xdee56c71751827c70558adad7aa4d80a8e407e1d585cf592bb56d970d5b7ffc3",
-        "git": {
-          "repo": "https://github.com/WaterXProtocol/waterx-contract",
-          "path": "waterx_staking",
-          "version": 1
-        }
       }
     },
-    "waterx_credit": {
-      "published_at": "0xf22d3e583abf09f4b01733fe0abf5c056b5fe1d704d62607f42551ea1245704f",
-      "original_id": "0x86e05a9f95757ed4574cf209683e69e5e1fa4ac7ce7a529c91848343a232c989",
-      "version": 3,
-      "upgrade_capability": "0x9d90ffd5ff2b38c52f12b965465e3d5dcdfb4cac5119be570ff8cbdeced71c74",
-      "credit_registry": "0x3b32d761b1182531f105d84c5869c66d7c9958c689a1d51a3347db7ac6356c5e",
+    "account": {
+      "registry": "0x4bdad79586cad7617768bd991fd6988b796e88339d8ee4ff89c4e5652239bb45",
+      "admin_cap": "0x7b990d36868f191e575625036d737b23b20abd3a1b38e80a8734222b3a88cff8"
+    },
+    "referral": {
+      "table": "0xbbbfeed8ebdca08e4d43eaf6f2f937ddf193b3d08ee93a4864693dbfa0d0df7b"
+    },
+    "credit": {
+      "registry": "0x3b32d761b1182531f105d84c5869c66d7c9958c689a1d51a3347db7ac6356c5e",
       "credit_type": "0xc70a37eafe54712b520cb6566e5a2d2f60bc70f32eb9fb08cac40394b5a96bf4::usd::USD",
-      "mvr": {
-        "name": "@waterx-protocol/credit",
-        "package_info_id": "0x21cc502370904fadfe8a5519e98794670e08fc19838137f96948a89b13b9684c",
-        "app_cap_id": "0x280b5745afeb1ad881a981754e4d66cc3d7936f1f6355f2702e4c4b96a870be8",
-        "git": {
-          "repo": "https://github.com/WaterXProtocol/waterx-contract",
-          "path": "waterx_credit/sui/credit",
-          "version": 2
+      "registries": {
+        "USD": {
+          "registry": "0x3b32d761b1182531f105d84c5869c66d7c9958c689a1d51a3347db7ac6356c5e",
+          "credit_type": "0xc70a37eafe54712b520cb6566e5a2d2f60bc70f32eb9fb08cac40394b5a96bf4::usd::USD",
+          "decimals": 6,
+          "metadata_cap": "0xd0913660dbd60661c33c01cde5a6f3187c837842680d39af9bd25e3a5fe0687e"
+        },
+        "SUI": {
+          "registry": "0x87d21d55e93ce7d1ef0baea608702881c712361c4c9bbe69fd3ba899a7ecb1de",
+          "credit_type": "0xea6415244a1548816dec9762e2a169b2c7dc298e14a85a95d365057adcfa5b64::sui::SUI",
+          "decimals": 6,
+          "metadata_cap": "0x18816ee4813be66756e17dfd393752905a8832b318295773f1d8a99f343dd6ae"
+        },
+        "DEEP": {
+          "registry": "0x6497560b412736c6c376e904e113b24584ea2fc1913f1a7e325544c6566c6570",
+          "credit_type": "0x751a4363099bce4d6034fb182398ae62d5ecde0f90d8be1d21e876548c815cca::deep::DEEP",
+          "decimals": 6,
+          "metadata_cap": "0x678e9c55f8af9352e13647bf2e21b5f1533992ac2d4996fcacd85d4ade1326f5"
+        },
+        "WAL": {
+          "registry": "0x52026d063c033c121c1b3d56ecf47728129ba6a52eab0ff32628c84efe251ab3",
+          "credit_type": "0x9b4bad4ee9207945724b2531d24a4b7f2d33224430351e8d88ba2d70eafc1bca::wal::WAL",
+          "decimals": 6,
+          "metadata_cap": "0x2a0d8bf68a401e7effc82ec1c714bed67f09ba3b522e55bd5d1e9747f9a9ea85"
         }
       }
     },
-    "native_custody": {
-      "published_at": "0x84e1f8aa9456205e6e38e878988e5ee4714f2254d7408ee40b455f0e8a1446c0",
-      "original_id": "0xebd4336ac8d5a12fc7d314b84f8c06a8190dcdfc3c9ef4133ffb53e0aed3c70a",
-      "version": 3,
-      "upgrade_capability": "0xde3946cd9575f19bd02b77af1c4f2ec8a85bacd145bcfab2d43a8c62a24913f0",
+    "custody": {
       "vault": "0xf27ebfd21ea4ea759beefb1c4385825e02ab6c50f57305abec601ea4522d04bd",
       "assets": [
         {
-          "_comment": "Phase 14b custody_vault::add_asset rows. mint_fee_scaled / burn_fee_scaled are u128 1e9-scaled Float (0=no fee; 1_000_000=0.1%; 1_000_000_000=100%). min_burn_amount is the dust floor in the asset's smallest unit.",
           "name": "USDC",
           "type": "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC",
           "decimal": 6,
@@ -859,101 +596,319 @@
           "min_burn_amount": "0"
         }
       ],
-      "mvr": {
-        "name": "@waterx-protocol/native-custody",
-        "package_info_id": "0xc453094e95dc518b75b2ff16934d3cb532af6c33a752cf27f9709ef07e82b60c",
-        "app_cap_id": "0x96dbf7b945c20a961ff8bf2a84bebabfb29eaf7930c1f7e72d7e933dc0eb0666",
-        "git": {
-          "repo": "https://github.com/WaterXProtocol/waterx-contract",
-          "path": "waterx_credit/sui/native_custody",
-          "version": 2
+      "vaults": {
+        "USD": {
+          "vault": "0xf27ebfd21ea4ea759beefb1c4385825e02ab6c50f57305abec601ea4522d04bd",
+          "assets": [
+            {
+              "name": "USDC",
+              "type": "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC",
+              "decimal": 6,
+              "mint_fee_scaled": "0",
+              "burn_fee_scaled": "500000",
+              "min_burn_amount": "0"
+            },
+            {
+              "name": "USDSUI",
+              "type": "0x44f838219cf67b058f3b37907b655f226153c18e33dfcd0da559a844fea9b1c1::usdsui::USDSUI",
+              "decimal": 6,
+              "mint_fee_scaled": "0",
+              "burn_fee_scaled": "500000",
+              "min_burn_amount": "0"
+            }
+          ]
+        },
+        "SUI": {
+          "vault": "0x10962d9414db8f77d4354d73dbf5c90b9ae6f9f1aae5f1f41682a5cca971cc52",
+          "assets": [
+            {
+              "name": "SUI",
+              "type": "0x2::sui::SUI",
+              "decimal": 9,
+              "mint_fee_scaled": "0",
+              "burn_fee_scaled": "500000",
+              "min_burn_amount": "0"
+            }
+          ]
+        },
+        "DEEP": {
+          "vault": "0xc8286d53d3820f935c78defaa3df558a503170877e3722c6922483c86368ccf2",
+          "assets": [
+            {
+              "name": "DEEP",
+              "type": "0xdeeb7a4662eec9f2f3def03fb937a663dddaa2e215b8078a284d026b7946c270::deep::DEEP",
+              "decimal": 6,
+              "mint_fee_scaled": "0",
+              "burn_fee_scaled": "500000",
+              "min_burn_amount": "0"
+            }
+          ]
+        },
+        "WAL": {
+          "vault": "0xe3f3392a9fbdd1c901aee860b50b6de2c7ae371ce9c3880f87b73875e349295a",
+          "assets": [
+            {
+              "name": "WAL",
+              "type": "0x356a26eb9e012a68958082340d4c4116e7f55615cf27affcff209cf0ae544f59::wal::WAL",
+              "decimal": 9,
+              "mint_fee_scaled": "0",
+              "burn_fee_scaled": "500000",
+              "min_burn_amount": "0"
+            }
+          ]
         }
       }
     },
-    "wormhole_bridge": {
-      "published_at": "0x5df5483a84cba4c244e98ef6519c2358d690cd8316dc50f09278c709371f0ee9",
-      "original_id": "0xc6129ed341b014213284742d681766c48ea3cbb287f91685f0c0ccd608e17982",
-      "version": 3,
-      "upgrade_capability": "0x131b2e79dbdf2a8b7b728c70008443ed4fe55f077fcb227663a847df79ea41e8",
-      "bridge": "0xe7275d334a1a65deae0133a20a7ac83cb49b1b4629718c4b8cd21dcf37277c1b",
+    "bridge": {
+      "state": "0xe7275d334a1a65deae0133a20a7ac83cb49b1b4629718c4b8cd21dcf37277c1b",
       "emitter_cap": "0x28a1e7abc1fa459b1c82e5d86a9c71af9c8c893d5c288196d3b0e4968675924d",
       "wormhole_state": "0xaeab97f96cf9877fee2883315d459552b2b921edc16d7ceac6eab944dd88919c",
-      "max_mint_per_tx": "100000000000",
-      "max_burn_per_tx": "100000000000",
-      "daily_mint_limit": "1000000000000",
-      "daily_burn_limit": "1000000000000",
-      "personal_burn_cap": {
-        "cap_amount": "1000000000",
-        "window_ms": "86400000"
-      },
-      "mvr": {
-        "name": "@waterx-protocol/wormhole-bridge",
-        "package_info_id": "0x080c3f3d9503f4f844bb2beb548286766300bee1a74f232aea5aaf900ef26a26",
-        "app_cap_id": "0xd7f2ae43574470a89c63a807e1c34c62866e5405d020326fec5d299e2349ec65",
-        "git": {
-          "repo": "https://github.com/WaterXProtocol/waterx-contract",
-          "path": "waterx_credit/sui/wormhole_bridge",
-          "version": 2
+      "limits": {
+        "max_mint_per_tx": "100000000000",
+        "max_burn_per_tx": "100000000000",
+        "daily_mint": "1000000000000",
+        "daily_burn": "1000000000000",
+        "personal_burn": {
+          "cap_amount": "1000000000",
+          "window_ms": "86400000"
         }
       }
     },
     "withdrawal_queue": {
-      "published_at": "0x200752ac52233e07a8814d93d626bb88621f6c066e2252e5d77c9c0903aa0bcf",
-      "original_id": "0x257a2e2574ba118fb25ee2bb110db032a827a70e2b621dfc0005c8cffbc24a48",
-      "version": 4,
-      "upgrade_capability": "0x43a8a34d356baf96ad64be205a96bb072e8e4304271a95657e474f62358a6163",
       "queue": "0xd5f3ffc217af104037975e66cf0b315a58cd2e880fef24f175d8cc9852a42b67",
-      "mvr": {
-        "name": "@waterx-protocol/withdrawal-queue",
-        "package_info_id": "0x2d0364578c81b65ec1e6345741cd91c1ef81321ca6212d05e6514c1fe0b2ad3f",
-        "app_cap_id": "0x24d18b7921cfa392281a535080c73c989e6878207f62d009eb5239c687af36d1",
-        "git": {
-          "repo": "https://github.com/WaterXProtocol/waterx-contract",
-          "path": "waterx_credit/sui/withdrawal_queue",
-          "version": 2
+      "executors": [
+        "0xe2f5eb9a154a74738393ecb1c4213c2076fe0261aff43965f05f855fb7f6f5f0",
+        "0x192272eaba775b99081946fd58333265a39ff37dc58c2c9a50635b48eda493ee"
+      ],
+      "queues": {
+        "USD": {
+          "queue": "0xd5f3ffc217af104037975e66cf0b315a58cd2e880fef24f175d8cc9852a42b67",
+          "executors": [
+            "0xe2f5eb9a154a74738393ecb1c4213c2076fe0261aff43965f05f855fb7f6f5f0",
+            "0x192272eaba775b99081946fd58333265a39ff37dc58c2c9a50635b48eda493ee"
+          ]
+        },
+        "SUI": {
+          "queue": "0x6b506656eb2c803cf26cce11ca4a73d4d0cfdc79fb8d5ae719ff40868e9c3d8f",
+          "executors": [
+            "0xe2f5eb9a154a74738393ecb1c4213c2076fe0261aff43965f05f855fb7f6f5f0",
+            "0x192272eaba775b99081946fd58333265a39ff37dc58c2c9a50635b48eda493ee"
+          ]
+        },
+        "DEEP": {
+          "queue": "0x7fa289c14bde54d6ea79873e23519e0427f6b7ab4b066c830dd249185832f869",
+          "executors": [
+            "0xe2f5eb9a154a74738393ecb1c4213c2076fe0261aff43965f05f855fb7f6f5f0",
+            "0x192272eaba775b99081946fd58333265a39ff37dc58c2c9a50635b48eda493ee"
+          ]
+        },
+        "WAL": {
+          "queue": "0x7d5fc73e278cf2a8f30b1be48bba2b27a233237d0393e789b0c14eee412be9f2",
+          "executors": [
+            "0xe2f5eb9a154a74738393ecb1c4213c2076fe0261aff43965f05f855fb7f6f5f0",
+            "0x192272eaba775b99081946fd58333265a39ff37dc58c2c9a50635b48eda493ee"
+          ]
         }
       }
     },
-    "usd": {
-      "published_at": "0xc70a37eafe54712b520cb6566e5a2d2f60bc70f32eb9fb08cac40394b5a96bf4",
-      "original_id": "0xc70a37eafe54712b520cb6566e5a2d2f60bc70f32eb9fb08cac40394b5a96bf4",
-      "version": 1,
-      "upgrade_capability": "0xfc3f69f378e5e7196531ee0b2062292cccc22590448dc8191bb1e5c3c57f6130",
-      "metadata_cap": "0xd0913660dbd60661c33c01cde5a6f3187c837842680d39af9bd25e3a5fe0687e"
-    },
-    "waterx_prediction": {
-      "published_at": "0x972184710f3ea2d54973d325ca4035c8d44d1a9571da7ee42a34cf8da72facbd",
-      "original_id": "0xa5cfafe6660a8bf37eedf1a09dba633048da374c30b835668473689668f9ef57",
-      "version": 6,
-      "upgrade_capability": "0x168e6d530c04a595736b4269d5100cb2d2df893b8ec629a6603b369992f5ae4a",
-      "admin_cap": "0x8d65ecbe9c0863af842a15d60185a11b4d052bca6d1638ac745f93c56ac5c9dd",
+    "prediction": {
       "global_config": "0xbeae59a5f462696fa639b02c62406c1b4f7acb951644eb4ee8f3f666391484ac",
+      "admin_cap": "0x8d65ecbe9c0863af842a15d60185a11b4d052bca6d1638ac745f93c56ac5c9dd",
       "market_registries": {
-        "USD": "0x3fafc1ec1148c8784c65a910f79c5e5f512d89ed8a5cc0625b5c5028e739f792"
+        "USD": "0x3fafc1ec1148c8784c65a910f79c5e5f512d89ed8a5cc0625b5c5028e739f792",
+        "SUI": "0xc028a6620d9e422b0ef37d30522dd9080613d7956003124558e3a0d428a5f1b1",
+        "DEEP": "0x7d4c431b3d4d5f96c88e81f767d3bf7d703ab281e99ef42ed25e688a59149709",
+        "WAL": "0xf62db12be120b10d6b20a561b42d90a11c22690f6e6098f1b4a3abc66d9c0b7a"
       },
       "settlement_coin_types": {
-        "USD": "0xc70a37eafe54712b520cb6566e5a2d2f60bc70f32eb9fb08cac40394b5a96bf4::usd::USD"
+        "USD": "0xc70a37eafe54712b520cb6566e5a2d2f60bc70f32eb9fb08cac40394b5a96bf4::usd::USD",
+        "SUI": "0xea6415244a1548816dec9762e2a169b2c7dc298e14a85a95d365057adcfa5b64::sui::SUI",
+        "DEEP": "0x751a4363099bce4d6034fb182398ae62d5ecde0f90d8be1d21e876548c815cca::deep::DEEP",
+        "WAL": "0x9b4bad4ee9207945724b2531d24a4b7f2d33224430351e8d88ba2d70eafc1bca::wal::WAL"
       },
-      "mvr": {
-        "name": "@waterx-protocol/prediction",
-        "package_info_id": "0x590418f8b396848b8e7aa1133e734a5b60d2553df235b12d4992e601124e4e80",
-        "app_cap_id": "0x52a789a6538e9e3c4cca6cfaa771c5a2db01aea1ab8c79f9107a74e20ce93bd7",
-        "git": {
-          "repo": "https://github.com/WaterXProtocol/waterx-contract",
-          "path": "waterx_prediction",
-          "version": 1
+      "claimable_link_config": "0x97e49c1f0abe8a09867698d99dd8cde18b75f085bd6615644f74f9165cbc9cd9",
+      "gift_admin_cap": "0x5493191ef3a5cfaa859f1a07b9ef277e75aa3d41edfcc9569aba8eae02c6655c"
+    },
+    "usd": {
+      "metadata_cap": "0xd0913660dbd60661c33c01cde5a6f3187c837842680d39af9bd25e3a5fe0687e"
+    }
+  },
+  "oracle_rules": {
+    "waterx": {
+      "package": "waterx_rule",
+      "rule_config_object": "0x67ee3a737b6dc489a6077698d2ff2c2b5d9a20a14e5d0a38e72818c61ccaa2cd",
+      "enclave": {
+        "object": "0x7c301232fbbabd37db4df7fba843d3ef1914a427afd11d30f3e8135e0e7b28a0",
+        "cap": "0x3202c262a2d22d8de874ab4884a8c3aa35ec5d126ac6aefb3112fc57d0584c53",
+        "config": "0xba1f2058363c68f1ce76a9801e1bd709f5b2400ad91c467e7e269921ff95baec",
+        "pubkey": "b8f5f5b2671cafeda2de770818a1cf335315e515a46022466b64ef5c8b38b520"
+      }
+    },
+    "pyth": {
+      "package": "pyth_rule",
+      "pyth_config_object": "0x72e030dc7e6a92d4c8e47780d27700c3cf168424832916260c134fbba59666bf",
+      "pyth_price_feeds": {
+        "SUIUSD": {
+          "feed_id": "0x23d7315113f5b1d3ba7a83604c44b94d79f4fd69af77f804fc7f920a6dc65744",
+          "price_info_object": "0x801dbc2f0053d34734814b2d6df491ce7807a725fe9a01ad74a07e9c51396c37"
+        },
+        "BTCUSD": {
+          "feed_id": "0xe62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43",
+          "price_info_object": "0x9a62b4863bdeaabdc9500fce769cf7e72d5585eeb28a6d26e4cafadc13f76ab2"
+        },
+        "ETHUSD": {
+          "feed_id": "0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace",
+          "price_info_object": "0x9193fd47f9a0ab99b6e365a464c8a9ae30e6150fc37ed2a89c1586631f6fc4ab"
+        },
+        "SOLUSD": {
+          "feed_id": "0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d",
+          "price_info_object": "0x9d0d275efbd37d8a8855f6f2c761fa5983293dd8ce202ee5196626de8fcd4469"
+        },
+        "DEEPUSD": {
+          "feed_id": "0x29bdd5248234e33bd93d3b81100b5fa32eaa5997843847e2c2cb16d7c6d9f7ff",
+          "price_info_object": "0x8c7f3a322b94cc69db2a2ac575cbd94bf5766113324c3a3eceac91e3e88a51ed"
+        },
+        "WALUSD": {
+          "feed_id": "0xeba0732395fae9dec4bae12e52760b35fc1c5671e2da8b449c9af4efe5d54341",
+          "price_info_object": "0xeb7e669f74d976c0b99b6ef9801e3a77716a95f1a15754e0f1399ce3fb60973d"
+        },
+        "HYPEUSD": {
+          "feed_id": "0x4279e31cc369bbcc2faf022b382b080e32a8e689ff20fbc530d2a603eb6cd98b",
+          "price_info_object": "0x1c047be615eaa5a87afa0e111b20a512dd6c0f4a1f0f691693cf852c1768f35d"
+        },
+        "XRPUSD": {
+          "feed_id": "0xec5d399846a9209f3fe5881d70aae9268c94339ff9817e8d18ff19fa05eea1c8",
+          "price_info_object": "0x93bfda25cb6b1653a9c769e8216014bd2c06997f3edb479566761fbf2abf6ac2"
+        },
+        "BNBUSD": {
+          "feed_id": "0x2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f",
+          "price_info_object": "0x9c6e77f0ecfc46aac395e21c52ccb96518f85acacae743c5b47f4ca5e29826c3"
+        },
+        "ZECUSD": {
+          "feed_id": "0xbe9b59d178f0d6a97ab4c343bff2aa69caa1eaae3e9048a65788c529b125bb24",
+          "price_info_object": "0xcc0f04f341b08fa9f1079f760d6dee779e6fdd46e50594eb931bce07f80c05d3"
+        },
+        "DOGEUSD": {
+          "feed_id": "0xdcef50dd0a4cd2dcc17e45df1676dcb336a11a61c69df7a0299b0150c672d25c",
+          "price_info_object": "0xd59a5f5173424ba725a7d033d86f2eadf2745f87a908bd27e1d27339eff598ce"
+        },
+        "LITUSD": {
+          "feed_id": "0xc0c83f00c39165892d55dcd17ade2191e289697e2ac132d9ab721e20834e2a9e",
+          "price_info_object": "0x0a725ebbb6a13fd70f56dd9be248e1ef484b62a5b037b5815f04985688478147"
+        },
+        "QQQXUSD": {
+          "feed_id": "0x178a6f73a5aede9d0d682e86b0047c9f333ed0efe5c6537ca937565219c4054d",
+          "price_info_object": "0xcce836357b028bd85e866320f194980125b58e6117a2e86a24ed5c154df1e799"
+        },
+        "SPYXUSD": {
+          "feed_id": "0x2817b78438c769357182c04346fddaad1178c82f4048828fe0997c3c64624e14",
+          "price_info_object": "0x6a2d53a802faee96b26f5fa86d9ccf05d58008e4f32c95985d12edb60f5e23ea"
+        },
+        "NVDAXUSD": {
+          "feed_id": "0x4244d07890e4610f46bbde67de8f43a4bf8b569eebe904f136b469f148503b7f",
+          "price_info_object": "0x1ccc57727035cc40a122cecd95f15240de4fb3f2acd5542c8f2109ebc47871a1"
+        },
+        "TSLAXUSD": {
+          "feed_id": "0x47a156470288850a440df3a6ce85a55917b813a19bb5b31128a33a986566a362",
+          "price_info_object": "0x678fee0f8d449160f7df3a14db41d7318e917c3afae98eed434a87073cb80c6b"
+        },
+        "AAPLXUSD": {
+          "feed_id": "0x978e6cc68a119ce066aa830017318563a9ed04ec3a0a6439010fc11296a58675",
+          "price_info_object": "0x80c9fa9060e2682528a9b02e0facfd6c4816e1bb363bdc3c9a6e94224618e03d"
+        },
+        "GOOGLXUSD": {
+          "feed_id": "0xb911b0329028cd0283e4259c33809d62942bd2716a58084e5f31d64c00b5424e",
+          "price_info_object": "0xff0bda4e0c212f409b89c6c5714c1957f6a867eced1bcfde863bd074d2a0d54c"
+        },
+        "METAXUSD": {
+          "feed_id": "0xbf3e5871be3f80ab7a4d1f1fd039145179fb58569e159aee1ccd472868ea5900",
+          "price_info_object": "0x0cd398ea0262b504a946b3d4acde457a21bee9d41a27083ebf6ec19f99272155"
+        },
+        "MSTRXUSD": {
+          "feed_id": "0x53f95ba4e23ed15ea56083e2ee9a5eec48055d6f59033d4bb95f1ca2a2349c28",
+          "price_info_object": "0xab35f27f1118959cbf82e5ab907808df40b25c16c5745c21a1af721a2e0a926e"
+        },
+        "COINXUSD": {
+          "feed_id": "0x641435d5dffb5311140b480517c79986d8488d5cf08a11eec53b83ad02cab33f",
+          "price_info_object": "0xf19da6da74181c159f3619cc50fdd4dcc62d15538c707175464968a14cbb0464"
+        },
+        "HOODXUSD": {
+          "feed_id": "0xdd49a9ac6df5cbfa9d8fc6371f7ae927a74d5c6763c1c01b4220d70314c647f9",
+          "price_info_object": "0x1f0a01610d47dfe0506bb4cfd903335bf2d148adc86459c06385b97309e51d2a"
+        },
+        "CRCLXUSD": {
+          "feed_id": "0xc13184461c0c80d98ffcd89be627c2220b94a96c7c67f0c4b16bc12fd3b17758",
+          "price_info_object": "0x299b647faef2456b93155b5609ac5edc9ba18bb4f5f6a27383920a528b2ff052"
+        },
+        "NFLXXUSD": {
+          "feed_id": "0x02a67e6184e6c9dd65e14745a2a80df8b2b3d2ca91b4b191404936003d9929ae",
+          "price_info_object": "0x15a9c98690cc7c97c96208064d4de360fafd42f5bbc7d87a2990d5b5aca22548"
+        },
+        "XAUTUSD": {
+          "feed_id": "0x44465e17d2e9d390e70c999d5a11fda4f092847fcd2e3e5aa089d96c98a30e67",
+          "price_info_object": "0x96e73131630c4476aab2a467f57585456a8f063e9403b3caa5d013a3691c9400"
+        },
+        "XAGUSD": {
+          "feed_id": "0xf2fb02c32b055c805e7238d628e5e9dadef274376114eb1f012337cabe93871e",
+          "price_info_object": "0xd5c5afce92e988bf0a0940d618443c36c31dd7f239a545982db3166e963c9aa4"
+        },
+        "WTIUSD": {
+          "feed_id": "0x925ca92ff005ae943c158e3563f59698ce7e75c5a8c8dd43303a0a154887b3e6",
+          "price_info_object": "0x71e40a6e2af5a194e149a761ae11d43e987b9ecbee1834d65d61103721c72e02"
+        },
+        "BRENTUSD": {
+          "feed_id": "0x27f0d5e09a830083e5491795cac9ca521399c8f7fd56240d09484b14e614d57a",
+          "price_info_object": "0x65fcc9fea8b03bb93bb1b99e29ead4f49dd5ab6d4f0c5734104a224008b7f322"
+        },
+        "EURUSD": {
+          "feed_id": "0xa995d00bb36a63cef7fd2c287dc105fc8f3d93779f062f09551b0af3e81ec30b",
+          "price_info_object": "0xe3dfb7a7682ed51c9ba78e027ba92d2a27a59f4c574ebe03b543a544fc04fab7"
+        },
+        "USDJPY": {
+          "feed_id": "0xef2c98c804ba503c6a707e38be4dfbb16683775f195b091252bf24693042fd52",
+          "price_info_object": "0xde0e6088e7292f50738ecbdebd4502415d4f8de4cfe001918e29b3f4faf15baa"
         }
       }
     },
-    "waterx_prediction_gift": {
-      "published_at": "0xb8095fcd57c81c96b7b7742111d9dde1a637d614d6acdfbc7ddf16a90032c560",
-      "original_id": "0x6f279e417396f0c1a2e003f2508f2da38bed7e1bfd275f2a897ca0edd671929e",
-      "version": 3,
-      "claimable_link_config": "0x97e49c1f0abe8a09867698d99dd8cde18b75f085bd6615644f74f9165cbc9cd9",
-      "upgrade_capability": "0xdb55427e26d4642a462d69aebce48b6973b7c090ba8793b89667dc931c97c06a",
-      "admin_cap": "0x5493191ef3a5cfaa859f1a07b9ef277e75aa3d41edfcc9569aba8eae02c6655c",
-      "publish_digest": "DHPAvyfvN9PiXiYvAFQ2rFksdMyR59VVqCrLd2W5NiFq",
-      "publish_checkpoint": "286567975"
+    "pyth_lazer": {
+      "package": "pyth_lazer_rule",
+      "lazer_state_object": "0xd0db9c1e9212a98120384bf78d8b8c985d87b9ee6921dffcf9d1394062911573",
+      "lazer_config_object": "0x923443623006b448f7820197e19463c63ae5d05ab3b7955041c778340bc43cbd",
+      "lazer_feed_ids": {
+        "SUIUSD": 11,
+        "BTCUSD": 1,
+        "ETHUSD": 2,
+        "SOLUSD": 6,
+        "DEEPUSD": 173,
+        "WALUSD": 624,
+        "HYPEUSD": 110,
+        "XRPUSD": 14,
+        "BNBUSD": 15,
+        "ZECUSD": 66,
+        "QQQXUSD": 1837,
+        "SPYXUSD": 1843,
+        "NVDAXUSD": 1833,
+        "TSLAXUSD": 1847,
+        "AAPLXUSD": 1792,
+        "GOOGLXUSD": 1808,
+        "METAXUSD": 1824,
+        "MSTRXUSD": 1827,
+        "COINXUSD": 1796,
+        "HOODXUSD": 1815,
+        "CRCLXUSD": 1798,
+        "NFLXXUSD": 2685,
+        "XAUTUSD": 172,
+        "LITUSD": 2921
+      }
+    },
+    "constant": {
+      "package": "constant_rule",
+      "rule_config_object": "0xa3d39ebf2b25c242b4589f54af2cb7e601b1356e5f4e57d93f17d043bf9785f1",
+      "constant_prices": {
+        "USDCUSD": {
+          "price": "1000000000"
+        }
+      }
     }
   },
   "evm": {
@@ -1009,168 +964,5 @@
         }
       }
     }
-  },
-  "deploy_tx_log": [
-    {
-      "phase": "1.publish:waterx_oracle",
-      "action": "sui client publish waterx_oracle",
-      "digest": "27BUEDeitk52L3czDkRmYnfe7QnmN36tLYWHoC5Tfp8J",
-      "checkpoint": "282565926",
-      "timestamp": "2026-06-03T07:22:08.527Z"
-    },
-    {
-      "phase": "2",
-      "action": "whitelist_protocol<WaterXPerp>",
-      "digest": "4wipM2HahXCz1zE2Pob89qD4n5YhNaC5qMzq1dcdryWS",
-      "checkpoint": "282577150",
-      "timestamp": "2026-06-03T08:03:14.638Z"
-    },
-    {
-      "phase": "3",
-      "action": "allow_protocol_asset + register_deposit/withdraw_policy",
-      "digest": "6NNLhPfGRKn9aq1ZWckNgFyKHViUcW5y51ysWEekGwc6",
-      "checkpoint": "282577158",
-      "timestamp": "2026-06-03T08:03:16.134Z"
-    },
-    {
-      "phase": "6",
-      "action": "add_aggregator + Pyth wiring (per ticker)",
-      "digest": "j3uhXGNrBJWWqq2cmfhXmNZ1v4Y2eryRKawHJpnnYtp",
-      "checkpoint": "282577165",
-      "timestamp": "2026-06-03T08:03:17.775Z"
-    },
-    {
-      "phase": "7a",
-      "action": "create_wlp_pool",
-      "digest": "6FT5c82uZgj66uBqjKwH5RrG5QLsGpcVqYcSNQWHe2j3",
-      "checkpoint": "282577172",
-      "timestamp": "2026-06-03T08:03:20.235Z"
-    },
-    {
-      "phase": "7b",
-      "action": "lp_pool::add_token (per token)",
-      "digest": "AKGUzMne3z5NqFPc8oz6We23LW5UWZ6Z2TBargpu3MGg",
-      "checkpoint": "282577183",
-      "timestamp": "2026-06-03T08:03:21.901Z"
-    },
-    {
-      "phase": "7c",
-      "action": "create_aum<WLP> + share",
-      "digest": "DNDKwxuoFrX3u4yoE7odUT7ins2EVKfT4HU7eB2VrYMD",
-      "checkpoint": "282577190",
-      "timestamp": "2026-06-03T08:03:23.475Z"
-    },
-    {
-      "phase": "8a",
-      "action": "create_market_registry<WLP>",
-      "digest": "E6xCS8dGawDK2xtiNdUx6J9wdoAMA4cfRgj9mCoBe5JU",
-      "checkpoint": "282577197",
-      "timestamp": "2026-06-03T08:03:25.112Z"
-    },
-    {
-      "phase": "8b",
-      "action": "create_market + add_market (per ticker)",
-      "digest": "5iqZwmA5tuCAwcuf4WBGoFFUqgCyjUBfBfwzNMWJUQBm",
-      "checkpoint": "282577585",
-      "timestamp": "2026-06-03T08:04:54.307Z"
-    },
-    {
-      "phase": "8c",
-      "action": "add_request_rule + update_market_config",
-      "digest": "FbbPsYzi4Xd3ELeFneNG7wGaYbdEJSTwAkMLffLtrDHQ",
-      "checkpoint": "282577607",
-      "timestamp": "2026-06-03T08:04:58.712Z"
-    },
-    {
-      "phase": "9",
-      "action": "pyth_sponsor_rule::supply",
-      "digest": "AaTcQLuMjrbeXHS5wiPWWxjhBxhj1jh3LSmD8Sc2tdjT",
-      "checkpoint": "282577615",
-      "timestamp": "2026-06-03T08:05:00.682Z"
-    },
-    {
-      "phase": "10a",
-      "action": "allow_protocol_asset + waterx_staking::default<STAKE>",
-      "digest": "EiE4v4eyggZPhvGYNkGhJyaKZPogLyDuzqp3fSmD11Ya",
-      "checkpoint": "282577624",
-      "timestamp": "2026-06-03T08:05:02.572Z"
-    },
-    {
-      "phase": "10b",
-      "action": "add_rewarder (+ optional deposit_to_source)",
-      "digest": "2bZybckL7yBWXtRSMEGvsS2G7Zpp9w9P8UDK1N29oa4M",
-      "checkpoint": "282577632",
-      "timestamp": "2026-06-03T08:05:04.326Z"
-    },
-    {
-      "phase": "11",
-      "action": "usd::create_credit_registry",
-      "digest": "DWYyT6cq976QVgLUMUSiDwW3vtzdmPk9hmUZCL8XAfPL",
-      "checkpoint": "282577640",
-      "timestamp": "2026-06-03T08:05:06.113Z"
-    },
-    {
-      "phase": "12",
-      "action": "credit wxa whitelist + USD/backing policies",
-      "digest": "541kH3Ht1C9Mi2q67oquP8KcDJ3Ty7kUWN4B6WWiWnz1",
-      "checkpoint": "282577647",
-      "timestamp": "2026-06-03T08:05:07.586Z"
-    },
-    {
-      "phase": "13",
-      "action": "credit_registry::add_version + set_supply_limit (+ burn caps)",
-      "digest": "GMu5Rgw31T5hoV4KDBe7H1sDN53oxtYqhXJJtVGzpZKL",
-      "checkpoint": "282578512",
-      "timestamp": "2026-06-03T08:08:20.007Z"
-    },
-    {
-      "phase": "14a",
-      "action": "custody_vault::create_vault<USD>",
-      "digest": "2P8UXy8mGhEZfX6CaNz4dPoPxk8cCgaXT6sqADfSPFdm",
-      "checkpoint": "282578522",
-      "timestamp": "2026-06-03T08:08:22.064Z"
-    },
-    {
-      "phase": "14b",
-      "action": "custody_vault::add_asset (per backing T)",
-      "digest": "EdLQNcnHg78NW4DassFZEMdjnoMYMWgj3M7fJxbcApL2",
-      "checkpoint": "282578529",
-      "timestamp": "2026-06-03T08:08:23.693Z"
-    },
-    {
-      "phase": "15a",
-      "action": "wormhole_bridge::init_bridge",
-      "digest": "FhMtVAVa5niib91JWd9iGnSQ1TCTYjKx6ske2QAGbEso",
-      "checkpoint": "282578539",
-      "timestamp": "2026-06-03T08:08:27.030Z"
-    },
-    {
-      "phase": "16a",
-      "action": "withdrawal_queue::create_queue<USD>",
-      "digest": "2cSHqo9Q79yZQfMFpYjCn2xFRd8h4YAp4bNMZHiS5g47",
-      "checkpoint": "282578559",
-      "timestamp": "2026-06-03T08:08:30.302Z"
-    },
-    {
-      "phase": "17",
-      "action": "whitelist_protocol<WaterXPrediction> + allow_protocol_asset",
-      "digest": "3N7vD8h33WcdaGDRhLNx9wj1FuPL2NcpvUpAiVB5aFit",
-      "checkpoint": "282578574",
-      "timestamp": "2026-06-03T08:08:33.394Z"
-    },
-    {
-      "phase": "18a",
-      "action": "create_market_registry<USD>",
-      "digest": "FokCGbcEMqh4z1LpXdoEEx3TPD8JsKrqecUdKSqTD1uT",
-      "checkpoint": "282578584",
-      "timestamp": "2026-06-03T08:08:35.672Z"
-    },
-    {
-      "phase": "mvr.register",
-      "action": "MVR registration of @waterx-protocol/* (12 apps) — single M1 PTB",
-      "digest": "RCD2qayFvDYgC3iG1D36xxtt7BemSfqQuUycuuaMrzc",
-      "checkpoint": "285451733",
-      "timestamp": "2026-06-10T17:10:16.986Z"
-    }
-  ]
+  }
 }
