@@ -80,7 +80,7 @@ function fakeWaterx(world: World): NonNullable<InvokeOptions['fallbackFetch']> {
     const key = `${method} ${url.pathname}`;
     switch (key) {
       case 'GET /mainnet.json':
-      case 'GET /private/deployment.json':
+      case 'GET /private/mainnet.json':
         return new Response(JSON.stringify(CONFIG), { status: 200 });
       case 'POST /graphql':
       case 'POST /private/graphql': {
@@ -741,12 +741,12 @@ describe('direct mode', () => {
     const result = await run(['doctor'], {
       env: {
         ...DIRECT_ENV,
-        WATERX_PREDICT_DEPLOYMENT_URL: 'https://chain.test.invalid/private/deployment.json',
+        WATERX_CONFIG_URL: 'https://chain.test.invalid/private/',
         WATERX_PREDICT_SUI_GRAPHQL_URL: 'https://chain.test.invalid/private/graphql',
       },
     });
     const paths = result.fetches.map((call) => new URL(call.url).pathname);
-    expect(paths).toContain('/private/deployment.json');
+    expect(paths).toContain('/private/mainnet.json');
     expect(paths).toContain('/private/graphql');
     expect(paths).not.toContain('/mainnet.json');
     expect(paths).not.toContain('/graphql');

@@ -155,7 +155,7 @@ function startStub(): Promise<Stub> {
     const path = url.pathname;
     if (path.startsWith('/agent-api/')) counters.agentApiCalls += 1;
     const owner = `0x${'e'.repeat(63)}4`;
-    if (request.method === 'GET' && path === '/deployment.json') return json(200, deployment);
+    if (request.method === 'GET' && path === '/mainnet.json') return json(200, deployment);
     if (request.method === 'POST' && path === '/graphql') {
       const query = JSON.parse(await readBody(request)) as { query: string; variables: Record<string, string> };
       if (query.query.includes('events(')) {
@@ -424,7 +424,7 @@ async function main(argv: readonly string[]): Promise<number> {
       ...bare,
       WATERX_PREDICT_NETWORK: 'mainnet',
       WATERX_PREDICT_BASE_URL: stub.url,
-      WATERX_PREDICT_DEPLOYMENT_URL: `${stub.url}/deployment.json`,
+      WATERX_CONFIG_URL: stub.url,
       WATERX_PREDICT_SUI_GRAPHQL_URL: `${stub.url}/graphql`,
       WATERX_PREDICT_CONSOLE_URL: `${stub.url}/console`,
       WATERX_PREDICT_AGENT_WALLET: address,

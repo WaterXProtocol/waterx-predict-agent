@@ -94,7 +94,7 @@ export function createClient(options: ClientFactoryOptions): TradingClient {
       signer,
       timeoutMs: config.timeoutMs,
       requireIntentStore: true,
-      ...(config.deploymentUrl === undefined ? {} : { deploymentUrl: config.deploymentUrl }),
+      ...(config.waterxConfigUrl === undefined ? {} : { waterxConfigUrl: config.waterxConfigUrl }),
       ...(config.suiGraphqlUrl === undefined ? {} : { suiGraphqlUrl: config.suiGraphqlUrl }),
       ...(options.accountHints === undefined ? {} : { accountHints: options.accountHints }),
       ...(options.intentStore === undefined ? {} : { intentStore: options.intentStore }),
