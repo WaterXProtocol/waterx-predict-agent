@@ -356,18 +356,26 @@ function plaintextWarning(baseUrl: string | undefined): string | null {
  * `WATERX_CONFIG_URL`, validated at load: a CDN ROOT, no filename. A retired
  * name for it (`WATERX_PREDICT_DEPLOYMENT_URL`, …) is refused rather than
  * ignored, so an override set under the old name cannot silently fall back to
- * the default document.
+ * the default document. A refusal names the source to change: the variable,
+ * the retired name, or the file key.
  */
-function resolveWaterxConfigUrl(env: EnvReader, config: FileConfig, where: string): string | undefined {
+function resolveWaterxConfigUrl(env: EnvReader, config: FileConfig, path: string | null): string | undefined {
+  const where = path ?? 'the config file';
+  let file = false;
   try {
     assertNoRetiredWaterxConfigUrlEnv(env);
     const fromEnv = env[ENV_KEYS.waterxConfigUrl];
     if (fromEnv !== undefined && fromEnv.trim() !== '') return normalizeWaterxConfigRoot(fromEnv);
     const fromFile = asString(config.waterxConfigUrl, 'waterxConfigUrl', where);
-    return fromFile === undefined ? undefined : normalizeWaterxConfigRoot(fromFile);
+    file = true;
+    return fromFile === undefined ? undefined : normalizeWaterxConfigRoot(fromFile, `\`waterxConfigUrl\` in ${where}`);
   } catch (error: unknown) {
     if (!(error instanceof WaterxConfigUrlError)) throw error;
-    throw new CliError('CONFIG_INVALID', error.message, { key: ENV_KEYS.waterxConfigUrl });
+    throw new CliError(
+      'CONFIG_INVALID',
+      error.message,
+      file ? { ...(path === null ? {} : { file: path }), key: 'waterxConfigUrl' } : { key: error.setting },
+    );
   }
 }
 
@@ -376,7 +384,6 @@ export function loadConfig(sources: ConfigSources): ResolvedConfig {
   const where = path ?? 'the config file';
   const env = sources.env;
   const warnings: string[] = [];
-  const waterxConfigUrl = resolveWaterxConfigUrl(env, config, where);
 
   const environment =
     asString(env[ENV_KEYS.environment], ENV_KEYS.environment, 'the environment') ??
@@ -448,6 +455,10 @@ export function loadConfig(sources: ConfigSources): ResolvedConfig {
   if (modeText !== 'direct' && modeText !== 'agent-api') {
     throw new CliError('CONFIG_INVALID', `\`mode\` is \`direct\` or \`agent-api\`, not \`${modeText}\`.`, { key: 'mode' });
   }
+  // Only direct mode reads the deployment document. In agent-api mode the
+  // backend reads it, so nothing here would use the value, and a variable left
+  // over from another tool must not stop every command.
+  const waterxConfigUrl = modeText === 'direct' ? resolveWaterxConfigUrl(env, config, path) : undefined;
   const networkText =
     asString(env[ENV_KEYS.network], ENV_KEYS.network, 'the environment') ?? asString(config.network, 'network', where);
   if (networkText !== undefined && networkText !== 'mainnet' && networkText !== 'testnet') {

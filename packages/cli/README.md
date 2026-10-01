@@ -593,7 +593,9 @@ The file is `--config <path>`, else `$WATERX_PREDICT_CONFIG`, else
 `https://staging-v2.waterx-config.pages.dev` on testnet — and direct mode reads
 `${WATERX_CONFIG_URL}/${network}.json`. Set it only for a private deployment. A
 value ending in `.json` (a whole document URL), with a query, on plain `http://`
-or on a GitHub host is refused at startup with `CONFIG_INVALID`.
+(a loopback host — `localhost`, `127.0.0.1`, `[::1]` — excepted, for a local
+stub) or on a GitHub host is refused at startup with `CONFIG_INVALID`. Read in
+direct mode only; `agent-api` mode ignores it.
 
 > **Breaking.** `WATERX_PREDICT_DEPLOYMENT_URL` and the `deploymentUrl` config
 > key, which took a whole document URL, are retired: setting either is refused

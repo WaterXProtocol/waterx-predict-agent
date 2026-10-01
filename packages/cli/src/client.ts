@@ -7,6 +7,7 @@
  */
 import {
   DirectDeploymentError,
+  WaterxConfigUrlError,
   DirectVerificationError,
   PredictAgentClient,
   PredictAgentTransportError,
@@ -200,6 +201,17 @@ export function toEnvelopeError(error: unknown, timeoutMs: number): EnvelopeErro
       retryable: false,
       source: 'CLI',
       details: { rule: error.rule },
+    };
+  }
+  if (error instanceof WaterxConfigUrlError) {
+    // A refused config root or retired option: fixed by changing the setup,
+    // never by retrying.
+    return {
+      code: 'CONFIG_INVALID',
+      message: error.message,
+      retryable: false,
+      source: 'CLI',
+      details: { key: error.setting },
     };
   }
   if (error instanceof DirectDeploymentError) {

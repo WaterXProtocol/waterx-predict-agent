@@ -22,7 +22,7 @@
  */
 import { normalizeSuiAddress } from '../sui-tx.ts';
 
-import { retiredWaterxConfigUrlMessage, waterxConfigDocumentUrl, WATERX_CONFIG_URLS } from './config-url.ts';
+import { retiredWaterxConfigUrlMessage, waterxConfigDocumentUrl, WaterxConfigUrlError, WATERX_CONFIG_URLS } from './config-url.ts';
 
 export type DirectNetwork = 'mainnet' | 'testnet';
 
@@ -206,7 +206,7 @@ export class FetchedDeployment implements DeploymentSource {
 
   constructor(options: FetchedDeploymentOptions) {
     if ((options as { url?: unknown }).url !== undefined) {
-      throw new DirectDeploymentError(retiredWaterxConfigUrlMessage('`url`', '`waterxConfigUrl`'));
+      throw new WaterxConfigUrlError(retiredWaterxConfigUrlMessage('`url`', '`waterxConfigUrl`'), 'url');
     }
     this.options = options;
     // Validated here, not at the first fetch: a malformed root is a setup

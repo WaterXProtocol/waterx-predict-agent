@@ -113,15 +113,15 @@ describe('retired names', () => {
     expect(() => assertNoRetiredWaterxConfigUrlEnv({ PREDICT_CONFIG_URL: '', WATERX_CONFIG_URL: 'https://x.example' })).not.toThrow();
   });
 
-  it('refuses the retired `deploymentUrl` client option', () => {
-    expect(
-      () =>
-        new PredictDirectClient({
-          baseUrl: 'https://waterx.test.invalid',
-          network: 'mainnet',
-          signer: {},
-          deploymentUrl: 'https://main-v2.waterx-config.pages.dev/mainnet.json',
-        } as never),
-    ).toThrow(/`deploymentUrl` is retired; use `waterxConfigUrl`, set to a CDN ROOT/u);
+  it('refuses the retired `deploymentUrl` client option, as a setup error naming it', () => {
+    const build = (): unknown =>
+      new PredictDirectClient({
+        baseUrl: 'https://waterx.test.invalid',
+        network: 'mainnet',
+        signer: {},
+        deploymentUrl: 'https://main-v2.waterx-config.pages.dev/mainnet.json',
+      } as never);
+    expect(build).toThrow(/`deploymentUrl` is retired; use `waterxConfigUrl`, set to a CDN ROOT/u);
+    expect(build).toThrow(expect.objectContaining({ name: 'WaterxConfigUrlError', setting: 'deploymentUrl' }));
   });
 });

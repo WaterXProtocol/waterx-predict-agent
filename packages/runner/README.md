@@ -191,6 +191,7 @@ can read back, not by an argv nobody can recover after the terminal is gone.
 | `WATERX_RUNNER_CONFIG` | — | the file itself (default `<dir>/runner.json`) |
 | `WATERX_RUNNER_MODE` | `mode` | `direct` (default, ADR-0016) or `agent-api` |
 | `WATERX_RUNNER_NETWORK` | `network` | `mainnet` / `testnet`; inferred for the two WaterX hosts |
+| `WATERX_CONFIG_URL` | — | direct mode: the waterx-config CDN **root** (no filename; `<network>.json` is appended); default the network's v2 root. Retired names (`WATERX_PREDICT_DEPLOYMENT_URL`, `PREDICT_CONFIG_URL`, …) are refused |
 | `WATERX_RUNNER_BASE_URL` | `baseUrl` | the API this Runner trades against |
 | `WATERX_RUNNER_AGENT_WALLET` | `agentWallet` | the address it trades as |
 | `WATERX_RUNNER_SIGNER_COMMAND` | `signerCommand` | the keystore **argv** |

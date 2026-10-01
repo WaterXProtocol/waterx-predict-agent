@@ -45,11 +45,24 @@ describe('WATERX_CONFIG_URL', () => {
     expect(error.message).toMatch(/WATERX_CONFIG_URL/u);
   });
 
+  it('names the file key, not the variable, when the bad root came from the file', () => {
+    const error = refusal(() => load({}, { waterxConfigUrl: 'https://main-v2.waterx-config.pages.dev/mainnet.json' }));
+    expect(error.code).toBe('CONFIG_INVALID');
+    expect(error.message).toMatch(/^`waterxConfigUrl` in \/cfg\.json must be a CDN ROOT/u);
+    expect(error.details).toEqual({ file: '/cfg.json', key: 'waterxConfigUrl' });
+  });
+
+  it('is not read in agent-api mode, where the backend reads the document', () => {
+    const config = load({ WATERX_PREDICT_MODE: 'agent-api', CONFIG_URL: 'https://x.example/app.json', WATERX_CONFIG_URL: 'https://x.example/mainnet.json' });
+    expect(config.waterxConfigUrl).toBeUndefined();
+  });
+
   it('refuses the retired environment names instead of ignoring them', () => {
     for (const name of ['WATERX_PREDICT_DEPLOYMENT_URL', 'PREDICT_CONFIG_URL']) {
       const error = refusal(() => load({ [name]: 'https://main-v2.waterx-config.pages.dev/mainnet.json' }));
       expect(error.code).toBe('CONFIG_INVALID');
       expect(error.message).toMatch(new RegExp(`${name} is retired; use WATERX_CONFIG_URL`, 'u'));
+      expect(error.details).toEqual({ key: name });
     }
   });
 
