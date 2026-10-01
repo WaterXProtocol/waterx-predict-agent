@@ -2074,10 +2074,31 @@ function fillOf(entry: PublicActivityEntry): PredictExecutionFill | undefined {
   const filledAmount = formatScaled(parseScaled(entry.amountUsd.toFixed(6), 6, 'amountUsd'), 6);
   const filledShares =
     entry.shares === null ? null : formatScaled(parseScaled(entry.shares.toFixed(6), 6, 'shares'), 6);
+  // Derived the same way `positionFill` derives it, from the two amounts that
+  // ARE the fill, rather than from `oddsCents`.
+  //
+  // The two readers disagreed about one trade: `order execute` reported
+  // 0.957071 and `order reconcile` reported 0.957, because the second was
+  // reading odds the feed publishes at one decimal. Odds are what was quoted;
+  // the average price is what the money and the shares came to, and rounding it
+  // to a tenth of a cent is a different number about a different thing. A
+  // caller measuring quote-to-fill deviation was comparing one of them against
+  // a quote and getting the rounding back as signal.
+  //
+  // `oddsCents` stays the fallback for a row that carries no share count, where
+  // there is nothing to divide.
+  const derived =
+    filledShares === null
+      ? null
+      : (() => {
+          const shares = parseScaled(filledShares, MONEY_DECIMALS, 'filledShares');
+          if (shares === 0n) return null;
+          return formatPrice((parseScaled(filledAmount, MONEY_DECIMALS, 'filledAmount') * PRICE_ONE) / shares);
+        })();
   return {
     filledAmount,
     filledShares,
-    avgFillPrice: priceText(entry.oddsCents),
+    avgFillPrice: derived ?? priceText(entry.oddsCents),
     actualFee: null,
     txDigest: entry.txDigest,
     filledAt: new Date(entry.timestampMs).toISOString(),
