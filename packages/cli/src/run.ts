@@ -100,7 +100,7 @@ import {
   type RunnerSession,
 } from './runner-ipc.ts';
 import { probeKeystore } from './keystore-probe.ts';
-import { createFileLedgers } from './ledgers.ts';
+import { adoptionKey, createFileLedgers } from './ledgers.ts';
 import { createNodeSignerRunner, type SignerRunner } from './signer.ts';
 import { CLI_NAME, CLI_VERSION } from './version.ts';
 
@@ -403,6 +403,16 @@ export async function run(io: CliIo): Promise<number> {
       },
       readStdin: io.readStdin,
       defaultAccountId: config.defaultAccountId,
+      // Read only when nothing else named an account, and never allowed to fail
+      // the command: a machine with no state directory has no ledger, which is
+      // not an error here — it is simply nothing to fall back to.
+      adoptedAccountId: () => {
+        try {
+          return io.ledgers?.().adoptions.get(adoptionKey(config))?.accountId;
+        } catch {
+          return undefined;
+        }
+      },
       defaultAgentWallet: config.agentWallet,
     });
 
