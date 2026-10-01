@@ -18,7 +18,7 @@ import {
   DirectCapabilityUnavailable,
   PredictDirectClient,
 } from '../src/direct/client.ts';
-import { decodeMarketHandle } from '../src/direct/handle.ts';
+import { decodeMarketHandle, encodeMarketHandle } from '../src/direct/handle.ts';
 import { BOUND_FUNCTIONS, type FunctionShape } from '../src/direct/abi.ts';
 import { DirectDeploymentError } from '../src/direct/deployment.ts';
 import { DirectHttp } from '../src/direct/http.ts';
@@ -294,6 +294,112 @@ describe('markets and quotes', () => {
     const { resolution } = await client.searchMarkets({ search: 'x', limit: 1 });
     expect(resolution.status).toBe('AMBIGUOUS');
     expect(resolution.marketId).toBeNull();
+  });
+
+  // The resolution answers a question about identity, so it has to be counted
+  // from what the catalog MATCHED and not from what this client could project.
+  // Conflating the two broke the answer in both directions at once.
+  describe('a resolution counts matches, not the rows this client can show', () => {
+    /** `n` matched items, of which only the first carries a round to project. */
+    const partlyProjectable = (n: number) => ({
+      'GET predict/browse': () => ({
+        data: {
+          items: Array.from({ length: n }, (_, index) =>
+            index === 0
+              ? { kind: 'market', market: { id: 'c0', slug: 's0', title: 'BTC above 45k', category: 'crypto' }, nextRound: round }
+              : // Matched the text, but between rounds: nothing to price, so
+                // nothing this client can project.
+                { kind: 'market', market: { id: `c${String(index)}`, slug: `s${String(index)}`, title: 'BTC something else', category: 'crypto' } },
+          ),
+          nextCursor: null,
+        },
+      }),
+    });
+
+    it('does not call one projectable market out of ten a unique answer', async () => {
+      // The defect, in the direction that places an order. Ten BTC markets
+      // matched, nine were between rounds, and the one left over was handed
+      // back as `marketId` — an agent may take an id only from here, so it
+      // would have traded a market nobody named.
+      const { client } = setup({ overrides: partlyProjectable(10) });
+      const { markets, resolution } = await client.searchMarkets({ search: 'btc' });
+
+      expect(markets, 'only one of them can be shown').toHaveLength(1);
+      expect(resolution.status).toBe('AMBIGUOUS');
+      expect(resolution.marketId, 'an ambiguous answer never carries a best guess').toBeNull();
+      expect(resolution.matchCount, 'counted from what matched, not from what was shown').toBe(10);
+    });
+
+    it('does not report a market it matched as one the catalog never heard of', async () => {
+      // The same conflation, in the direction that wastes the caller's turn:
+      // naming a market exactly got NOT_FOUND, so the more precise they were,
+      // the less likely they were to find it. "Nothing answers to this text"
+      // and "nothing that answers has a round open" send a caller to two
+      // different places, and only the first means they got the name wrong.
+      const { client } = setup({
+        overrides: {
+          'GET predict/browse': () => ({
+            data: {
+              items: [{ kind: 'market', market: { id: 'c1', slug: 's1', title: 'Will no Fed rate cuts happen in 2026?', category: 'macro' } }],
+              nextCursor: null,
+            },
+          }),
+        },
+      });
+      const { markets, resolution } = await client.searchMarkets({ search: 'Will no Fed rate cuts happen in 2026?' });
+
+      expect(markets).toHaveLength(0);
+      expect(resolution.status, 'it matched; there is simply nothing to price yet').toBe('AMBIGUOUS');
+      expect(resolution.matchCount).toBe(1);
+      expect(resolution.marketId).toBeNull();
+    });
+
+    it('still resolves when the catalog matched exactly one and it can be shown', async () => {
+      // The guard on the fix: all three conditions, and the answer is still an
+      // id when they hold.
+      const { client } = setup();
+      const { resolution } = await client.searchMarkets({ search: 'Iran' });
+      expect(resolution).toMatchObject({ status: 'RESOLVED', matchCount: 1 });
+      expect(resolution.marketId).not.toBeNull();
+    });
+
+    it('reports nothing found only when the catalog matched nothing', async () => {
+      const { client } = setup({
+        overrides: { 'GET predict/browse': () => ({ data: { items: [], nextCursor: null } }) },
+      });
+      const { resolution } = await client.searchMarkets({ search: 'nothing answers to this' });
+      expect(resolution).toMatchObject({ status: 'NOT_FOUND', matchCount: 0, marketId: null });
+    });
+  });
+
+  describe('an id nobody issued is not a market', () => {
+    it('refuses a well-formed id the catalog and the boards have never heard of', async () => {
+      // A handle is self-describing — a round id and two side keys, decoded
+      // locally — so a composed string decodes perfectly. This used to answer
+      // one with a market: PREGAME, category UNKNOWN, and a title saying the
+      // title was not cached. `ok: true` on an invented id is the worst
+      // possible answer, because the one rule an agent is given about market
+      // identity is that only the catalog resolves it.
+      const { client } = setup({
+        overrides: { 'GET predict/quotes': () => ({ data: {} }), 'GET predict/quotes/bid': () => ({ data: {} }), 'GET predict/quotes/no': () => ({ data: {} }) },
+      });
+      const invented = encodeMarketHandle({ roundId: '00000000-0000-0000-0000-000000000000', onchainMarketId: ONCHAIN, yesSide: 'up', noSide: 'down' });
+
+      await expect(client.getMarket(invented)).rejects.toMatchObject({ code: 'INVALID_REQUEST' });
+    });
+
+    it('still answers for a real round the catalog has not cached, because a board knows it', async () => {
+      // The guard on the refusal. A round with no cached title is not a round
+      // that does not exist, and refusing one would break `market get` on
+      // anything this process had not listed first.
+      const { client } = setup();
+      const listed = await client.searchMarkets({ search: 'Iran' });
+      const marketId = listed.resolution.marketId!;
+
+      const fresh = setup().client;
+      const market = await fresh.getMarket(marketId);
+      expect(market.market.marketId).toBe(marketId);
+    });
   });
 
   it('quotes the leg’s ask for a buy and bid for a sell, and remembers the title', async () => {

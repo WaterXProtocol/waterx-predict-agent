@@ -496,6 +496,39 @@ describe('direct mode', () => {
     expect(read.signerRuns).toHaveLength(0);
   });
 
+  // The catalog is public and direct mode signs no login to read it, so a read
+  // must not be refused over a signer it never reaches for. It was: the signer
+  // was built while assembling the client every command holds, so a fresh
+  // install asking what is tradeable was told this runtime cannot authenticate.
+  describe('a read is not refused over a signer it never uses', () => {
+    /** Configured to reach the network, with nothing to sign with. */
+    const { WATERX_PREDICT_SIGNER_COMMAND: _cmd, WATERX_PREDICT_AGENT_WALLET: _wallet, ...UNSIGNABLE } = DIRECT_ENV;
+
+    it('lists the catalog with no signer configured at all', async () => {
+      const world: World = { activity: [], sponsor: 'OK', places: 0 };
+      const listed = await invoke(['market', 'list'], {
+        env: UNSIGNABLE,
+        fallbackFetch: fakeWaterx(world),
+        marketCatalog: new InMemoryMarketCatalog(),
+      });
+
+      expect(listed.envelope.ok, listed.envelope.error?.message).toBe(true);
+      expect(listed.signerRuns, 'nothing was spawned to read a public catalog').toHaveLength(0);
+    });
+
+    it('still refuses the write, in the same words and from the same place', async () => {
+      // The refusal is deferred, not removed. A command that signs meets it.
+      const world: World = { activity: [], sponsor: 'OK', places: 0 };
+      const refused = await invoke(
+        ['order', 'execute', '--input', JSON.stringify(buy(`wxp1.${'0'.repeat(8)}`))],
+        { env: UNSIGNABLE, fallbackFetch: fakeWaterx(world), marketCatalog: new InMemoryMarketCatalog() },
+      );
+
+      expect(refused.envelope.ok).toBe(false);
+      expect(refused.signerRuns).toHaveLength(0);
+    });
+  });
+
   it('places one approved order with no quote named, pricing it where the price is still live', async () => {
     // Direct mode is the default (ADR-0013) and the surface an installed agent
     // actually holds, so the optionality of `referenceQuoteId` is proved here

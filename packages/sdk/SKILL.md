@@ -11,7 +11,7 @@ Skill version 2 · instructions version 4 · command schema version 1.
 
 This runtime trades a real prediction-market account. Orders are market orders and nothing recalls one, so the sequence below is not a suggested order of work — each step exists because the step after it is unsafe without it.
 
-How far you can take it depends on the surface you hold, so establish that first. Through the CLI or a tool adapter the default `interactive` policy issues the approval at the command core and no tool call can supply one — there, a previewed order the user can approve IS the completed task. Holding only the library, that policy is not running: a write is gated by the account owner's on-chain delegation, `await client.diagnose()` reads whether it permits one, and a permitted order is yours to place.
+How far you can take it depends on the surface you hold, so establish that first. Through the CLI or a tool adapter the `interactive` policy issues the approval at the command core and no tool call can supply one — there, a previewed order the user can approve IS the completed task. Holding only the library, that policy is not running: a write is gated by the account owner's on-chain delegation, `await client.diagnose()` reads whether it permits one, and a permitted order is yours to place.
 
 ## The route
 

@@ -63,7 +63,7 @@ per-leg detail is in the content either way.
 
 ## A write will be refused
 
-Under the default `interactive` policy, `order.execute`, `order.execute-many`
+Under the `interactive` policy, `order.execute`, `order.execute-many`
 and `strategy.create` require an approval token that digests one exact
 normalized intent. The token is supplied at the command core by an operator, per
 order, and this adapter has no way to send one — deliberately.

@@ -30,7 +30,7 @@ import {
 import type { EnvelopeError } from './envelope.ts';
 import type { SigningGate } from './policy.ts';
 import { isRunnerRefusal } from './runner-ipc.ts';
-import { createSigner, type SignerRunner } from './signer.ts';
+import { createSigner, lazySigner, type SignerRunner } from './signer.ts';
 
 export interface ClientFactoryOptions {
   readonly config: ResolvedConfig;
@@ -79,7 +79,9 @@ export function createClient(options: ClientFactoryOptions): TradingClient {
       'No API base URL is configured. Set WATERX_PREDICT_BASE_URL or `baseUrl` in the config file. Nothing was attempted.',
     );
   }
-  const signer = createSigner(config, options.runSigner, options.onDiagnostic, options.gate);
+  // Deferred: a read must not be refused over a credential it never uses.
+  // The first command that signs gets the same refusal, from the same place.
+  const signer = lazySigner(() => createSigner(config, options.runSigner, options.onDiagnostic, options.gate));
   if (config.mode === 'direct') {
     if (config.network === undefined) {
       throw new CliError(

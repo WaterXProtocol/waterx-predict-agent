@@ -874,12 +874,35 @@ export class PredictDirectClient {
     if (query.tradeable !== undefined) markets = markets.filter((market) => market.tradeable === query.tradeable);
     if (query.search === undefined) return { markets };
 
+    // The resolution answers a question about IDENTITY, so it is counted from
+    // what the SERVER matched — `page.items` — and never from `markets`, which
+    // is what this client could project and then filter. Those are different
+    // questions, and conflating them is how `--search "btc"` answered RESOLVED
+    // with one market out of ten: the server matched ten, nine were between
+    // rounds and so had no `nextRound` to project, and the one left over was
+    // reported as the unique answer. An agent may only take a `marketId` from
+    // here, so that is an order on a market nobody asked for.
+    //
+    // The same conflation ran the other way and was the louder half: an exact
+    // title, matched by the server and dropped here, came back NOT_FOUND — so
+    // the more precisely a caller named a market, the less likely they were to
+    // find it. "No market answers to this text" and "none of the markets that
+    // answer has a round running right now" are different facts, and only one
+    // of them means the caller got the name wrong.
+    const matched = page.items.length;
     const more = page.nextCursor !== null && page.nextCursor !== undefined;
+    // All three, and the third is the one that was missing: the server matched
+    // exactly one thing, no page follows it, and that thing survived into
+    // exactly one market here.
+    const unique = matched === 1 && !more && markets.length === 1;
     const resolution: PredictMarketResolution = {
-      status: markets.length === 0 ? (more ? 'AMBIGUOUS' : 'NOT_FOUND') : markets.length === 1 && !more ? 'RESOLVED' : 'AMBIGUOUS',
+      status: unique ? 'RESOLVED' : matched === 0 && !more ? 'NOT_FOUND' : 'AMBIGUOUS',
       normalizedQuery: query.search.trim().toLowerCase(),
-      marketId: markets.length === 1 && !more ? markets[0]!.marketId : null,
-      matchCount: markets.length,
+      marketId: unique ? markets[0]!.marketId : null,
+      // A floor when the server paged: `/predict/browse` reports no total, so a
+      // truncated page can only say "at least this many". That is never read as
+      // a unique answer, because `more` forbids RESOLVED on its own.
+      matchCount: matched,
     };
     return { markets, resolution };
   }
@@ -911,6 +934,24 @@ export class PredictDirectClient {
       this.boards([handle.roundId], signal),
       known === undefined ? Promise.resolve(undefined) : this.liveRound(known, handle.roundId, signal),
     ]);
+    // A market id is well formed long before it names anything. The handle is
+    // self-describing — a round id and two side keys, decoded locally — so a
+    // string nobody issued decodes perfectly, and this used to answer it with a
+    // market: PREGAME, category UNKNOWN, and a title saying the title was not
+    // cached. `ok: true` on an invented id is the worst possible answer here,
+    // because the one rule an agent is given about market identity is that only
+    // the server resolves it.
+    //
+    // Refused only when NOTHING knows it: not the catalog this process has
+    // seen, and not one of the three quote boards, which are keyed by round. A
+    // real round with no quotes yet is still a real round, and it is held by at
+    // least one of those two.
+    if (known === undefined && ![boards.ask, boards.bid, boards.no].some((board) => Object.hasOwn(board, handle.roundId))) {
+      throw apiError('INVALID_REQUEST', 'No market answers to this id. Resolve one with `market search` — an id is issued by the catalog, never composed.', {
+        marketId,
+        roundId: handle.roundId,
+      });
+    }
     const round: PublicRound = {
       id: handle.roundId,
       marketId: '',
