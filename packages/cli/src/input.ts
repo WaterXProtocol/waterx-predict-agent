@@ -241,8 +241,39 @@ export async function buildCommandInput(
     throw new CliError('INVALID_INPUT', result.message, {
       command: command.name,
       violations: result.violations,
+      ...wayOut(command.name, input, result.violations),
     });
   }
 
   return { input: result.input as Record<string, unknown>, defaultsApplied };
+}
+
+/**
+ * The other command, when a refusal is really a caller at the wrong door.
+ *
+ * A contract violation says what is wrong with the input and nothing about what
+ * the caller wanted. Usually that is right — there is no second guess to make.
+ * `market search` with no `search` is the exception: it is not a malformed
+ * search, it is a request to BROWSE, and browsing has its own command. Told
+ * only "`search` is required", a caller adds a keyword it had no reason to
+ * invent, and a guessed keyword against a catalog resolves to a market nobody
+ * asked for.
+ *
+ * Deliberately narrow. This names an alternative only where the contract makes
+ * one certain, and never softens the refusal: the input is still invalid and
+ * nothing was sent.
+ */
+function wayOut(
+  command: string,
+  input: Readonly<Record<string, unknown>>,
+  violations: readonly { readonly path?: string }[],
+): { tryInstead?: { command: string; why: string } } {
+  if (command !== 'market.search' || input.search !== undefined) return {};
+  if (!violations.some((violation) => violation.path === '/search' || violation.path === '')) return {};
+  return {
+    tryInstead: {
+      command: 'market list',
+      why: '`market search` resolves one named market and needs the name. Browsing the catalog without one is `market list`, which takes `--category`, `--status` and `--tradeable`.',
+    },
+  };
 }
