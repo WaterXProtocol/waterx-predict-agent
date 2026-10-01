@@ -60,11 +60,12 @@ export const WATERX_CONFIG_URLS: Readonly<Record<DirectNetwork, string>> = {
  */
 export class WaterxConfigUrlError extends Error {
   override readonly name = 'WaterxConfigUrlError';
-  constructor(
-    message: string,
-    readonly setting: string,
-  ) {
+  // A plain field, not a parameter property: scripts load this file under
+  // `--experimental-strip-types`, which refuses parameter properties.
+  readonly setting: string;
+  constructor(message: string, setting: string) {
     super(message);
+    this.setting = setting;
   }
 }
 
