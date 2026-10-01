@@ -131,6 +131,13 @@ export const CAPABILITIES: readonly Capability[] = [
     summary: "Set the execution policy. A person's command: widening it needs --yes.",
   },
   {
+    id: 'policy scope set',
+    command: 'runtime.policy-scope-set',
+    status: 'AVAILABLE',
+    summary:
+      "Write the delegated-auto scope. A person's command: always needs --yes, and turns the mode on for nobody.",
+  },
+  {
     id: 'next',
     command: 'runtime.next',
     status: 'AVAILABLE',

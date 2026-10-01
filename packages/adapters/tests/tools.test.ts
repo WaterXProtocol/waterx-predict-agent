@@ -160,11 +160,15 @@ describe('the MCP hints', () => {
         toolNameFor('runtime.describe'),
         toolNameFor('runtime.command-schema'),
         // Local AND writes: they rewrite this machine's config file and reach
-        // nothing outside it — what this runtime IS (ADR-0020), and what it may
-        // sign (ADR-0021).
+        // nothing outside it — what this runtime IS (ADR-0020), what it may
+        // sign (ADR-0021), and the ceilings it signs inside when nobody is
+        // watching. All three are reachable as tools and none of them is
+        // dangerous as one: the act that takes effect is `--yes`, a FLAG, and a
+        // flag is the half of this surface a tool call cannot reach.
         toolNameFor('runtime.configure'),
         toolNameFor('runtime.policy'),
         toolNameFor('runtime.policy-set'),
+        toolNameFor('runtime.policy-scope-set'),
       ].sort(),
     );
   });
