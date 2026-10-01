@@ -70,12 +70,14 @@ describe('the command registry', () => {
   it('marks exactly the fund-moving commands as writes needing confirmation', () => {
     const writes = AGENT_COMMANDS.filter((command) => command.classification === 'write');
     expect(writes.map((command) => command.name)).toEqual([
-      // These two write this MACHINE, not the exchange: they rewrite the config
-      // file and can cause no trade. They are writes all the same, because a
-      // host that gates writes should gate a command that changes what this
-      // runtime is, and one that changes what it may sign.
+      // These three write this MACHINE, not the exchange: they rewrite the
+      // config file and can cause no trade. They are writes all the same,
+      // because a host that gates writes should gate a command that changes
+      // what this runtime is, one that changes what it may sign, and one that
+      // changes the ceilings it signs inside while nobody is watching.
       'runtime.configure',
       'runtime.policy-set',
+      'runtime.policy-scope-set',
       'order.execute',
       'order.execute-many',
       'strategy.create',
@@ -109,13 +111,17 @@ describe('the command registry', () => {
       }
     }
 
-    // The two writes that move nothing. Cancelling can only ever stop trading,
-    // so making an operator approve it would be a gate that costs money to pass;
-    // `configure` rewrites a local file and cannot reach an exchange at all.
+    // The writes that move nothing. Cancelling can only ever stop trading, so
+    // making an operator approve it would be a gate that costs money to pass;
+    // the three `runtime` ones rewrite a local file and cannot reach an
+    // exchange at all. `confirmation: NOT_REQUIRED` is not a loose gate on the
+    // policy pair — their gate is `--yes`, which is a FLAG, and a flag is the
+    // half of this surface a tool call cannot reach.
     const stoppers = writes.filter((command) => !command.sideEffects.includes('MOVES_FUNDS'));
     expect(stoppers.map((command) => command.name)).toEqual([
       'runtime.configure',
       'runtime.policy-set',
+      'runtime.policy-scope-set',
       'strategy.cancel',
     ]);
     for (const command of stoppers) {
@@ -198,11 +204,12 @@ describe('the command registry', () => {
     // become (see AgentCommandImplementation).
     for (const command of AGENT_COMMANDS) {
       if (command.implementation.kind !== 'runtime') continue;
-      // Two runtime commands change anything at all, and what they change is a
-      // local file: `runtime.configure` (ADR-0020) and `runtime.policy-set`
-      // (ADR-0021). The invariant that matters is below and holds for both: no
-      // runtime command may move funds or sign.
-      const LOCAL_WRITES = new Set(['runtime.configure', 'runtime.policy-set']);
+      // Three runtime commands change anything at all, and what they change is
+      // a local file: `runtime.configure` (ADR-0020), `runtime.policy-set`
+      // (ADR-0021) and `runtime.policy-scope-set`, which writes the ceilings
+      // the second of those signs inside. The invariant that matters is below
+      // and holds for all three: no runtime command may move funds or sign.
+      const LOCAL_WRITES = new Set(['runtime.configure', 'runtime.policy-set', 'runtime.policy-scope-set']);
       expect(command.classification, command.name).toBe(LOCAL_WRITES.has(command.name) ? 'write' : 'read');
       expect(command.sideEffects, command.name).not.toContain('MOVES_FUNDS');
       expect(command.sideEffects, command.name).not.toContain('SIGNS_TRANSACTION');

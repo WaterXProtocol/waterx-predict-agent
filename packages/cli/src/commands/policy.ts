@@ -290,3 +290,121 @@ export async function runtimePolicySet(context: CommandContext): Promise<unknown
       : {}),
   };
 }
+
+/**
+ * Write the ceilings `delegated-auto` signs inside.
+ *
+ * It existed only as hand-edited JSON, so the one mode that trades with nobody
+ * watching was the one mode no command could set up: an operator had to find
+ * the config file, learn an undocumented shape and get seven fields right by
+ * hand — and a typo there is a ceiling that does not bind.
+ *
+ * **Always `--yes`.** `policy set` distinguishes widening from narrowing
+ * because turning writes off needs no ceremony. A scope has no such direction:
+ * it is the document that makes unattended signing possible at all, and every
+ * edit changes what may be signed while nobody is looking. The confirmation is
+ * a FLAG, which is the half of this surface a tool call cannot reach — the same
+ * boundary that stops an adapter pinning `--yes` on `policy set` (ADR-0003).
+ *
+ * Writing a scope does NOT turn the mode on. That stays its own decision.
+ */
+export function runtimePolicyScopeSet(context: CommandContext): Promise<unknown> {
+  const input = context.input as Record<string, unknown>;
+  const file = context.configFile;
+  if (file === undefined) {
+    throw new CliError(
+      'NOT_CONFIGURED',
+      'This machine has nowhere to keep a config file, so there is nowhere to record a scope. Set WATERX_PREDICT_CONFIG to a path this user can write.',
+    );
+  }
+
+  const sides = input.sides as readonly string[];
+  // Refused here, where the operator is, rather than at the first order hours
+  // from now: a scope that authorizes a side and states no ceiling for it is
+  // one that bounds nothing on that side.
+  const missing: string[] = [];
+  if (sides.includes('BUY')) {
+    if (input.maxBuyAmount === undefined) missing.push('maxBuyAmount');
+    if (input.maxCumulativeBuyAmount === undefined) missing.push('maxCumulativeBuyAmount');
+  }
+  if (sides.includes('SELL') && input.maxSellShares === undefined) missing.push('maxSellShares');
+  if (missing.length > 0) {
+    throw new CliError(
+      'INVALID_INPUT',
+      `This scope authorizes ${sides.join(' and ')} and states no ${missing.join(' or ')}. A side with no ceiling is a side with no bound; nothing was written.`,
+      { sides: [...sides], missing },
+    );
+  }
+
+  const notAfter = Date.parse(String(input.notAfter));
+  if (Number.isNaN(notAfter)) {
+    throw new CliError(
+      'INVALID_INPUT',
+      '`notAfter` must be an absolute ISO-8601 instant with an offset. A locale-formatted date is this machine’s opinion, not the operator’s.',
+      { notAfter: input.notAfter },
+    );
+  }
+  if (notAfter <= context.now().getTime()) {
+    // A scope that expired before it was written authorizes nothing, and an
+    // operator who typed a past date meant a future one.
+    throw new CliError(
+      'INVALID_INPUT',
+      `\`notAfter\` is ${String(input.notAfter)}, which has already passed. A scope that is already expired authorizes nothing; nothing was written.`,
+      { notAfter: input.notAfter, now: context.now().toISOString() },
+    );
+  }
+
+  if (!context.confirmed) {
+    throw new CliError(
+      'POLICY_DENIED',
+      'Writing a delegated-auto scope is a person’s decision, so it needs `--yes`. It is what bounds a runtime that signs with nobody watching, and there is no narrowing case: every edit changes what may be signed unattended.',
+      { confirmWith: 'waterx-predict policy scope set --input <scope> --yes' },
+    );
+  }
+
+  const raw = file.read();
+  let existing: Record<string, unknown> = {};
+  if (raw !== null && raw.trim() !== '') {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      throw new CliError(
+        'CONFIG_INVALID',
+        `The config file at ${file.path} is not valid JSON, so it cannot be edited safely. Fix or move it aside first.`,
+        { file: file.path },
+      );
+    }
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new CliError('CONFIG_INVALID', `The config file at ${file.path} must be a JSON object.`, { file: file.path });
+    }
+    existing = { ...(parsed as Record<string, unknown>) };
+  }
+
+  const held = (existing['policy'] ?? {}) as Record<string, unknown>;
+  const scope = Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined));
+  const changed = JSON.stringify(held['scope'] ?? null) !== JSON.stringify(scope);
+  if (changed) {
+    file.write(`${JSON.stringify({ ...existing, policy: { ...held, scope } }, null, 2)}\n`);
+  }
+
+  context.pointTo('waterx-predict policy');
+  return Promise.resolve({
+    configFile: file.path,
+    scope,
+    changed,
+    mode: context.config.policy.mode,
+    // Said rather than discovered. The cumulative ceiling is counted against a
+    // digest of the scope itself (ADR-0014), so any edit starts a new count —
+    // an operator narrowing a scope believes they tightened a ceiling and has
+    // in fact reset what it has spent.
+    ...(changed ? { budgetReset: 'A new scope starts a fresh cumulative budget. What the previous scope had authorized no longer counts against this one.' } : {}),
+    ...(context.config.policy.mode === 'delegated-auto'
+      ? {}
+      : { nextStep: 'This writes the ceilings and turns nothing on. `waterx-predict policy set --mode delegated-auto --yes` is its own decision.' }),
+    caveats: [
+      'Nothing was sent and nothing was signed. This command rewrites one block of a local file.',
+      'The environment beats the file: `WATERX_PREDICT_POLICY` still decides the mode in force.',
+    ],
+  });
+}

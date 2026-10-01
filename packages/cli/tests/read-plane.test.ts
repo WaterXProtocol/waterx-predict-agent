@@ -662,3 +662,28 @@ describe('account history paging', () => {
     expect(result.fetches).toHaveLength(0);
   });
 });
+
+describe('a refusal that is really the wrong door', () => {
+  // `market search` with no `search` is not a malformed search — it is a
+  // request to BROWSE, and browsing has its own command. Told only that
+  // `search` is required, a caller adds a keyword it had no reason to invent,
+  // and a guessed keyword against a catalog resolves to a market nobody asked
+  // for. That is the failure this names a way out of.
+  it('sends a keywordless `market search` to `market list`', async () => {
+    const result = await invoke(['market', 'search'], { env: CONFIGURED_ENV });
+
+    expect(result.envelope.error?.code).toBe('INVALID_INPUT');
+    const details = result.envelope.error?.details as { tryInstead?: { command: string; why: string } };
+    expect(details.tryInstead?.command).toBe('market list');
+    expect(details.tryInstead?.why).toMatch(/needs the name/u);
+    // Still a refusal: the input is invalid and nothing was sent.
+    expect(result.fetches).toHaveLength(0);
+  });
+
+  it('says nothing extra when a search names something', async () => {
+    const result = await invoke(['market', 'search', '--search', ''], { env: CONFIGURED_ENV });
+    const details = result.envelope.error?.details as { tryInstead?: unknown };
+    expect(result.envelope.error?.code).toBe('INVALID_INPUT');
+    expect(details.tryInstead, 'an empty search is a malformed one, not a browse').toBeUndefined();
+  });
+});

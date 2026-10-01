@@ -30,6 +30,25 @@ export interface InputSources {
   /** Applied to `accountId` when the command needs one and none was given. */
   readonly defaultAccountId: string | undefined;
   /**
+   * The account this agent ADOPTED, consulted only when nothing else named one.
+   *
+   * `onboard` records the account an owner granted and says it has been adopted
+   * — and then every command still refused without `--accountId`, so the word
+   * meant nothing to anyone following the setup. The record was already
+   * durable; nothing read it back.
+   *
+   * Last in the order on purpose, and it widens nothing. ADR-0015 already
+   * settles which account this agent trades: the first authorized one is
+   * adopted, and a DIFFERENT one later is never taken up without being named.
+   * So this fills in the account that rule has already chosen, and an operator
+   * who names another still overrides it.
+   *
+   * A thunk because reading it costs a file: a command that names its account,
+   * or does not take one, must not pay for a ledger it will not use — and a
+   * machine with no state directory has no ledger to read and must still run.
+   */
+  readonly adoptedAccountId?: () => string | undefined;
+  /**
    * Applied to `agentWallet` the same way. Justified because it is the SAME
    * value this CLI already hands the signer: a strategy created under a
    * different wallet than the one that can sign for it is a job that refuses at
@@ -182,9 +201,28 @@ export async function buildCommandInput(
 
   const defaultsApplied: Record<string, unknown> = {};
   const wantsAccount = Object.hasOwn(properties, 'accountId');
-  if (wantsAccount && input.accountId === undefined && sources.defaultAccountId !== undefined) {
-    input.accountId = sources.defaultAccountId;
-    defaultsApplied.accountId = sources.defaultAccountId;
+  if (wantsAccount && input.accountId === undefined) {
+    /**
+     * Configuration first, then the adoption. An operator who wrote the account
+     * down meant that one; the ledger only answers when nobody has.
+     *
+     * `next` and `onboard` are excluded from the ADOPTION, and the exclusion is
+     * the same shape as `runtime.configure`'s: these commands exist to DECIDE
+     * which account this agent trades, so handing them the current answer begs
+     * the question they were asked. Concretely — ADR-0015 §3 says a different
+     * authorized account is never taken up unless it is named, and `next`
+     * reports `ACCOUNT_CHOICE_NEEDED` to make the operator choose. Fed the
+     * adopted account, it reads one the owner has moved away from and answers
+     * `ACCOUNT_UNREADABLE`: a decision turned into a fault.
+     *
+     * They still honour configuration, which is a thing somebody typed.
+     */
+    const decidesTheAccount = command.name === 'runtime.next' || command.name === 'runtime.onboard';
+    const account = sources.defaultAccountId ?? (decidesTheAccount ? undefined : sources.adoptedAccountId?.());
+    if (account !== undefined) {
+      input.accountId = account;
+      defaultsApplied.accountId = account;
+    }
   }
   /**
    * `runtime.configure` is excluded on purpose: filling its `agentWallet` in
@@ -203,8 +241,39 @@ export async function buildCommandInput(
     throw new CliError('INVALID_INPUT', result.message, {
       command: command.name,
       violations: result.violations,
+      ...wayOut(command.name, input, result.violations),
     });
   }
 
   return { input: result.input as Record<string, unknown>, defaultsApplied };
+}
+
+/**
+ * The other command, when a refusal is really a caller at the wrong door.
+ *
+ * A contract violation says what is wrong with the input and nothing about what
+ * the caller wanted. Usually that is right — there is no second guess to make.
+ * `market search` with no `search` is the exception: it is not a malformed
+ * search, it is a request to BROWSE, and browsing has its own command. Told
+ * only "`search` is required", a caller adds a keyword it had no reason to
+ * invent, and a guessed keyword against a catalog resolves to a market nobody
+ * asked for.
+ *
+ * Deliberately narrow. This names an alternative only where the contract makes
+ * one certain, and never softens the refusal: the input is still invalid and
+ * nothing was sent.
+ */
+function wayOut(
+  command: string,
+  input: Readonly<Record<string, unknown>>,
+  violations: readonly { readonly path?: string }[],
+): { tryInstead?: { command: string; why: string } } {
+  if (command !== 'market.search' || input.search !== undefined) return {};
+  if (!violations.some((violation) => violation.path === '/search' || violation.path === '')) return {};
+  return {
+    tryInstead: {
+      command: 'market list',
+      why: '`market search` resolves one named market and needs the name. Browsing the catalog without one is `market list`, which takes `--category`, `--status` and `--tradeable`.',
+    },
+  };
 }

@@ -63,6 +63,7 @@ import { isDirectClient, toEnvelopeError } from '../client.ts';
 import { exposureNotes, type ExposureNote } from './exposure.ts';
 import type { CommandContext } from '../context.ts';
 import { CliError } from '../errors.ts';
+import { adoptionKey } from '../ledgers.ts';
 import { ENV_KEYS } from '../config.ts';
 import { resolveRequirements } from '../requirements.ts';
 import { KEYSTORE_LAYOUT, KEYSTORE_SIGNER_COMMAND, type KeystoreProbe } from '../keystore-probe.ts';
@@ -1206,7 +1207,7 @@ function adopt(
   } catch (error: unknown) {
     return { status: 'UNRECORDED', reason: codeOf(error) };
   }
-  const key = `${config.network ?? 'unknown'}:${config.agentWallet ?? ''}`;
+  const key = adoptionKey(config);
   const record = ledger.get(key);
   const now = context.now().toISOString();
   if (record?.accountId === accountId) return { status: 'UNCHANGED', accountId };

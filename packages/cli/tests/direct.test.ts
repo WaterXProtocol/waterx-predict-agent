@@ -778,6 +778,68 @@ describe('direct mode', () => {
     expect(settledOnIt.envelope.data).toMatchObject({ state: 'READY', facts: { adoption: { status: 'UNCHANGED' } } });
   });
 
+  describe('the account an adopted agent means when it names none', () => {
+    // `onboard` records the account an owner granted and says it has been
+    // adopted — and then every command still refused without `--accountId`, so
+    // the word meant nothing to anyone following the setup. The record was
+    // already durable; nothing read it back.
+    it('reads the adoption back, so a trade does not have to repeat it', async () => {
+      const { run, ledgers } = setup();
+      await run(['next']);
+
+      const positions = await run(['account', 'positions'], { ledgers });
+      expect(positions.envelope.ok, positions.envelope.error?.message).toBe(true);
+      expect((positions.envelope.data as { accountId: string }).accountId).toBe(ACCOUNT_ID);
+    });
+
+    it('is overridden by an account the operator names', async () => {
+      // The adoption fills in the account ADR-0015 has already chosen. It
+      // decides nothing, so naming one still wins — and the named one is what
+      // the command acts on, not what it was adopted on.
+      const { run, ledgers } = setup();
+      await run(['next']);
+      const other = `0x${'d'.repeat(63)}7`;
+
+      const named = await run(['account', 'positions', '--accountId', other], { ledgers });
+      // It reaches for the named account rather than the adopted one; whether
+      // that account answers is the server's business, not this default's.
+      expect(JSON.stringify(named.envelope)).not.toContain(ACCOUNT_ID);
+    });
+
+    it('does not answer the question `next` exists to ask', async () => {
+      // The exclusion, and why it is not cosmetic. ADR-0015 §3: a different
+      // authorized account is never taken up unless it is named, and `next`
+      // reports ACCOUNT_CHOICE_NEEDED so the operator chooses. Fed the adopted
+      // account, it would read one the owner has moved away from and answer
+      // ACCOUNT_UNREADABLE — a decision turned into a fault.
+      const { run, ledgers } = setup();
+      await run(['next']);
+      const other = `0x${'d'.repeat(63)}7`;
+      const moved = {
+        ledgers,
+        routes: {
+          'GET /account/delegated': {
+            status: 200,
+            body: {
+              success: true,
+              data: {
+                accounts: [{ accountId: other, ownerAddress: OWNER, delegate: { delegateAddress: AGENT_WALLET, predictPermissions: 15, expiresAtMs: null } }],
+                unverifiedAccounts: [],
+                truncated: false,
+              },
+            },
+          },
+          'GET /account': {
+            status: 200,
+            body: { success: true, data: [{ accountId: other, owner: OWNER, accountIndex: 0, isMainAccount: true }] },
+          },
+        },
+      };
+      const conflict = await run(['next'], moved);
+      expect((conflict.envelope.data as { state: string }).state).toBe('ACCOUNT_CHOICE_NEEDED');
+    });
+  });
+
   it('probes the write path in doctor on request: built and verified, never signed', async () => {
     const { run, world } = setup();
     const result = await run(['doctor', '--accountId', ACCOUNT_ID, '--probeWrite']);

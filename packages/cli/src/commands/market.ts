@@ -96,6 +96,7 @@ export async function marketSearch(context: CommandContext): Promise<unknown> {
                   : 'More than one market answers to this text. Add words from a candidate’s `aliases`, or narrow with `--category` / `--tradeable`, and ask again.',
           },
     caveats: [
+      ...OUTCOME_CAVEATS,
       '`marketId` is non-null only when exactly one market matched. AMBIGUOUS and NOT_FOUND never carry a best guess.',
       '`matchCount` counts what the catalog MATCHED; `candidates` is the subset this runtime can show, which excludes a market whose round has not opened. They differ, and `matchCount` is the one that decides whether an answer is unique.',
       'Candidate order is match specificity, then the round clock, then the id. It is a reproducible tie-break, NOT a ranking of which market is worth trading.',
@@ -104,10 +105,28 @@ export async function marketSearch(context: CommandContext): Promise<unknown> {
   };
 }
 
+/**
+ * What an order names, and what a person reads. They are not the same string.
+ *
+ * `outcomeId` is `YES` or `NO` and is the only thing an order may carry.
+ * `name` is the venue's own label for that side — `up`, `down`, a team, a
+ * candidate — and on a market whose title is a slug (`btc-dip-45000-y-2026`)
+ * those two can be read as opposites by anyone skimming: "dip" and "up" invert
+ * each other, and nothing on the page says which one the YES leg is.
+ *
+ * So it is said wherever outcomes are returned, rather than left to be worked
+ * out from a slug. Getting this backwards is not a formatting mistake; it is an
+ * order on the other side of the market.
+ */
+const OUTCOME_CAVEATS: readonly string[] = [
+  'Trade `outcomeId` (`YES` / `NO`), never `name`. `name` is the venue\u2019s label for the same side — `up`, `down`, a team — and on a market titled by slug the two can read as opposites. The YES leg is the one this market\u2019s title asserts.',
+  'A title that looks like a slug is one the catalog has not published a question for. `market search` resolves the readable title; `market get` alone may show the slug.',
+];
+
 export async function marketGet(context: CommandContext): Promise<unknown> {
   const marketId = String(context.input.marketId);
   const response = await (await context.client()).getMarket(marketId, context.signal());
-  return { market: response.market };
+  return { market: response.market, caveats: [...OUTCOME_CAVEATS, ...LIST_CAVEATS.slice(0, 1)] };
 }
 
 export async function marketQuote(context: CommandContext): Promise<unknown> {

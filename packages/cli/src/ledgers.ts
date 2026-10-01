@@ -272,6 +272,17 @@ export interface AdoptionRecord {
   readonly namedBy?: 'COMMAND' | 'CONFIG';
 }
 
+/**
+ * The key an adoption is recorded under: one network, one agent wallet.
+ *
+ * Spelled once because two places read it — `next`, which writes the record,
+ * and the input builder, which reads it back as the account a command means
+ * when it names none. Two copies of a key format is two chances to miss each
+ * other and conclude nothing was ever adopted.
+ */
+export const adoptionKey = (config: { readonly network?: string | undefined; readonly agentWallet?: string | undefined }): string =>
+  `${config.network ?? 'unknown'}:${config.agentWallet ?? ''}`;
+
 export interface AdoptionLedger {
   get(key: string): AdoptionRecord | undefined;
   set(key: string, record: AdoptionRecord): void;

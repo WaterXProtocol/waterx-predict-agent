@@ -52,7 +52,7 @@ import { describeRuntime } from './commands/describe.ts';
 import { doctorFailure, runDoctor } from './commands/doctor.ts';
 import { marketGet, marketList, marketQuote, marketSearch } from './commands/market.ts';
 import { runtimeConfigure } from './commands/configure.ts';
-import { runtimePolicy, runtimePolicySet } from './commands/policy.ts';
+import { runtimePolicy, runtimePolicyScopeSet, runtimePolicySet } from './commands/policy.ts';
 import { runtimeNext } from './commands/next.ts';
 import { runtimeOnboard } from './commands/onboard.ts';
 import {
@@ -100,7 +100,7 @@ import {
   type RunnerSession,
 } from './runner-ipc.ts';
 import { probeKeystore } from './keystore-probe.ts';
-import { createFileLedgers } from './ledgers.ts';
+import { adoptionKey, createFileLedgers } from './ledgers.ts';
 import { createNodeSignerRunner, type SignerRunner } from './signer.ts';
 import { CLI_NAME, CLI_VERSION } from './version.ts';
 
@@ -177,6 +177,8 @@ const HANDLERS: Readonly<Record<string, CommandHandler>> = {
   'runtime.configure': runtimeConfigure,
   'runtime.policy': runtimePolicy,
   'runtime.policy-set': runtimePolicySet,
+  runtimePolicyScopeSet,
+  'runtime.policy-scope-set': runtimePolicyScopeSet,
   'market.list': marketList,
   'market.search': marketSearch,
   'market.get': marketGet,
@@ -238,11 +240,20 @@ function resolveCommand(path: readonly string[]): {
   spec: AgentCommandSpec | undefined;
   invocation: string;
 } {
-  const two = path.slice(0, 2).join(' ');
-  const one = path[0] ?? '';
-  const spec = BY_CLI_PATH.get(two) ?? BY_CLI_PATH.get(one);
-  if (spec !== undefined) return { spec, invocation: spec.cli };
-  return { spec: undefined, invocation: path.length >= 2 ? two : one };
+  // Longest match first, over however many words the contract actually uses.
+  //
+  // This tried exactly two words and then one, which silently resolved a
+  // three-word command to its two-word prefix: `policy scope set` became
+  // `policy`, and the remaining words were reported as unknown FIELDS of a
+  // command nobody asked for. Derived from the registry rather than from a
+  // constant, so adding a deeper command needs no edit here — and a prefix is
+  // still matched, which is what lets `policy` and `policy set` coexist.
+  const longest = Math.max(1, ...[...BY_CLI_PATH.keys()].map((cli) => cli.split(' ').length));
+  for (let words = Math.min(longest, path.length); words >= 1; words -= 1) {
+    const spec = BY_CLI_PATH.get(path.slice(0, words).join(' '));
+    if (spec !== undefined) return { spec, invocation: spec.cli };
+  }
+  return { spec: undefined, invocation: path.slice(0, 2).join(' ') || (path[0] ?? '') };
 }
 
 /**
@@ -403,6 +414,16 @@ export async function run(io: CliIo): Promise<number> {
       },
       readStdin: io.readStdin,
       defaultAccountId: config.defaultAccountId,
+      // Read only when nothing else named an account, and never allowed to fail
+      // the command: a machine with no state directory has no ledger, which is
+      // not an error here — it is simply nothing to fall back to.
+      adoptedAccountId: () => {
+        try {
+          return io.ledgers?.().adoptions.get(adoptionKey(config))?.accountId;
+        } catch {
+          return undefined;
+        }
+      },
       defaultAgentWallet: config.agentWallet,
     });
 

@@ -349,3 +349,66 @@ describe('after the owner signs', () => {
     expect(result.envelope.meta?.nextCommand).toBe('waterx-predict next');
   });
 });
+
+describe('writing the scope delegated-auto signs inside', () => {
+  // It existed only as hand-edited JSON, so the one mode that trades with
+  // nobody watching was the one mode no command could set up.
+  const SCOPE_INPUT = {
+    accounts: [`0x${'1'.repeat(64)}`],
+    sides: ['BUY', 'SELL'],
+    maxBuyAmount: '2.5',
+    maxCumulativeBuyAmount: '25',
+    maxSellShares: '50',
+    maxSlippageBps: 150,
+    maxLegs: 2,
+    notAfter: '2099-01-01T00:00:00.000Z',
+  };
+  const scopeSet = (extra: Record<string, unknown> = {}, argv: readonly string[] = []) =>
+    run(['policy', 'scope', 'set', '--input', JSON.stringify({ ...SCOPE_INPUT, ...extra }), ...argv], {
+      files: { [CONFIG]: JSON.stringify({ policy: { mode: 'read-only' } }) },
+    });
+
+  it('always needs a person, because a scope has no narrowing case', async () => {
+    // `policy set` lets narrowing through without ceremony; turning writes off
+    // needs none. Every edit to a scope changes what may be signed while nobody
+    // is looking, so there is no edit that is obviously safe.
+    const answer = await scopeSet();
+    expect(answer.envelope.error?.code).toBe('POLICY_DENIED');
+    expect(answer.envelope.error?.message).toContain('--yes');
+    expect(answer.secretWrites, 'nothing was written').toEqual([]);
+  });
+
+  it('writes the block and turns nothing on', async () => {
+    const answer = await scopeSet({}, ['--yes']);
+    expect(answer.envelope.ok, answer.envelope.error?.message).toBe(true);
+    expect(JSON.parse(answer.secretWrites[0]?.contents ?? '{}')).toMatchObject({
+      policy: { mode: 'read-only', scope: { maxBuyAmount: '2.5', maxLegs: 2 } },
+    });
+    // Setting the ceilings is not the same decision as signing inside them.
+    expect((answer.envelope.data as { nextStep?: string }).nextStep).toMatch(/policy set --mode delegated-auto/u);
+  });
+
+  it('says that a new scope resets the budget it is counted against', async () => {
+    // ADR-0014 counts the cumulative ceiling against a digest of the scope, so
+    // an operator narrowing one believes they tightened a ceiling and has in
+    // fact reset what it has spent. Surprising in the direction that spends
+    // money, so it is said rather than discovered.
+    const answer = await scopeSet({}, ['--yes']);
+    expect((answer.envelope.data as { budgetReset?: string }).budgetReset).toMatch(/fresh cumulative budget/u);
+  });
+
+  it('refuses a side it states no ceiling for', async () => {
+    // Refused where the operator is, not at the first order hours from now.
+    const answer = await scopeSet({ maxBuyAmount: undefined, maxCumulativeBuyAmount: undefined }, ['--yes']);
+    expect(answer.envelope.error?.code).toBe('INVALID_INPUT');
+    expect(answer.envelope.error?.message).toMatch(/no bound/u);
+    expect(answer.secretWrites).toEqual([]);
+  });
+
+  it('refuses a scope that has already expired', async () => {
+    const answer = await scopeSet({ notAfter: '2020-01-01T00:00:00.000Z' }, ['--yes']);
+    expect(answer.envelope.error?.code).toBe('INVALID_INPUT');
+    expect(answer.envelope.error?.message).toMatch(/already passed/u);
+    expect(answer.secretWrites).toEqual([]);
+  });
+});

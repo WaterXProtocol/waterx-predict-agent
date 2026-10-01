@@ -634,6 +634,138 @@
       ]
     },
     {
+      "name": "runtime.policy-scope-set",
+      "cli": "policy scope set",
+      "summary": "Write the delegated-auto scope. A person’s act: always needs --yes.",
+      "description": "Writes the `policy.scope` block into the config file, 0600, so it outlives the process that set it. THE PERSON RUNS THIS, not the agent: the scope is what bounds a runtime that signs with nobody watching, and an agent that could write its own would have no bound at all (ADR-0003, ADR-0017). Unlike `policy set` there is no narrowing case — every edit changes what may be signed unattended — so `--yes` is always required and the refusal names the exact command to repeat. Setting a scope does NOT turn delegated-auto on; that stays a separate decision. A new scope starts a fresh cumulative budget (ADR-0014): the ceiling is counted against a digest of the scope itself, so an operator who narrows one is also resetting what it has spent, and the answer says so. Nothing is sent and nothing is signed.",
+      "classification": "write",
+      "sideEffects": [
+        "NONE"
+      ],
+      "longRunning": false,
+      "idempotency": {
+        "required": false,
+        "callerSupplied": "UNSUPPORTED",
+        "note": "Writing the same scope twice leaves the same file; the answer says nothing changed."
+      },
+      "confirmation": "NOT_REQUIRED",
+      "implementation": {
+        "kind": "runtime",
+        "note": "Local only: rewrites the `policy.scope` block of the config file. Issues no request and signs nothing."
+      },
+      "input": {
+        "type": "object",
+        "required": [
+          "accounts",
+          "sides",
+          "maxSlippageBps",
+          "maxLegs",
+          "notAfter"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "accounts": {
+            "title": "Accounts this scope authorizes",
+            "description": "Non-empty. \"Any account\" is not a scope: an unattended runtime must be told whose money it may commit.",
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 16,
+            "items": {
+              "$ref": "#/$defs/accountId"
+            }
+          },
+          "markets": {
+            "title": "Markets this scope authorizes",
+            "description": "Omit to allow any market the accounts can reach. Present and empty is refused rather than read as \"none\".",
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 64,
+            "items": {
+              "$ref": "#/$defs/marketId"
+            }
+          },
+          "sides": {
+            "title": "Sides this scope authorizes",
+            "description": "BUY commits wxUSD and needs both budget ceilings; SELL closes shares and needs the share ceiling.",
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 2,
+            "items": {
+              "type": "string",
+              "enum": [
+                "BUY",
+                "SELL"
+              ]
+            }
+          },
+          "maxBuyAmount": {
+            "title": "Per-order wxUSD ceiling",
+            "description": "Required when BUY is authorized. The most one order may commit.",
+            "$ref": "#/$defs/positiveDecimalAmount"
+          },
+          "maxCumulativeBuyAmount": {
+            "title": "Cumulative wxUSD ceiling",
+            "description": "Required when BUY is authorized. Counted across invocations for as long as this exact scope is configured (ADR-0014), so editing the scope at all starts a new count.",
+            "$ref": "#/$defs/positiveDecimalAmount"
+          },
+          "maxSellShares": {
+            "title": "Per-order share ceiling",
+            "description": "Required when SELL is authorized. The most shares one order may close.",
+            "$ref": "#/$defs/positiveDecimalAmount"
+          },
+          "maxSlippageBps": {
+            "$ref": "#/$defs/maxSlippageBps"
+          },
+          "maxLegs": {
+            "title": "Maximum legs per batch",
+            "description": "How many orders one `order execute-many` may carry under this scope.",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20
+          },
+          "notAfter": {
+            "title": "When this scope stops authorizing anything",
+            "description": "ISO-8601 instant with an offset. After it, every write under delegated-auto is refused — a scope with no end is a mandate nobody revisits.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "strategyIds": {
+            "title": "Strategy ids this scope authorizes",
+            "description": "Omit to allow any, including none.",
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 16,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          }
+        }
+      },
+      "examples": [
+        {
+          "title": "Bound an unattended agent to one account and small orders",
+          "input": {
+            "accounts": [
+              "0x1111111111111111111111111111111111111111111111111111111111111111"
+            ],
+            "sides": [
+              "BUY",
+              "SELL"
+            ],
+            "maxBuyAmount": "2.5",
+            "maxCumulativeBuyAmount": "25",
+            "maxSellShares": "50",
+            "maxSlippageBps": 150,
+            "maxLegs": 2,
+            "notAfter": "2026-10-08T00:00:00.000Z"
+          }
+        }
+      ]
+    },
+    {
       "name": "runtime.doctor",
       "cli": "doctor",
       "summary": "Check configuration, signer, reachability and authentication.",
