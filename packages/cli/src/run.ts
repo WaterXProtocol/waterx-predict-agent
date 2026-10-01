@@ -324,15 +324,27 @@ export async function run(io: CliIo): Promise<number> {
       return EXIT_CODES.OK;
     }
 
-    if (parsed.path.length === 0 || parsed.flags.has('help')) {
+    // `help` as a COMMAND, not only as a flag.
+    //
+    // `npx --no waterx-predict --help` never reaches this binary: npx answers
+    // the flag itself, so the one spelling a reader tries first prints npx's
+    // help about npx. `--` fixes it and has to be known to be typed. A
+    // positional cannot be intercepted, so there is now a spelling that works
+    // whichever way this was installed.
+    const askedForHelp = parsed.flags.has('help') || parsed.path[0] === 'help';
+    if (parsed.path.length === 0 || askedForHelp) {
       // Usage goes to stderr and stdout still gets an envelope, because a caller
       // that always parses stdout must never find prose there.
       diagnostic(USAGE);
       throw new CliError(
         'USAGE',
-        parsed.path.length === 0
-          ? 'No command was given. Run `waterx-predict describe` for the capability inventory.'
-          : 'Help was requested. The command reference is on stderr; `command-schema` has the machine-readable form.',
+        // Keyed on whether help was ASKED FOR, not on whether a path was
+        // given. `--help` carries no path, so it was being answered "no command
+        // was given" — about the one invocation that said exactly what it
+        // wanted.
+        askedForHelp
+          ? 'Help was requested. The command reference is on stderr; `command-schema` has the machine-readable form.'
+          : 'No command was given. Run `waterx-predict describe` for the capability inventory.',
       );
     }
 

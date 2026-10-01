@@ -826,6 +826,64 @@ describe('a wait that runs out is ambiguous, not failed', () => {
     expect(signatures(result.signerRuns).filter((type) => type === 'TRANSACTION')).toHaveLength(1);
   }, 15_000);
 
+  it('says why a settled order has no fill to report yet, without calling it unresolved', async () => {
+    // `FILLED` with no `fill` is honest and unusable. The chain decides a close
+    // by the position being gone, which it knows the instant the transaction
+    // lands; the amounts come from the activity feed a moment later. A caller
+    // that waited for TERMINAL therefore holds a settled order whose size and
+    // price it cannot report — and the rule it follows is to report only the
+    // fill the runtime gave it, so it reports nothing.
+    const token = await previewToken();
+    const result = await invoke(
+      [
+        'order',
+        'execute',
+        '--approve',
+        token,
+        '--approver',
+        'tester',
+        '--input',
+        input({ referenceQuoteId: QUOTE_ID, waitFor: 'TERMINAL', timeoutMs: 1_000 }),
+      ],
+      {
+        env: CONFIGURED_ENV,
+        routes: {
+          ...WRITE_ROUTES,
+          // Terminal, and the feed has not caught up.
+          [`GET ${EXECUTIONS_PATH}/${EXECUTION_ID}`]: submitted(EXECUTION_ID, 'FILLED'),
+        },
+      },
+    );
+    const data = result.envelope.data as {
+      execution: { status: string; terminal: boolean };
+      fillFacts?: { available: boolean; reason: string; command: string };
+      reconciliation?: unknown;
+    };
+
+    expect(data.execution.status).toBe('FILLED');
+    expect(data.fillFacts?.available).toBe(false);
+    expect(data.fillFacts?.reason).toBe('NOT_INDEXED_YET');
+    expect(data.fillFacts?.command).toContain(EXECUTION_ID);
+    // Deliberately NOT reconciliation: nothing is unresolved. The outcome is
+    // terminal and known, and only the arithmetic is late. Calling it
+    // unresolved would send a caller to recover from an order that is done.
+    expect(data.reconciliation).toBeUndefined();
+  }, 15_000);
+
+  it('says nothing extra when the fill is there', async () => {
+    const token = await previewToken();
+    const result = await invoke(
+      ['order', 'execute', '--approve', token, '--approver', 'tester', '--input', input({ referenceQuoteId: QUOTE_ID, waitFor: 'TERMINAL', timeoutMs: 1_000 })],
+      {
+        env: CONFIGURED_ENV,
+        routes: { ...WRITE_ROUTES, [`GET ${EXECUTIONS_PATH}/${EXECUTION_ID}`]: filled() },
+      },
+    );
+    const data = result.envelope.data as { fillFacts?: unknown; execution: { status: string } };
+    expect(data.execution.status).toBe('FILLED');
+    expect(data.fillFacts, 'a notice about a missing fill, on an order that has one').toBeUndefined();
+  }, 15_000);
+
   it('emits a recovery instruction this CLI can actually run', async () => {
     // The one instruction a caller follows while holding an order whose outcome
     // is unknown. Asserting only that it mentions the execution id let it ship

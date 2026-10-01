@@ -86,7 +86,17 @@ export async function runtimeConfigure(context: CommandContext): Promise<unknown
     // The address only. This command never opens the keystore, and the address
     // is the public half — it is what the owner's grant names.
     wanted.set('agentWallet', probe.keystore.address);
-    wanted.set('signerCommand', [KEYSTORE_LAYOUT.command, 'sign']);
+    // The path it resolved to, not the bare name.
+    //
+    // `npx` puts `node_modules/.bin` on PATH for the duration of one command,
+    // so the bare name resolves while this runs and does not resolve when the
+    // agent is started any other way — and this config outlives the shell that
+    // wrote it. A local install therefore produced a config naming a command
+    // that could not be found, and the first thing to notice was a write
+    // failing at the signer. Absolute when this host could say where; the bare
+    // name only when it could not, which is the honest fallback rather than a
+    // guess at a path.
+    wanted.set('signerCommand', [probe.executable ?? KEYSTORE_LAYOUT.command, 'sign']);
     protection = probe.keystore.protection;
   } else {
     if (input.agentWallet !== undefined) {

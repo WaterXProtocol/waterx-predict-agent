@@ -47,6 +47,17 @@ export const KEYSTORE_SIGNER_COMMAND = `["${KEYSTORE_LAYOUT.command}","sign"]`;
 export interface KeystoreProbe {
   /** Whether `waterx-predict-keystore` resolves on PATH. */
   readonly installed: boolean;
+  /**
+   * Where it resolved to, when it did.
+   *
+   * Kept because a bare name is not portable into a config file. `npx` puts
+   * `node_modules/.bin` on PATH for the duration of one command, so the name
+   * resolves while `configure` runs and does not resolve when the agent is
+   * started any other way — and the config written from here outlives the
+   * shell that wrote it. An absolute path is the same executable, named in a
+   * way that survives.
+   */
+  readonly executable?: string;
   /** Whether WATERX_PREDICT_SIGNER_COMMAND already points at it. */
   readonly configuredAsSigner: boolean;
   readonly dir: string;
@@ -112,9 +123,10 @@ export function probeKeystore(
         ? null
         : [home, ...KEYSTORE_LAYOUT.defaultRuntimeDir].join('/');
 
-  const installed = sources.findExecutable?.(KEYSTORE_LAYOUT.command) != null;
+  const resolved = sources.findExecutable?.(KEYSTORE_LAYOUT.command) ?? undefined;
+  const installed = resolved != null;
   if (dir === null) {
-    return { installed, configuredAsSigner, dir: '', keystore: { status: 'ABSENT' }, agent: 'NO_SOCKET' };
+    return { installed, ...(resolved == null ? {} : { executable: resolved }), configuredAsSigner, dir: '', keystore: { status: 'ABSENT' }, agent: 'NO_SOCKET' };
   }
 
   let keystore: KeystoreProbe['keystore'];
@@ -149,5 +161,5 @@ export function probeKeystore(
       : socket === null
         ? 'NO_SOCKET'
         : 'SOCKET_PRESENT';
-  return { installed, configuredAsSigner, dir, keystore, agent };
+  return { installed, ...(resolved == null ? {} : { executable: resolved }), configuredAsSigner, dir, keystore, agent };
 }

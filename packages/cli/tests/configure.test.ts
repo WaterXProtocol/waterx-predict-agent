@@ -165,3 +165,29 @@ describe('configure, the one command that writes settings', () => {
     expect(result.envelope.error?.code).toBe('NOT_CONFIGURED');
   });
 });
+
+describe('the signer command this writes down', () => {
+  // `npx` puts `node_modules/.bin` on PATH for the duration of one command, so
+  // the bare name resolves while `configure` runs and does not resolve when the
+  // agent is started any other way — and this config outlives the shell that
+  // wrote it. A local install produced a config naming a command that could not
+  // be found, and the first thing to notice was a write failing at the signer.
+  it('names the path the keystore resolved to, not the bare command', async () => {
+    const result = await configure(['--fromKeystore'], {
+      files: KEYSTORE,
+      executables: ['waterx-predict-keystore'],
+    });
+    const data = result.envelope.data as Result;
+
+    expect(data.settings.signerCommand).toEqual(['/usr/local/bin/waterx-predict-keystore', 'sign']);
+  });
+
+  it('falls back to the bare name when this host cannot say where it is', async () => {
+    // The honest fallback. A host that cannot resolve a command is not a host
+    // whose path this may guess at.
+    const result = await configure(['--fromKeystore'], { files: KEYSTORE });
+    const data = result.envelope.data as Result;
+
+    expect(data.settings.signerCommand).toEqual(['waterx-predict-keystore', 'sign']);
+  });
+});

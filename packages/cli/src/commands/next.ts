@@ -1348,7 +1348,13 @@ export async function runtimeNext(context: CommandContext): Promise<unknown> {
       'When `stop` is true, relay `handOver` to that person first. Their step is theirs; do not act for them.',
       '`needsFromUser` lists what the user must choose. Never fill one in from a default, an earlier answer or the conversation.',
       'Every suggestion is a read. A write is always the previewed order a person approves — or one inside a delegated-auto scope an operator wrote down.',
-      `The in-flight scan reads the newest ${String(EXECUTION_SCAN)} executions. A non-terminal order is a recent one; an older one is still reachable with \`account executions\`.`,
+      // The remedy depends on the mode, and naming the wrong one is worse
+      // than naming none: `account executions` is the Agent API's, and in
+      // direct mode it answers CAPABILITY_UNAVAILABLE. A caller sent there
+      // learns only that this runtime does not know its own surface.
+      facts.direct === true
+        ? `The in-flight scan reads the newest ${String(EXECUTION_SCAN)} executions of the local intent journal, which is what direct mode has instead of an executions plane. An order older than that is reachable by its id with \`order get\`.`
+        : `The in-flight scan reads the newest ${String(EXECUTION_SCAN)} executions. A non-terminal order is a recent one; an older one is still reachable with \`account executions\`.`,
       'READY is not a promise of a fill: the market must be tradeable, the quote executable, and the chain decides last.',
     ],
   };
