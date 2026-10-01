@@ -154,8 +154,8 @@ importers:
         specifier: ^24.12.0
         version: 24.13.3
       '@waterx/sdk':
-        specifier: ^5.0.0
-        version: 5.0.0(@mysten/bcs@2.1.1)(@mysten/sui@2.26.2(typescript@5.9.3))
+        specifier: 6.1.0
+        version: 6.1.0(@mysten/bcs@2.1.1)(@mysten/sui@2.26.2(typescript@5.9.3))
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
@@ -442,8 +442,12 @@ packages:
   '@vitest/utils@4.1.10':
     resolution: {integrity: sha512-fy9am/HWxbaGt/Sawrp90vt6Y6jQwf1RX77cz3uwoJwJVMli/e1IEwRPnMNJ7vKfPTwo0diXifkpPvwH9v7nGA==}
 
-  '@waterx/sdk@5.0.0':
-    resolution: {integrity: sha512-vSF+RNPuNPcQRZM1nhxOoef/+YtBp97wfDCtU4IlN74bjCpy308WKPFWbRevcCovP0uQDKUGSES7M34cJl75Ew==}
+  '@waterx/config@0.1.1-staging.2':
+    resolution: {integrity: sha512-e47/3bCOyeHZnHCLeDbUDRe2z562sLnbaIjtQ5gcvKVcB/FuhzHYg1mxTeWCJxT7V8Of9E7KJwWSSXb6dqZ6jw==}
+    engines: {node: '>=18'}
+
+  '@waterx/sdk@6.1.0':
+    resolution: {integrity: sha512-5Y6KEHOE1/NuBsgSV4VuHe1WGiuFu4QmXezVP4LIiRByd0OLICX9Od9twQ/M50kn7YcZsAWjmse7ykPr+cOYWg==}
     engines: {node: '>=22'}
     peerDependencies:
       '@mysten/bcs': ^1.9.0
@@ -785,6 +789,9 @@ packages:
     resolution: {integrity: sha512-TEU+nJVUUnA4CYJFLvK5X9AOeH4KvDvhIfm0vV1GaQRtchnG0hgK5p8hw/xjv8cunWYCsiPCSDzObPyhEwq3KQ==}
     engines: {node: '>=0.4.0'}
 
+  zod@3.25.76:
+    resolution: {integrity: sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==}
+
 snapshots:
 
   '@0no-co/graphql.web@1.3.3(graphql@17.0.2)':
@@ -1015,11 +1022,16 @@ snapshots:
       convert-source-map: 2.0.0
       tinyrainbow: 3.1.1
 
-  '@waterx/sdk@5.0.0(@mysten/bcs@2.1.1)(@mysten/sui@2.26.2(typescript@5.9.3))':
+  '@waterx/config@0.1.1-staging.2':
+    dependencies:
+      zod: 3.25.76
+
+  '@waterx/sdk@6.1.0(@mysten/bcs@2.1.1)(@mysten/sui@2.26.2(typescript@5.9.3))':
     dependencies:
       '@mysten/bcs': 2.1.1
       '@mysten/sui': 2.26.2(typescript@5.9.3)
       '@noble/hashes': 2.3.0
+      '@waterx/config': 0.1.1-staging.2
 
   assertion-error@2.0.1: {}
 
@@ -1264,3 +1276,5 @@ snapshots:
   ws@8.21.3: {}
 
   xmlhttprequest-ssl@2.1.2: {}
+
+  zod@3.25.76: {}

@@ -828,6 +828,40 @@ quietly without announcing it. After a bounded number of refused handshakes the
 stream stops trying and calls `onDegraded` — a login loop against a server that has
 already said no is worse than polling.
 
+## Direct mode: where the deployment config is read
+
+`PredictDirectClient` (and `FetchedDeployment`) verify every sponsored
+transaction against the `schema_version: 2` waterx-config document. Where it is
+read is `WATERX_CONFIG_URL`, a CDN **ROOT** with no filename; the client reads
+`${root}/${network}.json` for its own `network`.
+
+| Network | Default root (`WATERX_CONFIG_URLS`) | Document read |
+| --- | --- | --- |
+| `mainnet` | `https://main-v2.waterx-config.pages.dev` | `…/mainnet.json` |
+| `testnet` | `https://staging-v2.waterx-config.pages.dev` | `…/testnet.json` |
+
+Pass a different root as `waterxConfigUrl`. A value ending in `.json`, with a
+query or fragment, with a username or password, on plain `http://` (loopback
+excepted) or on a GitHub host is refused with `WaterxConfigUrlError` when the
+client is built — never rewritten. The refusal never echoes the value as given:
+it shows the URL with userinfo, query and fragment removed, and nothing at all
+of a value that is not a URL, so a signed token pasted into the variable does
+not reach a log. These are the fleet's rules as `@waterx/sdk`'s
+`waterxConfigUrlFromRoot` implements them (held to it by a parity test; it is
+not a runtime dependency), plus one local allowance — plain `http://` to a
+loopback host, for a local stub — and one deliberate divergence: userinfo,
+which that helper accepts and drops, is refused here.
+`waterxConfigDocumentUrl(network, root?)`, `normalizeWaterxConfigRoot(root)` and
+`assertNoRetiredWaterxConfigUrlEnv(env)` are exported for hosts that read the
+variable themselves.
+
+> **Breaking.** `WATERX_CONFIG_URLS` now holds per-network ROOTS, not document
+> URLs (it was `…/mainnet.json` / `…/testnet.json`): append `/${network}.json`,
+> or call `waterxConfigDocumentUrl`. The `PredictDirectClient` option
+> `deploymentUrl` and the `FetchedDeployment` option `url`, which took a whole
+> document URL, are replaced by `waterxConfigUrl` (a root); passing either old
+> option throws. The CLI's `WATERX_PREDICT_DEPLOYMENT_URL` is retired likewise.
+
 ## Signer
 
 `AgentSigner` needs **two** signing methods, and they are not interchangeable:

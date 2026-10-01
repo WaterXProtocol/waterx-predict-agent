@@ -64,6 +64,7 @@ import {
   type DirectDeployment,
   type DirectNetwork,
 } from './deployment.ts';
+import { retiredWaterxConfigUrlMessage, WaterxConfigUrlError } from './config-url.ts';
 import { decodeMarketHandle, encodeMarketHandle, type MarketHandle } from './handle.ts';
 import { DirectHttp } from './http.ts';
 import {
@@ -149,8 +150,12 @@ export interface PredictDirectClientOptions {
   readonly timeoutMs?: number;
   readonly intentStore?: IntentStore;
   readonly deployment?: DeploymentSource;
-  /** Where the deployment document is read, when not the network's own (a private deployment). */
-  readonly deploymentUrl?: string;
+  /**
+   * `WATERX_CONFIG_URL`: the waterx-config CDN ROOT, no filename —
+   * `${root}/${network}.json` is read. Unset: the network's default root.
+   * Replaces the former `deploymentUrl` (a whole document URL); passing that now throws.
+   */
+  readonly waterxConfigUrl?: string;
   readonly chain?: ChainReader;
   /** Which Sui GraphQL the default chain reader asks, when not the network's public one. */
   readonly suiGraphqlUrl?: string;
@@ -405,11 +410,14 @@ export class PredictDirectClient {
     });
     this.signer = options.signer;
     this.network = options.network;
+    if ((options as { deploymentUrl?: unknown }).deploymentUrl !== undefined) {
+      throw new WaterxConfigUrlError(retiredWaterxConfigUrlMessage('`deploymentUrl`', '`waterxConfigUrl`'), 'deploymentUrl');
+    }
     this.deployment =
       options.deployment ??
       new FetchedDeployment({
         network: options.network,
-        ...(options.deploymentUrl === undefined ? {} : { url: options.deploymentUrl }),
+        ...(options.waterxConfigUrl === undefined ? {} : { waterxConfigUrl: options.waterxConfigUrl }),
         ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
       });
     this.chain =

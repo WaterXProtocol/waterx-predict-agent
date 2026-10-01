@@ -59,6 +59,13 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
+import {
+  assertNoRetiredWaterxConfigUrlEnv,
+  normalizeWaterxConfigRoot,
+  WATERX_CONFIG_URL_ENV,
+  WaterxConfigUrlError,
+} from '@waterx/predict-agent-sdk';
+
 import { RUNNER_IPC_PROTOCOL } from './ipc/protocol.ts';
 import { isIsoInstant } from './strategy/intent.ts';
 
@@ -82,6 +89,9 @@ export const RUNNER_ENV_KEYS = {
   policyMode: 'WATERX_RUNNER_POLICY_MODE',
   mode: 'WATERX_RUNNER_MODE',
   network: 'WATERX_RUNNER_NETWORK',
+  // The fleet-wide name, shared with the CLI: one value points every WaterX
+  // process at the same deployment document.
+  waterxConfigUrl: WATERX_CONFIG_URL_ENV,
 } as const;
 
 /** The settings the JSON file may carry. Anything else is a refusal, not a warning. */
@@ -214,6 +224,11 @@ export interface RunnerDriverConfig {
   /** argv, run without a shell. Nothing in it is ever interpreted. */
   readonly signerCommand: readonly string[];
   readonly signerTimeoutMs: number;
+  /**
+   * Direct mode: `WATERX_CONFIG_URL`, the waterx-config CDN ROOT, validated.
+   * Absent: the network's default root.
+   */
+  readonly waterxConfigUrl?: string;
 }
 
 export interface RunnerConfig {
@@ -552,6 +567,17 @@ const resolvePolicy = (
   };
 };
 
+const resolveWaterxConfigUrl = (env: RunnerConfigSources['env']): string | undefined => {
+  try {
+    assertNoRetiredWaterxConfigUrlEnv(env);
+    const value = env[RUNNER_ENV_KEYS.waterxConfigUrl];
+    return value === undefined || value.trim() === '' ? undefined : normalizeWaterxConfigRoot(value);
+  } catch (error: unknown) {
+    if (!(error instanceof WaterxConfigUrlError)) throw error;
+    throw new RunnerConfigError('CONFIG_INVALID', error.message, { key: error.setting });
+  }
+};
+
 /* ── The resolver ──────────────────────────────────────────────────────────── */
 
 export const resolveRunnerConfig = (sources: RunnerConfigSources): RunnerConfig => {
@@ -609,6 +635,9 @@ export const resolveRunnerConfig = (sources: RunnerConfigSources): RunnerConfig 
   }
   const network =
     (networkNamed as RunnerNetwork | undefined) ?? (baseUrl === undefined ? undefined : KNOWN_NETWORKS[baseUrl]);
+  // Only direct mode reads the deployment document. A retired name for the
+  // variable is refused rather than ignored, as in the CLI.
+  const waterxConfigUrl = mode === 'direct' ? resolveWaterxConfigUrl(env) : undefined;
 
   // Ordered, and computed from the same values the driver is built from, so a
   // diagnostic and a `driverGaps` reply can never disagree about what is missing.
@@ -626,7 +655,15 @@ export const resolveRunnerConfig = (sources: RunnerConfigSources): RunnerConfig 
     driver:
       gaps.length > 0 || baseUrl === undefined || agentWallet === undefined || signerCommand === undefined
         ? undefined
-        : { mode, network, baseUrl, agentWallet, signerCommand, signerTimeoutMs },
+        : {
+            mode,
+            network,
+            baseUrl,
+            agentWallet,
+            signerCommand,
+            signerTimeoutMs,
+            ...(waterxConfigUrl === undefined ? {} : { waterxConfigUrl }),
+          },
     gaps,
     resolved: { mode, network, baseUrl, agentWallet, signerCommand },
     tickIntervalMs:

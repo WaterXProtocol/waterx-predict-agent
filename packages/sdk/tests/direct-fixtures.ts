@@ -1,11 +1,12 @@
 /**
- * Shared fixtures for direct mode: the mainnet deployment document, and bytes
- * built by the same `@waterx/sdk` 5.0.0 builder the backend uses.
+ * Shared fixtures for direct mode: the mainnet deployment document (the
+ * consolidated `schema_version: 2` waterx-config, as `main-v2` serves it), and
+ * bytes built by the same `@waterx/sdk` 6.x builder (6.1.0 pinned) the backend uses.
  */
 import { readFileSync } from 'node:fs';
 
 import { Inputs, Transaction } from '@mysten/sui/transactions';
-import { PredictClient, placeOrder, requestClose, requestPartialClose } from '@waterx/sdk/prediction';
+import { parseConfigDocument, PredictClient, placeOrder, requestClose, requestPartialClose } from '@waterx/sdk/prediction';
 
 import { parseDeployment } from '../src/direct/deployment.ts';
 import { normalizeSuiAddress } from '../src/sui-tx.ts';
@@ -14,7 +15,9 @@ export const CONFIG = JSON.parse(
   readFileSync(new URL('./fixtures/waterx-config-mainnet.json', import.meta.url), 'utf8'),
 ) as Record<string, any>;
 export const deployment = parseDeployment(CONFIG, 'mainnet');
-export const builder = new PredictClient('MAINNET', CONFIG as never);
+// The SDK parses the document strictly (and refuses a pre-v2 one), the same
+// way `PredictClient.create()` does behind a URL.
+export const builder = new PredictClient('MAINNET', parseConfigDocument(CONFIG, 'MAINNET'));
 
 export const SPONSOR = normalizeSuiAddress(`0x${'b'.repeat(64)}`);
 const DIGEST = '11111111111111111111111111111111';

@@ -134,6 +134,38 @@ describe('all three or none', () => {
     expect(agentApi.driver).toMatchObject({ mode: 'agent-api', network: undefined });
   });
 
+  it('reads WATERX_CONFIG_URL as a root in direct mode, and refuses a retired name or a document URL', () => {
+    expect(resolve(complete({ WATERX_CONFIG_URL: 'https://cdn.example.com/' })).driver).toMatchObject({
+      waterxConfigUrl: 'https://cdn.example.com',
+    });
+    for (const env of [
+      { WATERX_CONFIG_URL: 'https://cdn.example.com/testnet.json' },
+      { WATERX_PREDICT_DEPLOYMENT_URL: 'https://cdn.example.com/testnet.json' },
+    ]) {
+      const error = refusal(complete(env));
+      expect(isRunnerConfigError(error) && error.code).toBe('CONFIG_INVALID');
+      expect((error as Error).message).toMatch(/WATERX_CONFIG_URL/u);
+    }
+    // Agent-API mode never reads the document, so the variable is not its concern.
+    expect(resolve(complete({ [RUNNER_ENV_KEYS.mode]: 'agent-api', CONFIG_URL: 'x' })).driver).not.toHaveProperty('waterxConfigUrl');
+  });
+
+  it('never echoes a credential carried by a refused WATERX_CONFIG_URL', () => {
+    const SECRET = 'SUPERSECRET';
+    for (const raw of [
+      `https://cdn.example.com/private?token=${SECRET}`,
+      `https://user:${SECRET}@cdn.example.com`,
+      `https://cdn.example.com/v2#${SECRET}`,
+      `cdn.example.com/?token=${SECRET}`,
+    ]) {
+      const error = refusal(complete({ WATERX_CONFIG_URL: raw }));
+      expect(isRunnerConfigError(error) && error.code, raw).toBe('CONFIG_INVALID');
+      expect(error.message, raw).toMatch(/^WATERX_CONFIG_URL /u);
+      expect(error.message, raw).not.toContain(SECRET);
+      expect(JSON.stringify(error), raw).not.toContain(SECRET);
+    }
+  });
+
   it('refuses a mode or network it does not know', () => {
     expect(isRunnerConfigError(refusal(complete({ [RUNNER_ENV_KEYS.mode]: 'agent_api' })))).toBe(true);
     expect(isRunnerConfigError(refusal(complete({ [RUNNER_ENV_KEYS.network]: 'devnet' })))).toBe(true);

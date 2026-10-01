@@ -18,8 +18,13 @@
  * it to every log the message reaches.
  */
 import {
+  assertNoRetiredWaterxConfigUrlEnv,
+  normalizeWaterxConfigRoot,
   PREDICT_AGENT_ENDPOINTS,
   type PredictAgentDeployment,
+  retiredWaterxConfigUrlMessage,
+  WATERX_CONFIG_URL_ENV,
+  WaterxConfigUrlError,
 } from '@waterx/predict-agent-sdk';
 
 import { CliError } from './errors.ts';
@@ -65,8 +70,11 @@ export interface ResolvedConfig {
    * that cannot grant anything.
    */
   readonly consoleUrl: string | undefined;
-  /** Direct mode: the deployment document, when not the network's own. */
-  readonly deploymentUrl: string | undefined;
+  /**
+   * Direct mode: `WATERX_CONFIG_URL`, the waterx-config CDN ROOT (no filename;
+   * `<network>.json` is appended). Unset: the network's default root.
+   */
+  readonly waterxConfigUrl: string | undefined;
   /** Direct mode: the Sui GraphQL endpoint, when not the network's public one. */
   readonly suiGraphqlUrl: string | undefined;
   readonly defaultAccountId: string | undefined;
@@ -115,7 +123,7 @@ const KNOWN_FILE_KEYS = new Set([
   'environment',
   'agentWallet',
   'consoleUrl',
-  'deploymentUrl',
+  'waterxConfigUrl',
   'suiGraphqlUrl',
   'defaultAccountId',
   'signerCommand',
@@ -131,7 +139,7 @@ export const ENV_KEYS = {
   environment: 'WATERX_PREDICT_ENVIRONMENT',
   agentWallet: 'WATERX_PREDICT_AGENT_WALLET',
   consoleUrl: 'WATERX_PREDICT_CONSOLE_URL',
-  deploymentUrl: 'WATERX_PREDICT_DEPLOYMENT_URL',
+  waterxConfigUrl: WATERX_CONFIG_URL_ENV,
   suiGraphqlUrl: 'WATERX_PREDICT_SUI_GRAPHQL_URL',
   accountId: 'WATERX_PREDICT_ACCOUNT_ID',
   signerCommand: 'WATERX_PREDICT_SIGNER_COMMAND',
@@ -165,7 +173,7 @@ interface FileConfig {
   environment?: unknown;
   agentWallet?: unknown;
   consoleUrl?: unknown;
-  deploymentUrl?: unknown;
+  waterxConfigUrl?: unknown;
   suiGraphqlUrl?: unknown;
   defaultAccountId?: unknown;
   signerCommand?: unknown;
@@ -239,6 +247,15 @@ function readConfigFile(sources: ConfigSources): { path: string | null; config: 
     }
     assertNoSecrets(parsed, '', path);
     for (const key of Object.keys(parsed)) {
+      if (key === 'deploymentUrl') {
+        // Named, not lumped in with typos: this key used to take a whole
+        // document URL, and the fix is a rename AND a new value shape.
+        throw new CliError(
+          'CONFIG_INVALID',
+          retiredWaterxConfigUrlMessage(`\`deploymentUrl\` in ${path}`, `\`waterxConfigUrl\` (or ${ENV_KEYS.waterxConfigUrl})`),
+          { file: path, key },
+        );
+      }
       if (!KNOWN_FILE_KEYS.has(key)) {
         throw new CliError(
           'CONFIG_INVALID',
@@ -335,6 +352,33 @@ function plaintextWarning(baseUrl: string | undefined): string | null {
   return `baseUrl uses plaintext http:// to ${host}. The session token is sent in clear over that connection.`;
 }
 
+/**
+ * `WATERX_CONFIG_URL`, validated at load: a CDN ROOT, no filename. A retired
+ * name for it (`WATERX_PREDICT_DEPLOYMENT_URL`, …) is refused rather than
+ * ignored, so an override set under the old name cannot silently fall back to
+ * the default document. A refusal names the source to change: the variable,
+ * the retired name, or the file key.
+ */
+function resolveWaterxConfigUrl(env: EnvReader, config: FileConfig, path: string | null): string | undefined {
+  const where = path ?? 'the config file';
+  let file = false;
+  try {
+    assertNoRetiredWaterxConfigUrlEnv(env);
+    const fromEnv = env[ENV_KEYS.waterxConfigUrl];
+    if (fromEnv !== undefined && fromEnv.trim() !== '') return normalizeWaterxConfigRoot(fromEnv);
+    const fromFile = asString(config.waterxConfigUrl, 'waterxConfigUrl', where);
+    file = true;
+    return fromFile === undefined ? undefined : normalizeWaterxConfigRoot(fromFile, `\`waterxConfigUrl\` in ${where}`);
+  } catch (error: unknown) {
+    if (!(error instanceof WaterxConfigUrlError)) throw error;
+    throw new CliError(
+      'CONFIG_INVALID',
+      error.message,
+      file ? { ...(path === null ? {} : { file: path }), key: 'waterxConfigUrl' } : { key: error.setting },
+    );
+  }
+}
+
 export function loadConfig(sources: ConfigSources): ResolvedConfig {
   const { path, config } = readConfigFile(sources);
   const where = path ?? 'the config file';
@@ -411,6 +455,10 @@ export function loadConfig(sources: ConfigSources): ResolvedConfig {
   if (modeText !== 'direct' && modeText !== 'agent-api') {
     throw new CliError('CONFIG_INVALID', `\`mode\` is \`direct\` or \`agent-api\`, not \`${modeText}\`.`, { key: 'mode' });
   }
+  // Only direct mode reads the deployment document. In agent-api mode the
+  // backend reads it, so nothing here would use the value, and a variable left
+  // over from another tool must not stop every command.
+  const waterxConfigUrl = modeText === 'direct' ? resolveWaterxConfigUrl(env, config, path) : undefined;
   const networkText =
     asString(env[ENV_KEYS.network], ENV_KEYS.network, 'the environment') ?? asString(config.network, 'network', where);
   if (networkText !== undefined && networkText !== 'mainnet' && networkText !== 'testnet') {
@@ -465,9 +513,7 @@ export function loadConfig(sources: ConfigSources): ResolvedConfig {
         : asString(config.agentWallet, 'agentWallet', where) !== undefined
           ? 'CONFIG_FILE'
           : 'NONE',
-    deploymentUrl:
-      asString(env[ENV_KEYS.deploymentUrl], ENV_KEYS.deploymentUrl, 'the environment') ??
-      asString(config.deploymentUrl, 'deploymentUrl', where),
+    waterxConfigUrl,
     suiGraphqlUrl:
       asString(env[ENV_KEYS.suiGraphqlUrl], ENV_KEYS.suiGraphqlUrl, 'the environment') ??
       asString(config.suiGraphqlUrl, 'suiGraphqlUrl', where),

@@ -7,6 +7,7 @@
  */
 import {
   DirectDeploymentError,
+  WaterxConfigUrlError,
   DirectVerificationError,
   PredictAgentClient,
   PredictAgentTransportError,
@@ -94,7 +95,7 @@ export function createClient(options: ClientFactoryOptions): TradingClient {
       signer,
       timeoutMs: config.timeoutMs,
       requireIntentStore: true,
-      ...(config.deploymentUrl === undefined ? {} : { deploymentUrl: config.deploymentUrl }),
+      ...(config.waterxConfigUrl === undefined ? {} : { waterxConfigUrl: config.waterxConfigUrl }),
       ...(config.suiGraphqlUrl === undefined ? {} : { suiGraphqlUrl: config.suiGraphqlUrl }),
       ...(options.accountHints === undefined ? {} : { accountHints: options.accountHints }),
       ...(options.intentStore === undefined ? {} : { intentStore: options.intentStore }),
@@ -200,6 +201,17 @@ export function toEnvelopeError(error: unknown, timeoutMs: number): EnvelopeErro
       retryable: false,
       source: 'CLI',
       details: { rule: error.rule },
+    };
+  }
+  if (error instanceof WaterxConfigUrlError) {
+    // A refused config root or retired option: fixed by changing the setup,
+    // never by retrying.
+    return {
+      code: 'CONFIG_INVALID',
+      message: error.message,
+      retryable: false,
+      source: 'CLI',
+      details: { key: error.setting },
     };
   }
   if (error instanceof DirectDeploymentError) {

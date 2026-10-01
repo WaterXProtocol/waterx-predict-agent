@@ -225,6 +225,7 @@ const buildDirectDriver = (config: RunnerDriverConfig, options: BuildRunnerDrive
       signPersonalMessage: refuse,
     },
     catalog: options.marketCatalog ?? new FileMarketCatalog(defaultCatalogPath()),
+    ...(config.waterxConfigUrl === undefined ? {} : { waterxConfigUrl: config.waterxConfigUrl }),
     ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
   });
   const gateway: StrategyGateway = {

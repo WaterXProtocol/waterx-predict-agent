@@ -80,15 +80,18 @@ function fakeWaterx(world: World): NonNullable<InvokeOptions['fallbackFetch']> {
     const key = `${method} ${url.pathname}`;
     switch (key) {
       case 'GET /mainnet.json':
-      case 'GET /private/deployment.json':
+      case 'GET /private/mainnet.json':
         return new Response(JSON.stringify(CONFIG), { status: 200 });
       case 'POST /graphql':
       case 'POST /private/graphql': {
         const query = String((body as unknown as { query: string }).query);
         const variables = (body as unknown as { variables: Record<string, string> }).variables;
-        const registry = (CONFIG['packages'] as Record<string, { market_registries?: { USD: string }; original_id: string }>)[
-          'waterx_prediction'
-        ]!;
+        // Package identity under `packages.*`, object ids under `objects.*` (schema_version 2).
+        const registry = {
+          original_id: (CONFIG['packages'] as Record<string, { original_id: string }>)['waterx_prediction']!.original_id,
+          market_registries: (CONFIG['objects'] as { prediction: { market_registries: { USD: string } } }).prediction
+            .market_registries,
+        };
         if (query.includes('asMovePackage')) {
           // The deployed call shapes, as the chain prints them: exactly the pinned ones.
           const originals = new Map(
@@ -136,7 +139,7 @@ function fakeWaterx(world: World): NonNullable<InvokeOptions['fallbackFetch']> {
                         {
                           contents: {
                             type: { repr: `${registry.original_id}::events::OrderPlaced` },
-                            json: { market_registry_id: registry.market_registries!.USD, order_id: '1857' },
+                            json: { market_registry_id: registry.market_registries.USD, order_id: '1857' },
                           },
                         },
                       ],
@@ -148,7 +151,7 @@ function fakeWaterx(world: World): NonNullable<InvokeOptions['fallbackFetch']> {
             { status: 200 },
           );
         }
-        if (query.includes('object(') && variables['a'] === registry.market_registries!.USD) {
+        if (query.includes('object(') && variables['a'] === registry.market_registries.USD) {
           return new Response(
             JSON.stringify({
               data: {
@@ -771,12 +774,12 @@ describe('direct mode', () => {
     const result = await run(['doctor'], {
       env: {
         ...DIRECT_ENV,
-        WATERX_PREDICT_DEPLOYMENT_URL: 'https://chain.test.invalid/private/deployment.json',
+        WATERX_CONFIG_URL: 'https://chain.test.invalid/private/',
         WATERX_PREDICT_SUI_GRAPHQL_URL: 'https://chain.test.invalid/private/graphql',
       },
     });
     const paths = result.fetches.map((call) => new URL(call.url).pathname);
-    expect(paths).toContain('/private/deployment.json');
+    expect(paths).toContain('/private/mainnet.json');
     expect(paths).toContain('/private/graphql');
     expect(paths).not.toContain('/mainnet.json');
     expect(paths).not.toContain('/graphql');
