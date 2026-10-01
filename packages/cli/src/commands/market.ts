@@ -81,13 +81,23 @@ export async function marketSearch(context: CommandContext): Promise<unknown> {
         : {
             command: 'market search',
             detail:
-              resolution.status === 'AMBIGUOUS'
-                ? 'More than one market answers to this text. Add words from a candidate’s `aliases`, or narrow with `--category` / `--tradeable`, and ask again.'
-                : 'No market answers to this text. Check the spelling against `aliases` on a `market list` page, or widen the filters.',
+              resolution.status !== 'AMBIGUOUS'
+                ? 'No market answers to this text. Check the spelling against `aliases` on a `market list` page, or widen the filters.'
+                : // Three different situations arrive as AMBIGUOUS and they send
+                  // a caller to three different places. The one that reads as a
+                  // contradiction — "ambiguous" over a page showing fewer
+                  // candidates than matched — is the one worth naming: those
+                  // markets exist and answer to this text, and they are not
+                  // shown because no round of theirs is running for this
+                  // runtime to price. Telling that caller to "narrow the
+                  // search" sends them to refine a query that was already right.
+                  resolution.matchCount > response.markets.length
+                  ? `${String(resolution.matchCount)} markets answer to this text and ${String(response.markets.length)} can be shown: the rest are between rounds, so there is nothing to price on them yet. Ask again when one opens, or name a different market.`
+                  : 'More than one market answers to this text. Add words from a candidate’s `aliases`, or narrow with `--category` / `--tradeable`, and ask again.',
           },
     caveats: [
       '`marketId` is non-null only when exactly one market matched. AMBIGUOUS and NOT_FOUND never carry a best guess.',
-      '`matchCount` is counted over the whole filtered catalog, before `limit` truncated `candidates`. A short page is not a unique match.',
+      '`matchCount` counts what the catalog MATCHED; `candidates` is the subset this runtime can show, which excludes a market whose round has not opened. They differ, and `matchCount` is the one that decides whether an answer is unique.',
       'Candidate order is match specificity, then the round clock, then the id. It is a reproducible tie-break, NOT a ranking of which market is worth trading.',
       ...LIST_CAVEATS.slice(0, 1),
     ],

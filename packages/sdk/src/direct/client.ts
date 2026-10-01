@@ -293,6 +293,31 @@ const PHASE_STATUS: Readonly<Record<string, PredictMarketStatus>> = {
 const iso = (seconds: number | null | undefined): string | null =>
   typeof seconds === 'number' && Number.isFinite(seconds) ? new Date(seconds * 1000).toISOString() : null;
 
+/** The handle a market id carries, or `undefined` when it is not one. */
+const handleOf = (marketId: string): MarketHandle | undefined => {
+  try {
+    return decodeMarketHandle(marketId);
+  } catch {
+    return undefined;
+  }
+};
+
+/**
+ * `shares × currentPrice − remainingCost`, in exact fixed-scale integers.
+ *
+ * Null — never 0 — when the share count is unknown: zero would tell a strategy
+ * the position is exactly break-even, and a stop-loss reading that sits on its
+ * hands through a crash (contract, `unrealizedPnl`).
+ */
+const markToMarket = (summary: PredictPositionSummary, currentPrice: string): string | null => {
+  if (summary.shares === null) return null;
+  const shares = parseScaled(summary.shares, MONEY_DECIMALS, 'shares');
+  const price = parseScaled(currentPrice, MONEY_DECIMALS, 'currentPrice');
+  const cost = parseScaled(summary.remainingCost, MONEY_DECIMALS, 'remainingCost');
+  const scale = 10n ** BigInt(MONEY_DECIMALS);
+  return formatScaled((shares * price) / scale - cost, MONEY_DECIMALS);
+};
+
 const priceText = (cents: number | null | undefined): string | null => {
   if (typeof cents !== 'number' || !Number.isFinite(cents) || cents <= 0 || cents >= 100) return null;
   return formatPrice(centsToPrice(cents));
@@ -882,12 +907,35 @@ export class PredictDirectClient {
     if (query.tradeable !== undefined) markets = markets.filter((market) => market.tradeable === query.tradeable);
     if (query.search === undefined) return { markets };
 
+    // The resolution answers a question about IDENTITY, so it is counted from
+    // what the SERVER matched — `page.items` — and never from `markets`, which
+    // is what this client could project and then filter. Those are different
+    // questions, and conflating them is how `--search "btc"` answered RESOLVED
+    // with one market out of ten: the server matched ten, nine were between
+    // rounds and so had no `nextRound` to project, and the one left over was
+    // reported as the unique answer. An agent may only take a `marketId` from
+    // here, so that is an order on a market nobody asked for.
+    //
+    // The same conflation ran the other way and was the louder half: an exact
+    // title, matched by the server and dropped here, came back NOT_FOUND — so
+    // the more precisely a caller named a market, the less likely they were to
+    // find it. "No market answers to this text" and "none of the markets that
+    // answer has a round running right now" are different facts, and only one
+    // of them means the caller got the name wrong.
+    const matched = page.items.length;
     const more = page.nextCursor !== null && page.nextCursor !== undefined;
+    // All three, and the third is the one that was missing: the server matched
+    // exactly one thing, no page follows it, and that thing survived into
+    // exactly one market here.
+    const unique = matched === 1 && !more && markets.length === 1;
     const resolution: PredictMarketResolution = {
-      status: markets.length === 0 ? (more ? 'AMBIGUOUS' : 'NOT_FOUND') : markets.length === 1 && !more ? 'RESOLVED' : 'AMBIGUOUS',
+      status: unique ? 'RESOLVED' : matched === 0 && !more ? 'NOT_FOUND' : 'AMBIGUOUS',
       normalizedQuery: query.search.trim().toLowerCase(),
-      marketId: markets.length === 1 && !more ? markets[0]!.marketId : null,
-      matchCount: markets.length,
+      marketId: unique ? markets[0]!.marketId : null,
+      // A floor when the server paged: `/predict/browse` reports no total, so a
+      // truncated page can only say "at least this many". That is never read as
+      // a unique answer, because `more` forbids RESOLVED on its own.
+      matchCount: matched,
     };
     return { markets, resolution };
   }
@@ -919,6 +967,24 @@ export class PredictDirectClient {
       this.boards([handle.roundId], signal),
       known === undefined ? Promise.resolve(undefined) : this.liveRound(known, handle.roundId, signal),
     ]);
+    // A market id is well formed long before it names anything. The handle is
+    // self-describing — a round id and two side keys, decoded locally — so a
+    // string nobody issued decodes perfectly, and this used to answer it with a
+    // market: PREGAME, category UNKNOWN, and a title saying the title was not
+    // cached. `ok: true` on an invented id is the worst possible answer here,
+    // because the one rule an agent is given about market identity is that only
+    // the server resolves it.
+    //
+    // Refused only when NOTHING knows it: not the catalog this process has
+    // seen, and not one of the three quote boards, which are keyed by round. A
+    // real round with no quotes yet is still a real round, and it is held by at
+    // least one of those two.
+    if (known === undefined && ![boards.ask, boards.bid, boards.no].some((board) => Object.hasOwn(board, handle.roundId))) {
+      throw apiError('INVALID_REQUEST', 'No market answers to this id. Resolve one with `market search` — an id is issued by the catalog, never composed.', {
+        marketId,
+        roundId: handle.roundId,
+      });
+    }
     const round: PublicRound = {
       id: handle.roundId,
       marketId: '',
@@ -1811,26 +1877,55 @@ export class PredictDirectClient {
     const owner = await this.ownerOf(accountId, 0, signal);
     await this.requireMainAccount(owner, accountId, signal);
     const response = await this.http.get<PublicBetsResponse>(R.bets, { address: owner, filter: 'active', limit: 100 }, signal);
-    const positions: PredictPositionSummary[] = [];
+    const rows: { summary: PredictPositionSummary; handle: MarketHandle | undefined }[] = [];
     for (const bet of response.bets) {
       if (bet.positionId === '' || bet.submissionState !== 'confirmed') continue;
       const leg = await this.legFor(bet, signal);
       const shares = typeof bet.shares === 'number' ? bet.shares.toFixed(6) : null;
       const cost = formatScaled(parseScaled(bet.stake.amountUsd.toFixed(6), 6, 'stake'), 6);
-      positions.push({
-        positionId: bet.positionId,
-        marketId: leg.marketId,
-        outcomeId: leg.outcomeId,
-        strategyId: null,
-        originalCost: cost,
-        remainingCost: cost,
-        shares: shares === null ? null : formatScaled(parseScaled(shares, 6, 'shares'), 6),
-        avgEntryPrice: typeof bet.avgFillPriceCents === 'number' ? priceText(bet.avgFillPriceCents) : null,
-        currentPrice: null,
-        unrealizedPnl: null,
-        openedAt: new Date(bet.placedAt).toISOString(),
+      rows.push({
+        summary: {
+          positionId: bet.positionId,
+          marketId: leg.marketId,
+          outcomeId: leg.outcomeId,
+          strategyId: null,
+          originalCost: cost,
+          remainingCost: cost,
+          shares: shares === null ? null : formatScaled(parseScaled(shares, 6, 'shares'), 6),
+          avgEntryPrice: typeof bet.avgFillPriceCents === 'number' ? priceText(bet.avgFillPriceCents) : null,
+          currentPrice: null,
+          unrealizedPnl: null,
+          openedAt: new Date(bet.placedAt).toISOString(),
+        },
+        // Absent when the leg could not be resolved to a round, in which case
+        // `marketId` is the bare on-chain id and there is nothing to price.
+        handle: handleOf(leg.marketId),
       });
     }
+
+    // Valued from the SELL side, in one read for every round at once.
+    //
+    // These were hard-coded null, so every position this runtime reported was
+    // unpriced — including one in a market it had just bought in, whose bid it
+    // could have read at the same moment. `next` then described them as
+    // possibly settled and sent the operator to a web app to claim, which is a
+    // different fact about somebody's money than "we did not look".
+    const boards = await this.boards(
+      rows.flatMap((row) => (row.handle === undefined ? [] : [row.handle.roundId])),
+      signal,
+    );
+    const positions = rows.map(({ summary, handle }) => {
+      if (handle === undefined) return summary;
+      // The contract asks for what the position could be EXITED at — the bid
+      // for the side held, never the mid and never the ask. A single-sided
+      // round publishes no NO bid, and a missing one stays null rather than
+      // borrowing the other leg's.
+      const bid = boards.bid[handle.roundId] ?? {};
+      const key = summary.outcomeId === 'YES' ? handle.yesSide : handle.noSide;
+      const currentPrice = key === undefined ? null : priceText(bid[key]);
+      if (currentPrice === null) return summary;
+      return { ...summary, currentPrice, unrealizedPnl: markToMarket(summary, currentPrice) };
+    });
     return { positions, nextCursor: response.nextCursor ?? null };
   }
 

@@ -138,6 +138,9 @@ const READ_ROUTES = {
   'POST /agent-api/v1/predict/quotes': QUOTE_OK,
   [`GET /agent-api/v1/predict/accounts/${ACCOUNT_ID}/effective-limits`]: EFFECTIVE_LIMITS_OK,
   [`GET /agent-api/v1/predict/accounts/${ACCOUNT_ID}/allowance`]: ALLOWANCE_OK,
+  // `order preview` reads what the account holds, so a SELL is checked
+  // against the shares that exist rather than only against its own shape.
+  [`GET /agent-api/v1/predict/accounts/${ACCOUNT_ID}/positions`]: { status: 200, body: { positions: [], nextCursor: null } },
 };
 
 const WRITE_ROUTES = {
@@ -1062,6 +1065,114 @@ describe('previewing a batch', () => {
     );
     expect(result.envelope.ok).toBe(false);
     expect(result.envelope.error?.code).toBe('INVALID_INPUT');
+  });
+});
+
+// A preview under `interactive` is the ONLY thing a person sees before they
+// approve, so the whole safety argument of that mode is that the person looked.
+// It checked the shape of the intent and nothing about the account.
+describe('a preview will not arm an order the account cannot place', () => {
+  const POSITIONS_PATH = `GET /agent-api/v1/predict/accounts/${ACCOUNT_ID}/positions`;
+  const SELL = {
+    accountId: ACCOUNT_ID,
+    marketId: MARKET_ID,
+    outcomeId: 'YES',
+    side: 'SELL',
+    size: { sellShares: '999' },
+    positionId: 'pos-1',
+    maxSlippageBps: 100,
+  };
+  const holding = (shares: string | null) => ({
+    status: 200,
+    body: {
+      positions: [
+        {
+          positionId: 'pos-1',
+          marketId: MARKET_ID,
+          outcomeId: 'YES',
+          strategyId: null,
+          originalCost: '1.5',
+          remainingCost: '1.5',
+          shares,
+          avgEntryPrice: '0.52',
+          currentPrice: '0.5',
+          unrealizedPnl: null,
+          openedAt: '2026-08-12T00:00:00.000Z',
+        },
+      ],
+      nextCursor: null,
+    },
+  });
+
+  const previewOf = (input: unknown, routes: Record<string, unknown>) =>
+    invoke(['order', 'preview', '--input', JSON.stringify(input)], {
+      ...withPolicy({ mode: 'interactive' }),
+      routes: { ...READ_ROUTES, ...routes } as never,
+    });
+
+  it('refuses to approve a SELL of more shares than the position holds', async () => {
+    // 999 shares against 2.89 held came back `ok: true` with a token, and the
+    // person approving had no way to know.
+    const result = await previewOf(SELL, { [POSITIONS_PATH]: holding('2.890000') });
+    const data = result.envelope.data as {
+      feasibility: { checked: boolean; blocking: string[] };
+      policy: { approvalToken?: string };
+    };
+
+    expect(data.feasibility.blocking).toContain('SELL_EXCEEDS_POSITION');
+    expect(data.policy.approvalToken, 'no approval for an order that cannot be placed').toBeUndefined();
+  });
+
+  it('refuses to approve a SELL of a position the account does not hold', async () => {
+    const result = await previewOf(SELL, { [POSITIONS_PATH]: { status: 200, body: { positions: [], nextCursor: null } } });
+    const data = result.envelope.data as { feasibility: { blocking: string[] }; policy: { approvalToken?: string } };
+
+    expect(data.feasibility.blocking).toContain('POSITION_NOT_HELD');
+    expect(data.policy.approvalToken).toBeUndefined();
+  });
+
+  it('refuses to approve anything on an account nobody granted this agent', async () => {
+    const result = await previewOf(SELL, {
+      [POSITIONS_PATH]: {
+        status: 403,
+        body: { error: { code: 'DELEGATION_PERMISSION_DENIED', message: 'not a delegate', retryable: false } },
+      },
+    });
+    const data = result.envelope.data as { feasibility: { blocking: string[] }; policy: { approvalToken?: string } };
+
+    expect(data.feasibility.blocking).toContain('ACCOUNT_NOT_AUTHORIZED');
+    expect(data.policy.approvalToken).toBeUndefined();
+  });
+
+  it('still approves a SELL the position covers', async () => {
+    const result = await previewOf({ ...SELL, size: { sellShares: '2' } }, { [POSITIONS_PATH]: holding('2.890000') });
+    const data = result.envelope.data as { feasibility: { blocking: string[] }; policy: { approvalToken?: string } };
+
+    expect(data.feasibility.blocking).toHaveLength(0);
+    expect(data.policy.approvalToken, 'a feasible order is still armed').toBeDefined();
+  });
+
+  it('does not withhold an approval because a read failed, and says it did not check', async () => {
+    // A preview that treated a network wobble as "you may not trade this
+    // account" would withhold an approval over an outage. `checked: false` is
+    // the honest answer, and it is not the same as `blocking: []`.
+    const result = await previewOf({ ...SELL, size: { sellShares: '2' } }, {
+      [POSITIONS_PATH]: { status: 500, body: { error: { code: 'INTERNAL', message: 'down', retryable: true } } },
+    });
+    const data = result.envelope.data as { feasibility: { checked: boolean; blocking: string[] }; policy: { approvalToken?: string } };
+
+    expect(data.feasibility.checked).toBe(false);
+    expect(data.policy.approvalToken).toBeDefined();
+  });
+
+  it('says a share count it could not read is not a share count of zero', async () => {
+    // Null shares mean the server did not report them, which is not evidence
+    // that the position is too small to sell.
+    const result = await previewOf(SELL, { [POSITIONS_PATH]: holding(null) });
+    const data = result.envelope.data as { feasibility: { blocking: string[] }; policy: { approvalToken?: string } };
+
+    expect(data.feasibility.blocking).toHaveLength(0);
+    expect(data.policy.approvalToken).toBeDefined();
   });
 });
 

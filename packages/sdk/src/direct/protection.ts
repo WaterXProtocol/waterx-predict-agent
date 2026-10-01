@@ -42,11 +42,26 @@ export function parseScaled(value: string, decimals: number, field: string): big
   return BigInt(match[1]!) * 10n ** BigInt(decimals) + BigInt(fraction.padEnd(decimals, '0') || '0');
 }
 
+/**
+ * A scaled integer as decimal text, signed.
+ *
+ * Built from the MAGNITUDE and given its sign back, because BigInt division and
+ * remainder both truncate toward zero: `-164077n / 1000000n` is `0n` and
+ * `-164077n % 1000000n` is `-164077n`, so composing the two directly produced
+ * `0.-164077`. Nothing here formatted a negative until `unrealizedPnl`, which
+ * the wire contract requires to be signed — a losing position is negative — so
+ * the first loss this runtime valued would have been reported as that string.
+ *
+ * `parseScaled` still refuses a negative, and deliberately: it reads prices and
+ * sizes, and those have no sign. This direction has one.
+ */
 export function formatScaled(value: bigint, decimals: number): string {
   const scale = 10n ** BigInt(decimals);
-  const whole = value / scale;
-  const fraction = (value % scale).toString().padStart(decimals, '0').replace(/0+$/u, '');
-  return fraction === '' ? whole.toString() : `${whole.toString()}.${fraction}`;
+  const magnitude = value < 0n ? -value : value;
+  const sign = value < 0n ? '-' : '';
+  const whole = magnitude / scale;
+  const fraction = (magnitude % scale).toString().padStart(decimals, '0').replace(/0+$/u, '');
+  return fraction === '' ? `${sign}${whole.toString()}` : `${sign}${whole.toString()}.${fraction}`;
 }
 
 /**

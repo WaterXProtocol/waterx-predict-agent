@@ -195,6 +195,37 @@ export function describeSigner(config: ResolvedConfig): SignerDescription {
 }
 
 /**
+/**
+ * A signer built on first USE, not on first client.
+ *
+ * `createSigner` refuses a configuration it cannot sign with, which is right —
+ * and it was being called while assembling the client every command holds,
+ * including the ones that never sign. So a fresh install asking `market list`
+ * what is tradeable was answered `SIGNER_UNAVAILABLE: this runtime cannot
+ * authenticate`, about a credential that read would never have used. Direct
+ * mode does not even authenticate; the catalog is public.
+ *
+ * The giveaway was that the refusal depended on the wrong thing. An install
+ * whose keystore had been DELETED listed markets perfectly well — the config
+ * still named a signer, and nothing checks the file until it is spawned — while
+ * an install that had simply not been set up yet could not read at all. What
+ * was refused was never "this cannot sign", it was "this has no config file".
+ *
+ * Every member here is a method, so deferring costs nothing and changes nothing
+ * about the refusal itself: the first command that actually signs gets the same
+ * error, with the same text, from the same place.
+ */
+export function lazySigner(build: () => AgentSigner): AgentSigner {
+  let built: AgentSigner | undefined;
+  const signer = (): AgentSigner => (built ??= build());
+  return {
+    signTransaction: (bytes) => signer().signTransaction(bytes),
+    signPersonalMessage: (bytes) => signer().signPersonalMessage(bytes),
+    toSuiAddress: () => signer().toSuiAddress(),
+  };
+}
+
+/**
  * Build the signer, or explain precisely what is missing.
  *
  * `toSuiAddress` returns the configured wallet rather than deriving one, because

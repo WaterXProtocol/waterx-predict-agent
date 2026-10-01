@@ -98,7 +98,7 @@ export const DEFAULT_TIMEOUT_MS = 15_000;
  * A decision with a cost, recorded in ADR-0011: an unconfigured install reaches
  * real funds. What keeps that from being an accident is that an order still
  * needs an agent wallet, a signer, an owner's on-chain delegation and — under
- * the default `interactive` policy — a person approving that exact intent.
+ * the `interactive` policy — a person approving that exact intent.
  */
 export const DEFAULT_DEPLOYMENT: PredictAgentDeployment = 'production';
 

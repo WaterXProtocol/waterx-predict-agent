@@ -36,10 +36,11 @@ import type {
   PredictEffectiveLimitsResponseBody,
   PredictMarketOutcome,
   PredictOutcomeId,
+  PredictPositionSummary,
 } from '@waterx/predict-agent-sdk';
-import { toExecutionOutcome } from '@waterx/predict-agent-sdk';
+import { isPredictAgentApiError, toExecutionOutcome } from '@waterx/predict-agent-sdk';
 
-import { exitCodeForThrown, isDirectClient, toEnvelopeError } from '../client.ts';
+import { exitCodeForThrown, isDirectClient, toEnvelopeError, type TradingClient } from '../client.ts';
 import type { CommandContext } from '../context.ts';
 import { estimateWorstAcceptablePrice, formatDecimal, parseDecimal } from '../decimal.ts';
 import { CliError, isCliError } from '../errors.ts';
@@ -684,6 +685,112 @@ function capacityAbsence(
  * always done, now reachable per leg so a batch can be previewed the same way a
  * single order is — see {@link orderPreview}.
  */
+/**
+ * What the account holds, or why this preview could not find out.
+ *
+ * Three states, and collapsing any two of them is the defect this exists to
+ * avoid: holdings READ, the account REFUSED to this agent, and the read itself
+ * having failed. Only the middle one is a fact about the order.
+ */
+type Holdings =
+  | { readonly state: 'READ'; readonly positions: readonly PredictPositionSummary[] }
+  | { readonly state: 'DENIED'; readonly code: string }
+  | { readonly state: 'NOT_READ'; readonly detail: string };
+
+const NOT_READ_HOLDINGS: Holdings = {
+  state: 'NOT_READ',
+  detail: 'A read-only preview does not read the account: it is pricing an order it has already refused to place.',
+};
+
+/**
+ * How long a preview will wait to learn what the account holds.
+ *
+ * Its own cap, shorter than the invocation's, and deliberately so. `signal()`
+ * can only widen a deadline — a command may not shorten what the caller set —
+ * but that rule is about the work the command was asked to do, and this read is
+ * not that work. It is advisory, its absence is a reported state rather than a
+ * failure, and a GET is retried with backoff, so without a cap a preview whose
+ * account read was merely slow would spend the caller's whole budget before
+ * printing a price it already had.
+ */
+const HOLDINGS_READ_MS = 4_000;
+
+async function readHoldings(client: TradingClient, accountId: string, context: CommandContext): Promise<Holdings> {
+  try {
+    const signal = AbortSignal.any([context.signal(), AbortSignal.timeout(HOLDINGS_READ_MS)]);
+    const { positions } = await client.getPositions(accountId, undefined, signal);
+    return { state: 'READ', positions };
+  } catch (error: unknown) {
+    // A refusal is a fact about this order; anything else is this command not
+    // knowing. A preview that treated a network wobble as "you may not trade
+    // this account" would withhold an approval over an outage.
+    if (isPredictAgentApiError(error) && (error.code === 'DELEGATION_REVOKED' || error.code === 'DELEGATION_PERMISSION_DENIED')) {
+      return { state: 'DENIED', code: error.code };
+    }
+    return { state: 'NOT_READ', detail: error instanceof Error ? error.message : 'the account could not be read' };
+  }
+}
+
+/**
+ * Whether this order could be placed at all, from facts rather than guesses.
+ *
+ * A preview under `interactive` is the ONLY thing a person sees before they
+ * approve, so the whole safety argument of that mode is that the person looked.
+ * It checked the shape of the intent and nothing about the account, so a SELL
+ * of 999 shares against 2.89 held, and an order on an account nobody had
+ * granted this agent, both came back `ok: true` with an approval token — and
+ * the person approving had no way to know either.
+ *
+ * Only what can be READ is checked. There is no public source for a spendable
+ * wxUSD balance in direct mode, so an unaffordable BUY is NOT caught here and
+ * `capacity` says so rather than implying it was checked. Inventing that number
+ * would be worse than leaving it out.
+ */
+function feasibilityOf(
+  leg: NormalizedLeg,
+  holdings: Holdings,
+): { checked: boolean; blocking: readonly string[]; findings: readonly { code: string; blocking: boolean; detail: string }[]; reason?: string } {
+  if (holdings.state === 'NOT_READ') return { checked: false, blocking: [], findings: [], reason: holdings.detail };
+  if (holdings.state === 'DENIED') {
+    return {
+      checked: true,
+      blocking: ['ACCOUNT_NOT_AUTHORIZED'],
+      findings: [
+        {
+          code: 'ACCOUNT_NOT_AUTHORIZED',
+          blocking: true,
+          detail: `The account owner has not granted this agent permission to trade ${leg.accountId} (${holdings.code}). The order would abort on chain, and nobody at this terminal can grant it.`,
+        },
+      ],
+    };
+  }
+
+  const findings: { code: string; blocking: boolean; detail: string }[] = [];
+  if (leg.side === 'SELL' && leg.positionId !== null) {
+    const position = holdings.positions.find((entry) => entry.positionId === leg.positionId);
+    if (position === undefined) {
+      findings.push({
+        code: 'POSITION_NOT_HELD',
+        blocking: true,
+        detail: `Position ${leg.positionId} is not among the open positions of ${leg.accountId}. A SELL closes shares that exist.`,
+      });
+    } else {
+      // Only when the share count is KNOWN. Null shares mean the server did not
+      // report them, which is not evidence that the position is too small.
+      const held = position.shares === null ? null : parseDecimal(position.shares);
+      const asked = parseDecimal(leg.size);
+      if (held !== null && asked !== null && asked > held) {
+        findings.push({
+          code: 'SELL_EXCEEDS_POSITION',
+          blocking: true,
+          detail: `This sells ${leg.size} shares of a position holding ${position.shares}. A SELL must not sell more than is held.`,
+        });
+      }
+    }
+  }
+  return { checked: true, blocking: findings.filter((f) => f.blocking).map((f) => f.code), findings };
+}
+
 async function previewOneLeg(context: CommandContext, leg: NormalizedLeg, issue: boolean): Promise<unknown> {
   const client = await context.client();
 
@@ -694,11 +801,18 @@ async function previewOneLeg(context: CommandContext, leg: NormalizedLeg, issue:
   // Direct mode has no account plane to read (ADR-0013).
   const direct = isDirectClient(client);
   const wantsFacts = context.config.policy.mode !== 'read-only' && !direct;
-  const [market, quote, facts] = await Promise.all([
+  // What the account actually holds. Read for the same reason and under the
+  // same condition as the facts above, and in direct mode it is the ONLY
+  // account read a preview makes — which is why a preview there used to check
+  // nothing about the account at all.
+  const wantsHoldings = context.config.policy.mode !== 'read-only';
+  const [market, quote, facts, holdings] = await Promise.all([
     client.getMarket(leg.marketId, context.signal()),
     client.getQuote(toQuoteRequest(leg), context.signal()),
     wantsFacts ? client.getEffectiveLimits(leg.accountId, context.signal()) : Promise.resolve(null),
+    wantsHoldings ? readHoldings(client, leg.accountId, context) : Promise.resolve(NOT_READ_HOLDINGS),
   ]);
+  const feasibility = feasibilityOf(leg, holdings);
 
   // A SELL closes shares and spends no wxUSD allowance, so capacity stays
   // inapplicable for it even though the same read returned one.
@@ -794,12 +908,18 @@ async function previewOneLeg(context: CommandContext, leg: NormalizedLeg, issue:
           delegation: facts.delegation,
           usage: facts.usage,
         }),
+    feasibility,
+    // No approval for an order that cannot be placed. The token is the whole
+    // point of a preview under `interactive` — it is what a person's approval
+    // becomes — so issuing one for an order the chain or the account will
+    // refuse spends somebody's attention on a decision that was never theirs
+    // to make. The preview still answers in full; it just does not arm it.
     policy: previewPolicy(
       context,
       [leg],
       intent,
       allowance === null ? undefined : allowance.effectiveBuyCapacity,
-      issue,
+      issue && feasibility.blocking.length === 0,
     ),
     nextStep: {
       command: 'order execute',
