@@ -5,6 +5,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { CliError, loadConfig } from '../src/index.ts';
+import { CONFIGURED_ENV, invoke } from './harness.ts';
 
 const load = (env: Record<string, string>, file?: Record<string, unknown>) =>
   loadConfig({
@@ -70,5 +71,28 @@ describe('WATERX_CONFIG_URL', () => {
     const error = refusal(() => load({}, { deploymentUrl: 'https://main-v2.waterx-config.pages.dev/mainnet.json' }));
     expect(error.code).toBe('CONFIG_INVALID');
     expect(error.message).toMatch(/`deploymentUrl` in \/cfg\.json is retired; use `waterxConfigUrl` \(or WATERX_CONFIG_URL\), set to a CDN ROOT/u);
+  });
+
+  it('never echoes a credential carried by a refused root — not in the message, details or any stream', async () => {
+    const SECRET = 'SUPERSECRET';
+    const direct = { ...CONFIGURED_ENV, WATERX_PREDICT_MODE: 'direct', WATERX_PREDICT_NETWORK: 'mainnet' };
+    for (const raw of [
+      `https://cdn.example.com/private?token=${SECRET}`,
+      `https://user:${SECRET}@cdn.example.com`,
+      `https://cdn.example.com/v2#${SECRET}`,
+      `cdn.example.com/?token=${SECRET}`,
+    ]) {
+      const result = await invoke(['describe'], { env: { ...direct, WATERX_CONFIG_URL: raw } });
+      expect(result.envelope.error?.code, raw).toBe('CONFIG_INVALID');
+      expect(result.envelope.error?.message, raw).toMatch(/^WATERX_CONFIG_URL /u);
+      expect(result.stdout, raw).not.toContain(SECRET);
+      expect(result.stderr, raw).not.toContain(SECRET);
+    }
+    // The same from the config file, and under a retired name.
+    const fromFile = refusal(() => load({}, { waterxConfigUrl: `https://u:${SECRET}@cdn.example.com/?t=${SECRET}` }));
+    expect(fromFile.message).not.toContain(SECRET);
+    expect(JSON.stringify(fromFile.details)).not.toContain(SECRET);
+    const retired = refusal(() => load({ PREDICT_CONFIG_URL: `https://cdn.example.com/?token=${SECRET}` }));
+    expect(retired.message).not.toContain(SECRET);
   });
 });

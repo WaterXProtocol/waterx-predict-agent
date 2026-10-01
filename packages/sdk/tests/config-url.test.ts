@@ -22,6 +22,7 @@ import {
   waterxConfigDocumentUrl,
   WaterxConfigUrlError,
 } from '../src/index.ts';
+import { redactWaterxConfigUrl } from '../src/direct/config-url.ts';
 
 /** Every shape the standard names, accepted and refused. */
 const CORPUS = [
@@ -50,6 +51,23 @@ const CORPUS = [
   'main-v2.waterx-config.pages.dev',
 ] as const;
 
+/**
+ * Values the SDK helper ACCEPTS and this package REFUSES, on purpose: a root
+ * carrying a username or password. A public CDN root never carries credentials,
+ * so one that does is a mistake (or a secret pasted into the wrong variable) —
+ * refused here, as keeper #129 and quote-center #213 refuse it.
+ * `waterxConfigUrlFromRoot` instead accepts it and silently drops the userinfo
+ * from the URL it builds, and, like this package before, echoes the raw value
+ * (credentials, query, fragment) in its own refusals. Both need a follow-up in
+ * `@waterx/sdk`; until then this list holds the divergence explicitly, so a
+ * change on either side shows up here.
+ */
+const USERINFO = [
+  'https://user:pass@cdn.example.com',
+  'https://token@cdn.example.com/v2',
+  'https://:pass@main-v2.waterx-config.pages.dev/',
+] as const;
+
 const NETWORKS: readonly DirectNetwork[] = ['mainnet', 'testnet'];
 
 const verdict = (compose: () => string): string => {
@@ -75,6 +93,14 @@ describe('waterxConfigDocumentUrl', () => {
     expect(outcomes).toContain('REFUSED');
   });
 
+  it('refuses a root with a username or password — a deliberate divergence: the SDK helper accepts it', () => {
+    for (const raw of USERINFO) {
+      expect(verdict(() => waterxConfigUrlFromRoot(raw, 'mainnet')), raw).not.toBe('REFUSED');
+      expect(() => normalizeWaterxConfigRoot(raw), raw).toThrow(/must not carry a username or password/u);
+      expect(verdict(() => waterxConfigDocumentUrl('mainnet', raw)), raw).toBe('REFUSED');
+    }
+  });
+
   it('refuses with WaterxConfigUrlError, naming WATERX_CONFIG_URL and the fix', () => {
     expect(() => waterxConfigDocumentUrl('mainnet', 'https://main-v2.waterx-config.pages.dev/mainnet.json')).toThrow(
       /WATERX_CONFIG_URL must be a CDN ROOT with no filename — got ".*"\. Set it to a CDN ROOT with no filename \(e\.g\. https:\/\/main-v2\.waterx-config\.pages\.dev; <network>\.json is appended\)\./u,
@@ -98,6 +124,88 @@ describe('waterxConfigDocumentUrl', () => {
       expect(waterxConfigDocumentUrl('mainnet', raw), raw).toBe(`${raw.replace(/\/+$/u, '')}/mainnet.json`);
     }
     expect(() => normalizeWaterxConfigRoot('http://127.0.0.1.example.com')).toThrow(/must be an https:\/\/ URL/u);
+  });
+});
+
+describe('a refusal never echoes a credential', () => {
+  const SECRET = 'SUPERSECRET';
+  const message = (raw: string, setting?: string): string => {
+    try {
+      normalizeWaterxConfigRoot(raw, setting);
+    } catch (error: unknown) {
+      expect(error).toBeInstanceOf(WaterxConfigUrlError);
+      return (error as Error).message;
+    }
+    throw new Error(`expected ${raw} to be refused`);
+  };
+
+  it('shows a query-token URL without its query', () => {
+    const text = message(`https://cdn.example.com/private?token=${SECRET}`);
+    expect(text).not.toContain(SECRET);
+    expect(text).toMatch(/no query or fragment — got "https:\/\/cdn\.example\.com\/private"/u);
+  });
+
+  it('shows a user:pass@ URL without its userinfo', () => {
+    for (const raw of [`https://user:${SECRET}@cdn.example.com`, `https://${SECRET}@cdn.example.com/x`, `https://user:${SECRET}@cdn.example.com/mainnet.json?k=${SECRET}`]) {
+      const text = message(raw);
+      expect(text, raw).not.toContain(SECRET);
+      expect(text, raw).toMatch(/must not carry a username or password \(a public CDN root never does\) — got "https:\/\/cdn\.example\.com\//u);
+    }
+  });
+
+  it('shows a fragment URL without its fragment', () => {
+    const text = message(`https://cdn.example.com/v2#access_token=${SECRET}`);
+    expect(text).not.toContain(SECRET);
+    expect(text).toContain('got "https://cdn.example.com/v2"');
+  });
+
+  it('shows nothing of a value that does not parse as a URL', () => {
+    for (const raw of [`cdn.example.com/?token=${SECRET}`, `${SECRET}`, `https://exa mple.com/${SECRET}`]) {
+      const text = message(raw);
+      expect(text, raw).not.toContain(SECRET);
+      expect(text, raw).not.toContain('got');
+      expect(text, raw).toMatch(/^WATERX_CONFIG_URL is not a URL\. Set it to a CDN ROOT/u);
+    }
+  });
+
+  it('strips them on every other refusal too — scheme, GitHub, filename', () => {
+    for (const raw of [
+      `http://user:${SECRET}@cdn.example.com/?t=${SECRET}`,
+      `ftp://${SECRET}@cdn.example.com/#${SECRET}`,
+      `https://raw.githubusercontent.com/x/y/main?token=${SECRET}`,
+      `https://cdn.example.com/mainnet.json?sig=${SECRET}#${SECRET}`,
+      `mailto:${SECRET}@example.com`,
+    ]) {
+      expect(message(raw, 'X'), raw).not.toContain(SECRET);
+    }
+  });
+
+  it('reaches the client and the deployment reader unchanged', () => {
+    const raw = `https://user:${SECRET}@cdn.example.com/?token=${SECRET}#${SECRET}`;
+    const build = (): unknown =>
+      new PredictDirectClient({ baseUrl: 'https://waterx.test.invalid', network: 'mainnet', signer: {}, waterxConfigUrl: raw } as never);
+    const caught = (fn: () => unknown): string => {
+      try {
+        fn();
+      } catch (error: unknown) {
+        expect(error).toBeInstanceOf(WaterxConfigUrlError);
+        return (error as Error).message;
+      }
+      throw new Error('expected a refusal');
+    };
+    expect(caught(build)).toMatch(/^WATERX_CONFIG_URL must not carry a username or password/u);
+    expect(caught(build)).not.toContain(SECRET);
+    // Nor does a retired name echo the value it was set to.
+    const retired = caught(() => assertNoRetiredWaterxConfigUrlEnv({ PREDICT_CONFIG_URL: raw }));
+    expect(retired).toMatch(/PREDICT_CONFIG_URL is retired/u);
+    expect(retired).not.toContain(SECRET);
+  });
+
+  it('redactWaterxConfigUrl keeps scheme, host, port and path only', () => {
+    expect(redactWaterxConfigUrl(`https://u:${SECRET}@CDN.example.com:8443/a/b?x=${SECRET}#${SECRET}`)).toBe('https://cdn.example.com:8443/a/b');
+    expect(redactWaterxConfigUrl('file:///tmp/config')).toBe('file:///tmp/config');
+    expect(redactWaterxConfigUrl(`mailto:${SECRET}@example.com`)).toBeUndefined();
+    expect(redactWaterxConfigUrl(`not a url ${SECRET}`)).toBeUndefined();
   });
 });
 

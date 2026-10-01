@@ -841,11 +841,16 @@ read is `WATERX_CONFIG_URL`, a CDN **ROOT** with no filename; the client reads
 | `testnet` | `https://staging-v2.waterx-config.pages.dev` | `…/testnet.json` |
 
 Pass a different root as `waterxConfigUrl`. A value ending in `.json`, with a
-query or fragment, on plain `http://` (loopback excepted) or on a GitHub host is
-refused with `WaterxConfigUrlError` when the client is built — never rewritten.
-These are the fleet's rules as `@waterx/sdk`'s `waterxConfigUrlFromRoot`
-implements them (held to it by a parity test; it is not a runtime dependency),
-plus one local allowance: plain `http://` to a loopback host, for a local stub.
+query or fragment, with a username or password, on plain `http://` (loopback
+excepted) or on a GitHub host is refused with `WaterxConfigUrlError` when the
+client is built — never rewritten. The refusal never echoes the value as given:
+it shows the URL with userinfo, query and fragment removed, and nothing at all
+of a value that is not a URL, so a signed token pasted into the variable does
+not reach a log. These are the fleet's rules as `@waterx/sdk`'s
+`waterxConfigUrlFromRoot` implements them (held to it by a parity test; it is
+not a runtime dependency), plus one local allowance — plain `http://` to a
+loopback host, for a local stub — and one deliberate divergence: userinfo,
+which that helper accepts and drops, is refused here.
 `waterxConfigDocumentUrl(network, root?)`, `normalizeWaterxConfigRoot(root)` and
 `assertNoRetiredWaterxConfigUrlEnv(env)` are exported for hosts that read the
 variable themselves.

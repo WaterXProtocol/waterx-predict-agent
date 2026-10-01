@@ -8,8 +8,15 @@
  *
  * Refused, loudly, rather than rewritten: a full document URL (the old form —
  * appending to it would 404 as `…/mainnet.json/mainnet.json`), a query or
- * fragment (appending would land inside it), a non-https scheme, and GitHub
+ * fragment (appending would land inside it), a username or password (a public
+ * CDN root never carries credentials), a non-https scheme, and GitHub
  * (rate-limited, and forbidden by the config repo; the CDN is the source).
+ *
+ * A refusal never echoes the value as given: a query, a fragment or userinfo is
+ * exactly where a signed CDN token or an API key sits, and the message travels
+ * on into `CONFIG_INVALID` envelopes and Runner diagnostics. It shows the URL
+ * with userinfo, query and fragment removed, or — when the value does not parse
+ * as a URL — nothing of it at all.
  *
  * Those rules are the fleet's, and their one reference implementation is
  * `@waterx/sdk`'s `waterxConfigUrlFromRoot`. This package does not import it at
@@ -81,9 +88,36 @@ export function retiredWaterxConfigUrlMessage(retired: string, replacement: stri
   return `${retired} is retired; use ${replacement}, set to ${ROOT_HINT}.`;
 }
 
-/** A refusal of `raw`, naming the setting, the problem and the fix. */
-const refuse = (setting: string, raw: string, problem: string): WaterxConfigUrlError =>
-  new WaterxConfigUrlError(`${setting} ${problem} — got "${raw}". Set it to ${ROOT_HINT}.`, setting);
+/**
+ * What a refusal may show of a configured value: the URL with userinfo, query
+ * and fragment removed. `undefined` — show nothing — for a value that is not a
+ * URL, and for one with no host (`mailto:`, `data:` …), whose whole body is an
+ * opaque path the parser cannot separate a secret from.
+ */
+export function redactWaterxConfigUrl(url: URL | string): string | undefined {
+  let copy: URL;
+  try {
+    copy = new URL(typeof url === 'string' ? url.trim() : url.href);
+  } catch {
+    return undefined;
+  }
+  if (copy.host === '' && copy.protocol !== 'file:') return undefined;
+  copy.username = '';
+  copy.password = '';
+  copy.search = '';
+  copy.hash = '';
+  return copy.href;
+}
+
+/**
+ * A refusal naming the setting, the problem and the fix. It shows `url` only
+ * as `redactWaterxConfigUrl` renders it — never the raw value.
+ */
+const refuse = (setting: string, url: URL | undefined, problem: string): WaterxConfigUrlError => {
+  const shown = url === undefined ? undefined : redactWaterxConfigUrl(url);
+  const got = shown === undefined ? '' : ` — got "${shown}"`;
+  return new WaterxConfigUrlError(`${setting} ${problem}${got}. Set it to ${ROOT_HINT}.`, setting);
+};
 const FORBIDDEN_HOST_SUFFIXES = ['github.com', 'githubusercontent.com'];
 /** Plain http is accepted for these only: a local stub, never a network hop. */
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
@@ -101,18 +135,25 @@ export function normalizeWaterxConfigRoot(raw: string, setting: string = WATERX_
   try {
     url = new URL(trimmed);
   } catch {
-    throw refuse(setting, raw, 'is not a URL');
+    // Nothing of the value is shown: it did not parse, so there is no telling
+    // which part of it is a credential.
+    throw refuse(setting, undefined, 'is not a URL');
   }
   const hostname = url.hostname.toLowerCase();
   if (url.protocol !== 'https:' && !(url.protocol === 'http:' && LOOPBACK_HOSTS.has(hostname))) {
-    throw refuse(setting, raw, 'must be an https:// URL');
+    throw refuse(setting, url, 'must be an https:// URL');
+  }
+  if (url.username !== '' || url.password !== '') {
+    // A deliberate divergence from `waterxConfigUrlFromRoot`, which accepts
+    // userinfo and drops it from the URL it builds (see the parity test).
+    throw refuse(setting, url, 'must not carry a username or password (a public CDN root never does)');
   }
   if (FORBIDDEN_HOST_SUFFIXES.some((suffix) => hostname === suffix || hostname.endsWith(`.${suffix}`))) {
-    throw refuse(setting, raw, `must not point at ${hostname} (GitHub is rate-limited and forbidden by the config repo; use the waterx-config CDN)`);
+    throw refuse(setting, url, `must not point at ${hostname} (GitHub is rate-limited and forbidden by the config repo; use the waterx-config CDN)`);
   }
   const path = url.pathname.replace(/\/+$/u, '');
-  if (path.toLowerCase().endsWith('.json')) throw refuse(setting, raw, 'must be a CDN ROOT with no filename');
-  if (url.search !== '' || url.hash !== '') throw refuse(setting, raw, 'must be a CDN ROOT with no query or fragment');
+  if (path.toLowerCase().endsWith('.json')) throw refuse(setting, url, 'must be a CDN ROOT with no filename');
+  if (url.search !== '' || url.hash !== '') throw refuse(setting, url, 'must be a CDN ROOT with no query or fragment');
   // Composed from the parsed URL, as `waterxConfigUrlFromRoot` does, so the two
   // agree byte for byte (host case, default port).
   return `${url.origin}${path}`;
