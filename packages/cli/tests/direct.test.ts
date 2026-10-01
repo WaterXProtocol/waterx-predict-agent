@@ -499,6 +499,39 @@ describe('direct mode', () => {
     expect(read.signerRuns).toHaveLength(0);
   });
 
+  it('places one approved order with no quote named, pricing it where the price is still live', async () => {
+    // Direct mode is the default (ADR-0013) and the surface an installed agent
+    // actually holds, so the optionality of `referenceQuoteId` is proved here
+    // too and not only against the Agent API. `PredictDirectClient` reads the
+    // leg price at the moment of the build when none is supplied — which is the
+    // only instant at which a price is still executable, and the reason a model
+    // that spends a few seconds composing a tool call can place an order at all.
+    const { run, world } = setup();
+    const marketId = await resolveMarket(run);
+    const preview = await run(['order', 'preview', '--input', JSON.stringify(buy(marketId))]);
+    const token = (preview.envelope.data as { policy: { approvalToken: string } }).policy.approvalToken;
+
+    const placed = await run([
+      'order',
+      'execute',
+      '--approve',
+      token,
+      '--approver',
+      'tester',
+      '--input',
+      JSON.stringify(buy(marketId)),
+    ]);
+
+    expect(placed.envelope.error).toBeUndefined();
+    expect(placed.exit).toBe(EXIT_CODES.OK);
+    expect(placed.envelope.data).toMatchObject({ execution: { status: 'SUBMITTED' } });
+    // The protection is unchanged by the omission: `maxSlippageBps` is
+    // mandatory either way, and what the chain will enforce is still reported.
+    expect((placed.envelope.data as { execution: { enforcedWorstPrice: string } }).execution.enforcedWorstPrice).toBe('0.4343');
+    expect(signed(placed.signerRuns)).toEqual(['TRANSACTION']);
+    expect(world.places, 'exactly one order, as with a supplied quote').toBe(1);
+  });
+
   it('reads an unanswered order back on a replay with the same key, across invocations', async () => {
     const { run, world } = setup();
     const marketId = await resolveMarket(run);

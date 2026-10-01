@@ -41,7 +41,7 @@ import { toExecutionOutcome } from '@waterx/predict-agent-sdk';
 
 import { exitCodeForThrown, isDirectClient, toEnvelopeError } from '../client.ts';
 import type { CommandContext } from '../context.ts';
-import { estimateWorstAcceptablePrice, parseDecimal } from '../decimal.ts';
+import { estimateWorstAcceptablePrice, formatDecimal, parseDecimal } from '../decimal.ts';
 import { CliError, isCliError } from '../errors.ts';
 import { EXIT_CODES } from '../exit-codes.ts';
 import {
@@ -180,6 +180,23 @@ const WAIT_SLACK_MS = 15_000;
  * inside `execute-many`: a quote lives seconds, so pre-minting a batch's quotes
  * guarantees the second leg's has died by the time its turn comes (backlog 1.11).
  *
+ * It is also the right choice for a single order placed by a model, which is why
+ * `order execute` uses this and no longer demands one. Every other statement of
+ * the rule already said so and only the demand disagreed: `referenceQuoteId` is
+ * absent from the command contract's `required` list, `PredictDirectClient`
+ * takes a fresh price at the moment of the order when it is omitted, and the
+ * `QUOTE_EXPIRED` the server raises says in as many words to omit it and let one
+ * be taken then. A tool call that spends more than a quote's few seconds between
+ * `market quote` and `order execute` — which is most of them, once a model is
+ * composing the input — met a refusal that nothing but this function believed in.
+ *
+ * Supplying one still means what it has always meant: price this against the
+ * quote I already showed someone, and fail rather than slide. That is what an
+ * approved preview needs, so `order preview` keeps minting one and handing it
+ * back. Omitting it does not weaken the protection — `maxSlippageBps` is
+ * mandatory either way and `worstAcceptablePrice` still binds — it moves the
+ * price to the only instant at which it can still be executable.
+ *
  * What is still refused is a quote that is present and malformed. Absence is a
  * decision; an empty string is a mistake.
  */
@@ -191,17 +208,6 @@ const optionalQuoteId = (input: Readonly<Record<string, unknown>>): string | und
       'INVALID_INPUT',
       '`referenceQuoteId` was given but is not a non-empty string. Omit it to have the quote minted when the order is placed, or pass one from `market quote`.',
       { field: 'referenceQuoteId' },
-    );
-  }
-  return id;
-};
-
-const requireQuoteId = (input: Readonly<Record<string, unknown>>): string => {
-  const id = input.referenceQuoteId;
-  if (typeof id !== 'string' || id === '') {
-    throw new CliError(
-      'INVALID_INPUT',
-      '`referenceQuoteId` is required: an order is priced against an executable quote from `market quote`, never against a catalog price.',
     );
   }
   return id;
@@ -335,16 +341,79 @@ async function authorize(
 }
 
 /**
- * Give back a budget reservation whose write signed nothing — so nothing can
- * have been sent. Anything signed keeps its reservation, whatever happened next:
- * a signed order whose fate is unknown must count against the budget.
+ * What a batch actually committed of the budget it reserved, or `undefined`
+ * when this process cannot say.
+ *
+ * The attribution rests on one fact and does not guess past it: the signing
+ * gate spends exactly one permit per leg that reaches the signer. So
+ *
+ *   signatures spent === legs that succeeded
+ *
+ * is proof that **no failed or skipped leg was ever signed** — every signature
+ * is accounted for by a leg that worked — and the budget of the rest provably
+ * did not leave. That is the shape the defect took: a two-leg batch whose
+ * second leg died on an expired quote, before any signature, kept both legs'
+ * budget because one leg had succeeded.
+ *
+ * When the counts disagree, some leg signed and then failed, and nothing here
+ * says which. Then this returns `undefined` and the whole reservation stands.
+ * Over-counting a ceiling costs an operator a refusal they can see and lift;
+ * under-counting hands an unattended loop room it has already spent.
  */
-function settleSpend(context: CommandContext, authorization: Authorized): void {
-  if (authorization.spend !== undefined && context.gate.stats.used === 0) {
-    const ledgers = context.ledgers();
-    ledgers.spend.release(authorization.spend.id);
-    ledgers.audit.append({ event: 'spend.released', id: authorization.spend.id }, context.now());
+function committedOf(
+  context: CommandContext,
+  legs: readonly NormalizedLeg[],
+  results: readonly (ExecuteManyResult | undefined)[] | undefined,
+): string | undefined {
+  const signed = context.gate.stats.used;
+  if (signed === 0) return '0';
+  // The call threw, so there is no per-leg account of what happened. Something
+  // was signed, and that is all this knows.
+  if (results === undefined) return undefined;
+  const succeeded = legs.map((leg, index) => (results[index]?.ok === true ? leg : undefined));
+  if (succeeded.filter((leg) => leg !== undefined).length !== signed) return undefined;
+  let total = 0n;
+  for (const leg of succeeded) {
+    if (leg === undefined || leg.sizeUnit !== 'WXUSD_BUDGET') continue;
+    total += parseDecimal(leg.size) ?? 0n;
   }
+  return formatDecimal(total);
+}
+
+/**
+ * Settle a budget reservation against what the write actually committed.
+ *
+ * A write that signed nothing gives all of it back — nothing can have been
+ * sent. Anything signed keeps its share, whatever happened next: a signed order
+ * whose fate is unknown must count against the budget.
+ *
+ * `committed` is how a batch says which share that is (ADR-0030). Omitted — the
+ * single-order case, where the gate's own count is the whole attribution, and
+ * the ambiguous batch, where there is nothing to attribute — the reservation is
+ * all-or-nothing exactly as before.
+ */
+function settleSpend(context: CommandContext, authorization: Authorized, committed?: string): void {
+  if (authorization.spend === undefined) return;
+  const id = authorization.spend.id;
+  const ledgers = context.ledgers();
+
+  if (context.gate.stats.used === 0 || committed === '0') {
+    ledgers.spend.release(id);
+    ledgers.audit.append({ event: 'spend.released', id }, context.now());
+    return;
+  }
+  if (committed === undefined) return;
+  // What this reservation holds — NOT `spend.total`, which is the scope's
+  // running total after it. Settling against that would compare one order's
+  // commitment with every order the scope ever authorized.
+  const reserved = parseDecimal(authorization.buyAmount ?? '0');
+  const actual = parseDecimal(committed);
+  if (reserved === null || actual === null || actual >= reserved) return;
+  ledgers.spend.settle(id, committed);
+  ledgers.audit.append(
+    { event: 'spend.settled', id, reserved: formatDecimal(reserved), committed },
+    context.now(),
+  );
 }
 
 /**
@@ -809,7 +878,7 @@ export async function orderPreview(context: CommandContext): Promise<unknown> {
  */
 export async function orderExecute(context: CommandContext): Promise<unknown> {
   const leg = normalizeLeg(context.input);
-  const referenceQuoteId = requireQuoteId(context.input);
+  const referenceQuoteId = optionalQuoteId(context.input);
   const authorization = await authorize(context, 'order.execute', [leg]);
 
   const client = await context.client();
@@ -1108,7 +1177,7 @@ export async function orderExecuteMany(context: CommandContext): Promise<unknown
     auditWrite(context, 'order.execute-many', authorization, [], error);
     throw error;
   } finally {
-    settleSpend(context, authorization);
+    settleSpend(context, authorization, committedOf(context, legs, results));
   }
   auditWrite(
     context,

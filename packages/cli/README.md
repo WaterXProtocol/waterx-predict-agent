@@ -114,9 +114,15 @@ waterx-predict order preview --input '{
   "side": "BUY", "size": { "buyAmount": "25.00" }, "maxSlippageBps": 100
 }'
 
-# 7. Execute it, carrying the approval the preview published and a fresh quote.
-waterx-predict order execute --approve apv2_… --approver "Alice" --input '{ …, "referenceQuoteId": "…" }'
+# 7. Execute it, carrying the approval the preview published.
+waterx-predict order execute --approve apv2_… --approver "Alice" --input '{ … }'
 ```
+
+`referenceQuoteId` is optional and usually best left out: omitted, the price is
+taken at the moment the order is placed, which is the only moment it is still
+executable. A quote lives seconds, so supplying one means supplying it within
+seconds — pass it when you must price against the exact quote someone was shown,
+and expect `QUOTE_EXPIRED` if the gap is longer than that.
 
 Steps 1 and 2 are in that order on purpose: discovery precedes setup, because a
 runtime you must configure before you may ask what it needs is a runtime you are

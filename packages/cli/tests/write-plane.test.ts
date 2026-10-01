@@ -219,15 +219,88 @@ describe('an ambiguous intent stops before the write', () => {
     });
   }
 
-  it('refuses an order with no quote to price it against', async () => {
-    const { referenceQuoteId: _omitted, ...withoutQuote } = { ...BUY, referenceQuoteId: QUOTE_ID };
-    const result = await invoke(['order', 'execute', '--input', JSON.stringify(withoutQuote)], {
-      env: CONFIGURED_ENV,
-      routes: WRITE_ROUTES,
+  // `referenceQuoteId` is optional, in the contract and now here.
+  //
+  // It was required by this command and by nothing else: the command contract
+  // leaves it out of `required`, `PredictDirectClient` takes a fresh price at
+  // the moment of the order when it is absent, `execute-many` has always
+  // accepted its absence for the reason below, and the server's own
+  // `QUOTE_EXPIRED` says to omit it and let one be taken then. A quote lives
+  // seconds; a model that quotes, composes an input and calls a tool spends
+  // more than that on most turns, so the one surface that demanded a quote was
+  // the one surface a model could not reliably satisfy.
+  describe('the quote an order is priced against', () => {
+    const withoutQuote = () => {
+      const { referenceQuoteId: _omitted, ...rest } = { ...BUY, referenceQuoteId: QUOTE_ID };
+      return JSON.stringify(rest);
+    };
+
+    const quoteCalls = (result: { fetches: readonly { url: string; method: string }[] }) =>
+      result.fetches.filter((call) => call.method === 'POST' && call.url.endsWith('/quotes'));
+
+    it('may be left to the order, which then takes one at the moment it places it', async () => {
+      const token = await previewToken();
+      const result = await invoke(
+        ['order', 'execute', '--approve', token, '--approver', 'tester', '--input', withoutQuote()],
+        { env: CONFIGURED_ENV, routes: WRITE_ROUTES },
+      );
+
+      expect(result.envelope.ok, 'omitting the quote is no longer a refusal').toBe(true);
+      // The point of omitting it: the price is taken here, inside the write,
+      // rather than by the caller some unknown number of seconds earlier. The
+      // order still carries a quote on the wire — a fresh one.
+      expect(quoteCalls(result), 'no quote was taken at order time').toHaveLength(1);
+      const create = result.fetches.find((call) => call.method === 'POST' && call.url.endsWith('/executions'));
+      expect((create?.body as { referenceQuoteId?: string }).referenceQuoteId).toBeDefined();
     });
 
-    expect(result.envelope.ok).toBe(false);
-    expect(result.fetches).toHaveLength(0);
+    it('is still honoured when the caller minted one, so an approved preview prices what it showed', async () => {
+      const token = await previewToken();
+      const result = await invoke(
+        ['order', 'execute', '--approve', token, '--approver', 'tester', '--input', input({ referenceQuoteId: QUOTE_ID })],
+        { env: CONFIGURED_ENV, routes: WRITE_ROUTES },
+      );
+
+      expect(result.envelope.ok).toBe(true);
+      const create = result.fetches.find((call) => call.method === 'POST' && call.url.endsWith('/executions'));
+      expect(create?.body).toMatchObject({ referenceQuoteId: QUOTE_ID });
+      // The contrast with the test above, and the reason supplying one still
+      // means something: the caller's quote is used as given, not replaced.
+      expect(quoteCalls(result), 'a supplied quote was re-minted anyway').toHaveLength(0);
+    });
+
+    it('is refused by the contract when it is present and malformed, before anything is sent', async () => {
+      // Absence is a decision; an empty string is a mistake, and the two must
+      // not be answered the same way. The refusal comes from the command
+      // contract rather than from this command, which is where it belongs.
+      const result = await invoke(['order', 'execute', '--input', input({ referenceQuoteId: '' })], {
+        env: CONFIGURED_ENV,
+        routes: WRITE_ROUTES,
+      });
+
+      expect(result.envelope.error?.code).toBe('INVALID_INPUT');
+      expect(result.envelope.error?.details).toMatchObject({
+        violations: [{ path: '/referenceQuoteId' }],
+      });
+      expect(result.fetches).toHaveLength(0);
+      expect(result.signerRuns).toHaveLength(0);
+    });
+
+    it('does not change which refusal a read-only install gives, which is the policy', async () => {
+      // This command used to refuse the missing quote BEFORE the policy gate,
+      // so a read-only install answered `order execute` with INVALID_INPUT and
+      // `order execute-many` with POLICY_DENIED for the same situation. An
+      // agent branching on the exit code was told the input was wrong when what
+      // was wrong was that it may not write at all.
+      const result = await invoke(['order', 'execute', '--input', withoutQuote()], {
+        env: CONFIGURED_ENV,
+        routes: WRITE_ROUTES,
+      });
+
+      expect(result.envelope.error?.code).toBe('POLICY_DENIED');
+      expect(result.fetches).toHaveLength(0);
+      expect(result.signerRuns).toHaveLength(0);
+    });
   });
 });
 
@@ -1081,6 +1154,128 @@ describe('order execute-many is never atomic', () => {
     });
     expect(data.results[1]?.status).toBe('SKIPPED');
     expect(data.results[1]?.detail).toMatch(/safe to resubmit/u);
+  });
+
+  // A batch reserves its budget once, before any leg is signed, because that is
+  // the only order in which the whole batch can be refused before it starts.
+  // Settling it was all-or-nothing, so the moment one leg succeeded the legs
+  // that were never sent kept their budget for the life of the scope — an
+  // unattended runtime losing room it had not used (ADR-0030).
+  describe('the budget a partly-placed batch actually commits', () => {
+    /**
+     * A scope whose cumulative ceiling is tight enough for the difference to
+     * show. Editing a scope starts a fresh budget, so every invocation that
+     * shares a count must share the exact same scope object.
+     */
+    const TIGHT = { ...SCOPE, maxCumulativeBuyAmount: '35' };
+    const tightDigest = () =>
+      scopeDigest(
+        parseExecutionPolicy({ file: { mode: 'delegated-auto', scope: TIGHT }, env: undefined, flag: undefined, where: 'test' })
+          .scope!,
+      );
+
+    /** Leg 0 answered, leg 1 refused before anything is signed for it. */
+    const oneGoodLeg = async (ledgers: WriteLedgers, scope: unknown = SCOPE) => {
+      let creates = 0;
+      return await invoke(
+        ['order', 'execute-many', '--input', JSON.stringify({ orders: legs(), failurePolicy: 'CONTINUE' })],
+        {
+          ...withPolicy({ mode: 'delegated-auto', scope }),
+          ledgers,
+          routes: READ_ROUTES,
+          fallbackFetch: (url) => {
+            if (url.pathname === EXECUTIONS_PATH) {
+              creates += 1;
+              const answer =
+                creates === 1
+                  ? created()
+                  : {
+                      status: 422,
+                      body: { error: { code: 'QUOTE_EXPIRED', message: 'the reference quote has expired', retryable: false } },
+                    };
+              return Promise.resolve(
+                new Response(JSON.stringify(answer.body), {
+                  status: answer.status,
+                  headers: { 'content-type': 'application/json' },
+                }),
+              );
+            }
+            const submit = submitted();
+            return Promise.resolve(
+              new Response(JSON.stringify(submit.body), { status: submit.status, headers: { 'content-type': 'application/json' } }),
+            );
+          },
+        },
+      );
+    };
+
+    it('counts the leg it placed and gives back the leg it never sent', async () => {
+      const ledgers = createMemoryLedgers();
+      const result = await oneGoodLeg(ledgers);
+
+      expect((result.envelope.data as { summary: unknown }).summary).toMatchObject({ succeeded: 1, failed: 1 });
+      // One signature for one placed leg. That equality is the whole
+      // attribution: every signature is accounted for by a leg that worked, so
+      // the failed leg provably reached nothing that could spend money.
+      const policy = (result.envelope.data as { policy: { signatures: unknown } }).policy;
+      expect(policy.signatures).toMatchObject({ granted: 2, used: 1 });
+      // Reserved 10 + 20; committed 10.
+      expect(ledgers.spend.total(scopeDigest(parsedScope()))).toBe('10');
+      // Both amounts in the log: "reserved 30, committed 10" is the whole
+      // account of the batch, and the difference is what came back.
+      expect(ledgers.audit.events.find((e) => e.event === 'spend.settled')).toMatchObject({
+        reserved: '30',
+        committed: '10',
+      });
+    });
+
+    it('leaves the ceiling able to take what the unsent leg was holding', async () => {
+      // The operator-visible half, and the whole reason this matters: 20 wxUSD
+      // that never left is 20 wxUSD the next order can use. Before this, a 35
+      // ceiling was 30 down for 10 wxUSD of trading, and the only way to get it
+      // back was to rewrite the scope — which starts a fresh budget and so
+      // hides the problem rather than fixing it.
+      //
+      // The SAME scope object throughout. Editing one starts a new count, which
+      // would make this pass for the wrong reason.
+      const ledgers = createMemoryLedgers();
+      await oneGoodLeg(ledgers, TIGHT);
+      expect(ledgers.spend.total(tightDigest())).toBe('10');
+
+      const next = await invoke(['order', 'execute', '--input', input({ size: { buyAmount: '20' } })], {
+        ...withPolicy({ mode: 'delegated-auto', scope: TIGHT }),
+        ledgers,
+        routes: WRITE_ROUTES,
+      });
+      expect(next.envelope.ok, 'the unsent leg was still holding budget').toBe(true);
+      expect(ledgers.spend.total(tightDigest())).toBe('30');
+    });
+
+    it('keeps the whole reservation when a signed leg is the one that failed', async () => {
+      // The conservative half, and the one that must not be traded away. A leg
+      // that signed and then failed may be on its way to the chain; nothing
+      // here can say which leg's money that was, so none of it comes back.
+      // Over-counting costs a refusal somebody can see and lift. Under-counting
+      // hands an unattended loop room it has already spent.
+      const ledgers = createMemoryLedgers();
+      const result = await invoke(
+        ['order', 'execute-many', '--input', JSON.stringify({ orders: legs(), failurePolicy: 'CONTINUE' })],
+        {
+          ...withPolicy({ mode: 'delegated-auto', scope: SCOPE }),
+          ledgers,
+          routes: {
+            ...READ_ROUTES,
+            [`POST ${EXECUTIONS_PATH}`]: created(),
+            [submitPath()]: { status: 500, body: { error: { code: 'INTERNAL', message: 'gone', retryable: true } } },
+          },
+        },
+      );
+
+      const policy = (result.envelope.data as { policy: { signatures: { used: number } } }).policy;
+      expect(policy.signatures.used, 'both legs reached the signer').toBe(2);
+      expect(ledgers.spend.total(scopeDigest(parsedScope()))).toBe('30');
+      expect(ledgers.audit.events.map((e) => e.event)).not.toContain('spend.settled');
+    });
   });
 
   it('refuses the whole batch when one leg is out of scope, before any leg runs', async () => {
