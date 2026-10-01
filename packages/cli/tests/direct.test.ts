@@ -499,6 +499,21 @@ describe('direct mode', () => {
     expect(read.signerRuns).toHaveLength(0);
   });
 
+  it('says it cannot read the balance, rather than leaving a null to be read as one', async () => {
+    // `capacity: null` is correct — the allowance ledger only exists under a
+    // mandate — and it was being read as covering the account's money too. An
+    // allowance and a balance are different things, and this runtime can report
+    // neither. Saying which is missing and why is the difference between a
+    // caller that checks elsewhere and one that assumes it was checked here.
+    const { run } = setup();
+    const marketId = await resolveMarket(run);
+    const preview = await run(['order', 'preview', '--input', JSON.stringify(buy(marketId))]);
+    const capacity = (preview.envelope.data as { capacity: { spendableBalance?: { reason: string; detail: string } } }).capacity;
+
+    expect(capacity.spendableBalance?.reason).toBe('NO_PUBLIC_SOURCE');
+    expect(capacity.spendableBalance?.detail, 'names where the refusal arrives instead').toMatch(/refused by the chain/u);
+  });
+
   // The catalog is public and direct mode signs no login to read it, so a read
   // must not be refused over a signer it never reaches for. It was: the signer
   // was built while assembling the client every command holds, so a fresh

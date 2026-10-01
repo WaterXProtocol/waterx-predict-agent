@@ -229,3 +229,27 @@ describe('--version', () => {
     expect(result.exit).toBe(EXIT_CODES.OK);
   });
 });
+
+describe('asking for help', () => {
+  // `npx --no waterx-predict --help` never reaches this binary: npx answers the
+  // flag itself and prints its own help. `--` fixes it and has to be known to
+  // be typed. A positional cannot be intercepted, so `help` is a spelling that
+  // works whichever way this was installed.
+  it('answers `help` the same way it answers `--help`', async () => {
+    const asCommand = await invoke(['help']);
+    const asFlag = await invoke(['--help']);
+
+    expect(asCommand.envelope.error?.code).toBe('USAGE');
+    expect(asCommand.exit).toBe(asFlag.exit);
+    expect(asCommand.envelope.error?.message).toBe(asFlag.envelope.error?.message);
+    // The reference goes to stderr and stdout still carries an envelope,
+    // because a caller that always parses stdout must never find prose there.
+    expect(asCommand.stderr.length).toBeGreaterThan(0);
+    expect(() => JSON.parse(asCommand.stdout)).not.toThrow();
+  });
+
+  it('does not answer `help` as an unknown command', async () => {
+    const result = await invoke(['help']);
+    expect(result.envelope.error?.code).not.toBe('UNKNOWN_COMMAND');
+  });
+});

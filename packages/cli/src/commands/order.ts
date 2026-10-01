@@ -92,6 +92,28 @@ export const RISK_LIMITS_DIRECT = {
   reason: 'DIRECT_MODE_NO_SERVER_MANDATE',
   detail:
     'Direct mode trades as the on-chain delegate without an agent API, so no server-side risk profile or allowance ledger exists. The spending ceiling is this CLI’s execution policy; the authority is the owner’s on-chain delegation.',
+  /**
+   * The question a caller actually asks of `capacity`, answered separately
+   * because it has a different answer.
+   *
+   * "There is no mandate" is about an allowance LEDGER, and it was being read as
+   * though it covered the account's money too. It does not: an allowance and a
+   * balance are different things (an allowance is a WaterX policy, a balance is
+   * what the account holds), and this runtime can report neither here — the
+   * public routes carry no spendable wxUSD figure and the account object on
+   * chain does not hold one.
+   *
+   * So it is said rather than left to be inferred from a null. A preview cannot
+   * tell anyone whether a BUY is affordable, and inventing the number to make
+   * the answer look complete would be worse than leaving it out: the refusal
+   * then arrives from the chain, at execution, having cost a signature.
+   */
+  spendableBalance: {
+    available: false,
+    reason: 'NO_PUBLIC_SOURCE',
+    detail:
+      'This runtime cannot read the account’s spendable wxUSD in direct mode: no public route reports it and the on-chain account object does not carry it. An order larger than the balance previews normally and is refused by the chain when it executes. Check the balance in the WaterX web app before committing an amount you are not sure of.',
+  },
   alternative:
     'Bound spending with the execution policy — an approval per write under `interactive`, or `scope.maxBuyAmount` and `scope.maxCumulativeBuyAmount` under `delegated-auto` — and have the owner narrow or revoke the delegation on-chain.',
 } as const;
@@ -650,7 +672,7 @@ function capacityAbsence(
   side: 'BUY' | 'SELL',
   facts: PredictEffectiveLimitsResponseBody | null,
   direct: boolean,
-): { reason: string; detail: string } {
+): { reason: string; detail: string; spendableBalance?: typeof RISK_LIMITS_DIRECT.spendableBalance } {
   if (side === 'SELL') {
     return {
       reason: 'NOT_APPLICABLE_TO_SELL',
@@ -658,7 +680,13 @@ function capacityAbsence(
     };
   }
   if (direct) {
-    return { reason: RISK_LIMITS_DIRECT.reason, detail: RISK_LIMITS_DIRECT.detail };
+    // Including why the BALANCE cannot be read, which is the question a caller
+    // brings to `capacity` and a different one from whether a mandate exists.
+    return {
+      reason: RISK_LIMITS_DIRECT.reason,
+      detail: RISK_LIMITS_DIRECT.detail,
+      spendableBalance: RISK_LIMITS_DIRECT.spendableBalance,
+    };
   }
   if (facts === null) {
     return {
@@ -1053,7 +1081,39 @@ export async function orderExecute(context: CommandContext): Promise<unknown> {
           },
         }
       : {}),
+    ...fillPending(result),
     caveats: [...WRITE_CAVEATS],
+  };
+}
+
+/**
+ * A fill the chain has settled and the index has not yet published.
+ *
+ * `FILLED` with no `fill` is an honest answer and an unusable one. The chain
+ * decides a close by the position being gone, which it knows the instant the
+ * transaction lands; the amounts come from the activity feed, which an indexer
+ * publishes a moment later. A caller that waited for TERMINAL and was told
+ * FILLED therefore gets a settled order whose size and price it cannot report —
+ * and the rule it follows is to report only the fill the runtime gave it, so it
+ * reports nothing. Reading the same execution back a moment later shows it.
+ *
+ * Said rather than waited for. Holding the wait open would turn one indexer lag
+ * into a timeout on an order that has already settled, which is the worse of
+ * the two answers: a timeout is ambiguous and this is not.
+ *
+ * Deliberately NOT `reconciliation.required`. Nothing is unresolved — the
+ * outcome is terminal and known. Only the arithmetic is late.
+ */
+function fillPending(result: { status: string; fill?: unknown; executionId: string }): Record<string, unknown> {
+  if (result.status !== 'FILLED' || result.fill !== undefined) return {};
+  return {
+    fillFacts: {
+      available: false,
+      reason: 'NOT_INDEXED_YET',
+      detail:
+        'This order is settled — that is what FILLED means here, and the chain decided it. The size, price and fee come from the activity feed, which has not published them yet. Nothing is unresolved and nothing needs resubmitting.',
+      command: `order get --executionId ${result.executionId}`,
+    },
   };
 }
 
