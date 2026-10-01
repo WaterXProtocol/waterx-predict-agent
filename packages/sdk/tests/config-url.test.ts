@@ -77,7 +77,7 @@ describe('waterxConfigDocumentUrl', () => {
 
   it('refuses with WaterxConfigUrlError, naming WATERX_CONFIG_URL and the fix', () => {
     expect(() => waterxConfigDocumentUrl('mainnet', 'https://main-v2.waterx-config.pages.dev/mainnet.json')).toThrow(
-      /WATERX_CONFIG_URL must be a CDN ROOT with no filename — got ".*"\. Set it to e\.g\. https:\/\/main-v2\.waterx-config\.pages\.dev; <network>\.json is appended\./u,
+      /WATERX_CONFIG_URL must be a CDN ROOT with no filename — got ".*"\. Set it to a CDN ROOT with no filename \(e\.g\. https:\/\/main-v2\.waterx-config\.pages\.dev; <network>\.json is appended\)\./u,
     );
     expect(() => normalizeWaterxConfigRoot('https://github.com/WaterXProtocol/waterx-config')).toThrow(WaterxConfigUrlError);
     expect(() => normalizeWaterxConfigRoot('   ')).toThrow(/WATERX_CONFIG_URL is empty/u);
@@ -122,6 +122,6 @@ describe('retired names', () => {
           signer: {},
           deploymentUrl: 'https://main-v2.waterx-config.pages.dev/mainnet.json',
         } as never),
-    ).toThrow(/`deploymentUrl` is retired; pass `waterxConfigUrl`/u);
+    ).toThrow(/`deploymentUrl` is retired; use `waterxConfigUrl`, set to a CDN ROOT/u);
   });
 });

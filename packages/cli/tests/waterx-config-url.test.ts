@@ -56,6 +56,6 @@ describe('WATERX_CONFIG_URL', () => {
   it('refuses the retired `deploymentUrl` config key, naming the replacement', () => {
     const error = refusal(() => load({}, { deploymentUrl: 'https://main-v2.waterx-config.pages.dev/mainnet.json' }));
     expect(error.code).toBe('CONFIG_INVALID');
-    expect(error.message).toMatch(/`deploymentUrl` in \/cfg\.json is retired\. Use `waterxConfigUrl` \(or WATERX_CONFIG_URL\)/u);
+    expect(error.message).toMatch(/`deploymentUrl` in \/cfg\.json is retired; use `waterxConfigUrl` \(or WATERX_CONFIG_URL\), set to a CDN ROOT/u);
   });
 });

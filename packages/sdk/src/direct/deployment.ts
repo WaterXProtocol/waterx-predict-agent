@@ -22,18 +22,12 @@
  */
 import { normalizeSuiAddress } from '../sui-tx.ts';
 
-import { waterxConfigDocumentUrl, WATERX_CONFIG_URLS } from './config-url.ts';
+import { retiredWaterxConfigUrlMessage, waterxConfigDocumentUrl, WATERX_CONFIG_URLS } from './config-url.ts';
 
 export type DirectNetwork = 'mainnet' | 'testnet';
 
 /** The schema this reader understands. Anything else is refused, not guessed at. */
 export const WATERX_CONFIG_SCHEMA_VERSION = 2;
-
-/**
- * Where the document is read: a `WATERX_CONFIG_URL` ROOT (default per network,
- * `main-v2` / `staging-v2`) with `${network}.json` appended. See `config-url.ts`.
- */
-export { WATERX_CONFIG_URLS } from './config-url.ts';
 
 /** Sui system objects every PTB may name. */
 export const SUI_CLOCK = normalizeSuiAddress('0x6');
@@ -128,8 +122,8 @@ export function parseDeployment(document: unknown, expected: DirectNetwork): Dir
   const objects = field(root, 'objects', '');
   const predictionObjects = field(objects, 'prediction', 'objects');
   const accountObjects = field(objects, 'account', 'objects');
-  const custodyObjects = (objects['custody'] ?? undefined) as Json | undefined;
-  const creditObjects = (objects['credit'] ?? undefined) as Json | undefined;
+  const custodyObjects = objects['custody'] as Json | undefined;
+  const creditObjects = objects['credit'] as Json | undefined;
 
   const registries = field(predictionObjects, 'market_registries', 'objects.prediction');
   const coins = field(predictionObjects, 'settlement_coin_types', 'objects.prediction');
@@ -212,9 +206,7 @@ export class FetchedDeployment implements DeploymentSource {
 
   constructor(options: FetchedDeploymentOptions) {
     if ((options as { url?: unknown }).url !== undefined) {
-      throw new DirectDeploymentError(
-        '`url` is retired; pass `waterxConfigUrl`, a CDN ROOT with no filename (e.g. https://main-v2.waterx-config.pages.dev; <network>.json is appended).',
-      );
+      throw new DirectDeploymentError(retiredWaterxConfigUrlMessage('`url`', '`waterxConfigUrl`'));
     }
     this.options = options;
     // Validated here, not at the first fetch: a malformed root is a setup
@@ -226,7 +218,7 @@ export class FetchedDeployment implements DeploymentSource {
     const now = (this.options.now ?? Date.now)();
     const ttl = this.options.ttlMs ?? 5 * 60_000;
     if (this.cached !== undefined && now - this.cached.at < ttl) return this.cached.value;
-    const url = this.url;
+    const { url } = this;
     const fetchImpl = this.options.fetch ?? globalThis.fetch.bind(globalThis);
     let response: Response;
     try {

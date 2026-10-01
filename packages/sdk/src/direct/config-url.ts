@@ -57,6 +57,20 @@ export class WaterxConfigUrlError extends Error {
 }
 
 const EXAMPLE = WATERX_CONFIG_URLS.mainnet;
+const ROOT_HINT = `a CDN ROOT with no filename (e.g. ${EXAMPLE}; <network>.json is appended)`;
+
+/**
+ * The one message for a retired name or option: `retired` is what was set,
+ * `replacement` what to set instead. Shared by the env check here, the SDK's
+ * retired client options and the CLI's retired config key.
+ */
+export function retiredWaterxConfigUrlMessage(retired: string, replacement: string): string {
+  return `${retired} is retired; use ${replacement}, set to ${ROOT_HINT}.`;
+}
+
+/** A refusal of `raw`, naming the variable, the problem and the fix. */
+const refuse = (raw: string, problem: string): WaterxConfigUrlError =>
+  new WaterxConfigUrlError(`${WATERX_CONFIG_URL_ENV} ${problem} — got "${raw}". Set it to ${ROOT_HINT}.`);
 const FORBIDDEN_HOST_SUFFIXES = ['github.com', 'githubusercontent.com'];
 /** Plain http is accepted for these only: a local stub, never a network hop. */
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
@@ -68,36 +82,24 @@ const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
 export function normalizeWaterxConfigRoot(raw: string): string {
   const trimmed = raw.trim();
   if (trimmed === '') {
-    throw new WaterxConfigUrlError(`${WATERX_CONFIG_URL_ENV} is empty; set it to a CDN ROOT such as ${EXAMPLE}, or leave it unset for the network's default.`);
+    throw new WaterxConfigUrlError(`${WATERX_CONFIG_URL_ENV} is empty; set it to ${ROOT_HINT}, or leave it unset for the network's default.`);
   }
   let url: URL;
   try {
     url = new URL(trimmed);
   } catch {
-    throw new WaterxConfigUrlError(`${WATERX_CONFIG_URL_ENV} is not a URL — got "${raw}". Set it to a CDN ROOT such as ${EXAMPLE}.`);
+    throw refuse(raw, 'is not a URL');
   }
   const hostname = url.hostname.toLowerCase();
   if (url.protocol !== 'https:' && !(url.protocol === 'http:' && LOOPBACK_HOSTS.has(hostname))) {
-    throw new WaterxConfigUrlError(
-      `${WATERX_CONFIG_URL_ENV} must be an https:// URL — got "${raw}". Set it to a CDN ROOT such as ${EXAMPLE}.`,
-    );
+    throw refuse(raw, 'must be an https:// URL');
   }
   if (FORBIDDEN_HOST_SUFFIXES.some((suffix) => hostname === suffix || hostname.endsWith(`.${suffix}`))) {
-    throw new WaterxConfigUrlError(
-      `${WATERX_CONFIG_URL_ENV} must not point at ${hostname} — got "${raw}". GitHub is rate-limited and forbidden by the config repo; use the waterx-config CDN, e.g. ${EXAMPLE}.`,
-    );
+    throw refuse(raw, `must not point at ${hostname} (GitHub is rate-limited and forbidden by the config repo; use the waterx-config CDN)`);
   }
   const path = url.pathname.replace(/\/+$/u, '');
-  if (path.toLowerCase().endsWith('.json')) {
-    throw new WaterxConfigUrlError(
-      `${WATERX_CONFIG_URL_ENV} must be a CDN ROOT with no filename — got "${raw}". Set it to e.g. ${EXAMPLE}; <network>.json is appended.`,
-    );
-  }
-  if (url.search !== '' || url.hash !== '') {
-    throw new WaterxConfigUrlError(
-      `${WATERX_CONFIG_URL_ENV} must be a CDN ROOT with no query or fragment — got "${raw}". Set it to e.g. ${EXAMPLE}; <network>.json is appended.`,
-    );
-  }
+  if (path.toLowerCase().endsWith('.json')) throw refuse(raw, 'must be a CDN ROOT with no filename');
+  if (url.search !== '' || url.hash !== '') throw refuse(raw, 'must be a CDN ROOT with no query or fragment');
   // Composed from the parsed URL, as `waterxConfigUrlFromRoot` does, so the two
   // agree byte for byte (host case, default port).
   return `${url.origin}${path}`;
@@ -120,9 +122,7 @@ export function assertNoRetiredWaterxConfigUrlEnv(env: Readonly<Record<string, s
   for (const name of RETIRED_WATERX_CONFIG_URL_ENV) {
     const value = env[name];
     if (value !== undefined && value.trim() !== '') {
-      throw new WaterxConfigUrlError(
-        `${name} is retired; use ${WATERX_CONFIG_URL_ENV}, set to a CDN ROOT with no filename (e.g. ${EXAMPLE}; <network>.json is appended). Unset ${name}.`,
-      );
+      throw new WaterxConfigUrlError(`${retiredWaterxConfigUrlMessage(name, WATERX_CONFIG_URL_ENV)} Unset ${name}.`);
     }
   }
 }

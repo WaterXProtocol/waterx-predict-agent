@@ -10,8 +10,8 @@ import {
   FetchedDeployment,
   parseDeployment,
   WATERX_CONFIG_SCHEMA_VERSION,
-  WATERX_CONFIG_URLS,
 } from '../src/direct/deployment.ts';
+import { WATERX_CONFIG_URLS } from '../src/direct/config-url.ts';
 import { normalizeSuiAddress } from '../src/sui-tx.ts';
 import { CONFIG } from './direct-fixtures.ts';
 
@@ -102,7 +102,7 @@ describe('FetchedDeployment', () => {
       /WATERX_CONFIG_URL must be a CDN ROOT with no filename/u,
     );
     expect(() => new FetchedDeployment({ network: 'mainnet', url: 'https://cdn.example.com/mainnet.json' } as never)).toThrow(
-      /`url` is retired; pass `waterxConfigUrl`/u,
+      /`url` is retired; use `waterxConfigUrl`, set to a CDN ROOT/u,
     );
   });
 

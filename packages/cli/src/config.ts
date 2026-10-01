@@ -22,6 +22,8 @@ import {
   normalizeWaterxConfigRoot,
   PREDICT_AGENT_ENDPOINTS,
   type PredictAgentDeployment,
+  retiredWaterxConfigUrlMessage,
+  WATERX_CONFIG_URL_ENV,
   WaterxConfigUrlError,
 } from '@waterx/predict-agent-sdk';
 
@@ -137,7 +139,7 @@ export const ENV_KEYS = {
   environment: 'WATERX_PREDICT_ENVIRONMENT',
   agentWallet: 'WATERX_PREDICT_AGENT_WALLET',
   consoleUrl: 'WATERX_PREDICT_CONSOLE_URL',
-  waterxConfigUrl: 'WATERX_CONFIG_URL',
+  waterxConfigUrl: WATERX_CONFIG_URL_ENV,
   suiGraphqlUrl: 'WATERX_PREDICT_SUI_GRAPHQL_URL',
   accountId: 'WATERX_PREDICT_ACCOUNT_ID',
   signerCommand: 'WATERX_PREDICT_SIGNER_COMMAND',
@@ -250,7 +252,7 @@ function readConfigFile(sources: ConfigSources): { path: string | null; config: 
         // document URL, and the fix is a rename AND a new value shape.
         throw new CliError(
           'CONFIG_INVALID',
-          `\`deploymentUrl\` in ${path} is retired. Use \`waterxConfigUrl\` (or ${ENV_KEYS.waterxConfigUrl}), set to the waterx-config CDN ROOT with no filename, e.g. https://main-v2.waterx-config.pages.dev — <network>.json is appended.`,
+          retiredWaterxConfigUrlMessage(`\`deploymentUrl\` in ${path}`, `\`waterxConfigUrl\` (or ${ENV_KEYS.waterxConfigUrl})`),
           { file: path, key },
         );
       }

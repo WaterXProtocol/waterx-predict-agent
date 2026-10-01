@@ -64,6 +64,7 @@ import {
   type DirectDeployment,
   type DirectNetwork,
 } from './deployment.ts';
+import { retiredWaterxConfigUrlMessage } from './config-url.ts';
 import { decodeMarketHandle, encodeMarketHandle, type MarketHandle } from './handle.ts';
 import { DirectHttp } from './http.ts';
 import {
@@ -410,9 +411,7 @@ export class PredictDirectClient {
     this.signer = options.signer;
     this.network = options.network;
     if ((options as { deploymentUrl?: unknown }).deploymentUrl !== undefined) {
-      throw new DirectDeploymentError(
-        '`deploymentUrl` is retired; pass `waterxConfigUrl`, a CDN ROOT with no filename (e.g. https://main-v2.waterx-config.pages.dev; <network>.json is appended).',
-      );
+      throw new DirectDeploymentError(retiredWaterxConfigUrlMessage('`deploymentUrl`', '`waterxConfigUrl`'));
     }
     this.deployment =
       options.deployment ??
