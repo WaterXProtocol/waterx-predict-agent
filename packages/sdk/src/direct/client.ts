@@ -288,6 +288,31 @@ const PHASE_STATUS: Readonly<Record<string, PredictMarketStatus>> = {
 const iso = (seconds: number | null | undefined): string | null =>
   typeof seconds === 'number' && Number.isFinite(seconds) ? new Date(seconds * 1000).toISOString() : null;
 
+/** The handle a market id carries, or `undefined` when it is not one. */
+const handleOf = (marketId: string): MarketHandle | undefined => {
+  try {
+    return decodeMarketHandle(marketId);
+  } catch {
+    return undefined;
+  }
+};
+
+/**
+ * `shares × currentPrice − remainingCost`, in exact fixed-scale integers.
+ *
+ * Null — never 0 — when the share count is unknown: zero would tell a strategy
+ * the position is exactly break-even, and a stop-loss reading that sits on its
+ * hands through a crash (contract, `unrealizedPnl`).
+ */
+const markToMarket = (summary: PredictPositionSummary, currentPrice: string): string | null => {
+  if (summary.shares === null) return null;
+  const shares = parseScaled(summary.shares, MONEY_DECIMALS, 'shares');
+  const price = parseScaled(currentPrice, MONEY_DECIMALS, 'currentPrice');
+  const cost = parseScaled(summary.remainingCost, MONEY_DECIMALS, 'remainingCost');
+  const scale = 10n ** BigInt(MONEY_DECIMALS);
+  return formatScaled((shares * price) / scale - cost, MONEY_DECIMALS);
+};
+
 const priceText = (cents: number | null | undefined): string | null => {
   if (typeof cents !== 'number' || !Number.isFinite(cents) || cents <= 0 || cents >= 100) return null;
   return formatPrice(centsToPrice(cents));
@@ -1844,26 +1869,55 @@ export class PredictDirectClient {
     const owner = await this.ownerOf(accountId, 0, signal);
     await this.requireMainAccount(owner, accountId, signal);
     const response = await this.http.get<PublicBetsResponse>(R.bets, { address: owner, filter: 'active', limit: 100 }, signal);
-    const positions: PredictPositionSummary[] = [];
+    const rows: { summary: PredictPositionSummary; handle: MarketHandle | undefined }[] = [];
     for (const bet of response.bets) {
       if (bet.positionId === '' || bet.submissionState !== 'confirmed') continue;
       const leg = await this.legFor(bet, signal);
       const shares = typeof bet.shares === 'number' ? bet.shares.toFixed(6) : null;
       const cost = formatScaled(parseScaled(bet.stake.amountUsd.toFixed(6), 6, 'stake'), 6);
-      positions.push({
-        positionId: bet.positionId,
-        marketId: leg.marketId,
-        outcomeId: leg.outcomeId,
-        strategyId: null,
-        originalCost: cost,
-        remainingCost: cost,
-        shares: shares === null ? null : formatScaled(parseScaled(shares, 6, 'shares'), 6),
-        avgEntryPrice: typeof bet.avgFillPriceCents === 'number' ? priceText(bet.avgFillPriceCents) : null,
-        currentPrice: null,
-        unrealizedPnl: null,
-        openedAt: new Date(bet.placedAt).toISOString(),
+      rows.push({
+        summary: {
+          positionId: bet.positionId,
+          marketId: leg.marketId,
+          outcomeId: leg.outcomeId,
+          strategyId: null,
+          originalCost: cost,
+          remainingCost: cost,
+          shares: shares === null ? null : formatScaled(parseScaled(shares, 6, 'shares'), 6),
+          avgEntryPrice: typeof bet.avgFillPriceCents === 'number' ? priceText(bet.avgFillPriceCents) : null,
+          currentPrice: null,
+          unrealizedPnl: null,
+          openedAt: new Date(bet.placedAt).toISOString(),
+        },
+        // Absent when the leg could not be resolved to a round, in which case
+        // `marketId` is the bare on-chain id and there is nothing to price.
+        handle: handleOf(leg.marketId),
       });
     }
+
+    // Valued from the SELL side, in one read for every round at once.
+    //
+    // These were hard-coded null, so every position this runtime reported was
+    // unpriced — including one in a market it had just bought in, whose bid it
+    // could have read at the same moment. `next` then described them as
+    // possibly settled and sent the operator to a web app to claim, which is a
+    // different fact about somebody's money than "we did not look".
+    const boards = await this.boards(
+      rows.flatMap((row) => (row.handle === undefined ? [] : [row.handle.roundId])),
+      signal,
+    );
+    const positions = rows.map(({ summary, handle }) => {
+      if (handle === undefined) return summary;
+      // The contract asks for what the position could be EXITED at — the bid
+      // for the side held, never the mid and never the ask. A single-sided
+      // round publishes no NO bid, and a missing one stays null rather than
+      // borrowing the other leg's.
+      const bid = boards.bid[handle.roundId] ?? {};
+      const key = summary.outcomeId === 'YES' ? handle.yesSide : handle.noSide;
+      const currentPrice = key === undefined ? null : priceText(bid[key]);
+      if (currentPrice === null) return summary;
+      return { ...summary, currentPrice, unrealizedPnl: markToMarket(summary, currentPrice) };
+    });
     return { positions, nextCursor: response.nextCursor ?? null };
   }
 

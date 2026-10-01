@@ -745,6 +745,61 @@ describe('accounts, positions and what this mode cannot answer', () => {
       expect.objectContaining({ positionId: '42', outcomeId: 'NO', shares: '8.635578', originalCost: '5', avgEntryPrice: '0.579' }),
     ]);
     expect(decodeMarketHandle(positions[0]!.marketId).onchainMarketId).toBe(ONCHAIN);
+    // Valued from the SELL side of the side held. The fixture's `down` leg bids
+    // 0.56, and the position cost 5 for 8.635578 shares, so it is under water.
+    expect(positions[0]).toMatchObject({ currentPrice: '0.56' });
+    expect(positions[0]?.unrealizedPnl, '8.635578 × 0.56 − 5, truncated toward zero at six places').toBe('-0.164077');
+  });
+
+  // Both were hard-coded null, so every position this runtime reported was
+  // unpriced — including one in a market it had just bought in, whose bid it
+  // could read at that moment. `next` then described them as possibly settled
+  // and sent the operator to a web app to claim, which is a different claim
+  // about somebody's money than "we did not look".
+  describe('a position is valued where there is a sell price for it', () => {
+    const openPosition = (side: string) => ({
+      betId: `${ONCHAIN}:42`,
+      orderId: '77',
+      marketId: 'cat-1',
+      roundId: ROUND,
+      positionId: '42',
+      marketSlug: 'us-iran',
+      cardSnapshot: { kind: 'politics' },
+      side,
+      lockedOddsCents: 58,
+      avgFillPriceCents: 57.9,
+      stake: { amountUsd: 5, token: 'USD' },
+      placedAt: NOW,
+      settledAt: null,
+      outcome: 'pending' as const,
+      submissionState: 'confirmed' as const,
+      payoutUsd: null,
+      shares: 8.635578,
+      roundEndsAt: null,
+    });
+
+    it('prices the YES side from the YES bid, not from the other leg', async () => {
+      const { client, waterx } = setup({
+        overrides: { 'GET predict/markets/politics/us-iran': () => ({ data: { detail: { round } } }) },
+      });
+      waterx.bets.push(openPosition('up'));
+      const { positions } = await client.getPositions(ACCOUNT);
+      expect(positions[0]).toMatchObject({ outcomeId: 'YES', currentPrice: '0.41' });
+    });
+
+    it('stays null — never zero — when no bid is published for the side held', async () => {
+      // Zero would tell a strategy the position is exactly break-even, and a
+      // stop-loss reading that sits on its hands through a crash.
+      const { client, waterx } = setup({
+        overrides: {
+          'GET predict/markets/politics/us-iran': () => ({ data: { detail: { round } } }),
+          'GET predict/quotes/bid': () => ({ data: {} }),
+        },
+      });
+      waterx.bets.push(openPosition('down'));
+      const { positions } = await client.getPositions(ACCOUNT);
+      expect(positions[0]).toMatchObject({ currentPrice: null, unrealizedPnl: null });
+    });
   });
 
   it('re-reads the delegation listing, so a grant made while waiting appears', async () => {
