@@ -180,6 +180,23 @@ const WAIT_SLACK_MS = 15_000;
  * inside `execute-many`: a quote lives seconds, so pre-minting a batch's quotes
  * guarantees the second leg's has died by the time its turn comes (backlog 1.11).
  *
+ * It is also the right choice for a single order placed by a model, which is why
+ * `order execute` uses this and no longer demands one. Every other statement of
+ * the rule already said so and only the demand disagreed: `referenceQuoteId` is
+ * absent from the command contract's `required` list, `PredictDirectClient`
+ * takes a fresh price at the moment of the order when it is omitted, and the
+ * `QUOTE_EXPIRED` the server raises says in as many words to omit it and let one
+ * be taken then. A tool call that spends more than a quote's few seconds between
+ * `market quote` and `order execute` — which is most of them, once a model is
+ * composing the input — met a refusal that nothing but this function believed in.
+ *
+ * Supplying one still means what it has always meant: price this against the
+ * quote I already showed someone, and fail rather than slide. That is what an
+ * approved preview needs, so `order preview` keeps minting one and handing it
+ * back. Omitting it does not weaken the protection — `maxSlippageBps` is
+ * mandatory either way and `worstAcceptablePrice` still binds — it moves the
+ * price to the only instant at which it can still be executable.
+ *
  * What is still refused is a quote that is present and malformed. Absence is a
  * decision; an empty string is a mistake.
  */
@@ -191,17 +208,6 @@ const optionalQuoteId = (input: Readonly<Record<string, unknown>>): string | und
       'INVALID_INPUT',
       '`referenceQuoteId` was given but is not a non-empty string. Omit it to have the quote minted when the order is placed, or pass one from `market quote`.',
       { field: 'referenceQuoteId' },
-    );
-  }
-  return id;
-};
-
-const requireQuoteId = (input: Readonly<Record<string, unknown>>): string => {
-  const id = input.referenceQuoteId;
-  if (typeof id !== 'string' || id === '') {
-    throw new CliError(
-      'INVALID_INPUT',
-      '`referenceQuoteId` is required: an order is priced against an executable quote from `market quote`, never against a catalog price.',
     );
   }
   return id;
@@ -809,7 +815,7 @@ export async function orderPreview(context: CommandContext): Promise<unknown> {
  */
 export async function orderExecute(context: CommandContext): Promise<unknown> {
   const leg = normalizeLeg(context.input);
-  const referenceQuoteId = requireQuoteId(context.input);
+  const referenceQuoteId = optionalQuoteId(context.input);
   const authorization = await authorize(context, 'order.execute', [leg]);
 
   const client = await context.client();

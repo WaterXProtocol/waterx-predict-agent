@@ -219,15 +219,88 @@ describe('an ambiguous intent stops before the write', () => {
     });
   }
 
-  it('refuses an order with no quote to price it against', async () => {
-    const { referenceQuoteId: _omitted, ...withoutQuote } = { ...BUY, referenceQuoteId: QUOTE_ID };
-    const result = await invoke(['order', 'execute', '--input', JSON.stringify(withoutQuote)], {
-      env: CONFIGURED_ENV,
-      routes: WRITE_ROUTES,
+  // `referenceQuoteId` is optional, in the contract and now here.
+  //
+  // It was required by this command and by nothing else: the command contract
+  // leaves it out of `required`, `PredictDirectClient` takes a fresh price at
+  // the moment of the order when it is absent, `execute-many` has always
+  // accepted its absence for the reason below, and the server's own
+  // `QUOTE_EXPIRED` says to omit it and let one be taken then. A quote lives
+  // seconds; a model that quotes, composes an input and calls a tool spends
+  // more than that on most turns, so the one surface that demanded a quote was
+  // the one surface a model could not reliably satisfy.
+  describe('the quote an order is priced against', () => {
+    const withoutQuote = () => {
+      const { referenceQuoteId: _omitted, ...rest } = { ...BUY, referenceQuoteId: QUOTE_ID };
+      return JSON.stringify(rest);
+    };
+
+    const quoteCalls = (result: { fetches: readonly { url: string; method: string }[] }) =>
+      result.fetches.filter((call) => call.method === 'POST' && call.url.endsWith('/quotes'));
+
+    it('may be left to the order, which then takes one at the moment it places it', async () => {
+      const token = await previewToken();
+      const result = await invoke(
+        ['order', 'execute', '--approve', token, '--approver', 'tester', '--input', withoutQuote()],
+        { env: CONFIGURED_ENV, routes: WRITE_ROUTES },
+      );
+
+      expect(result.envelope.ok, 'omitting the quote is no longer a refusal').toBe(true);
+      // The point of omitting it: the price is taken here, inside the write,
+      // rather than by the caller some unknown number of seconds earlier. The
+      // order still carries a quote on the wire — a fresh one.
+      expect(quoteCalls(result), 'no quote was taken at order time').toHaveLength(1);
+      const create = result.fetches.find((call) => call.method === 'POST' && call.url.endsWith('/executions'));
+      expect((create?.body as { referenceQuoteId?: string }).referenceQuoteId).toBeDefined();
     });
 
-    expect(result.envelope.ok).toBe(false);
-    expect(result.fetches).toHaveLength(0);
+    it('is still honoured when the caller minted one, so an approved preview prices what it showed', async () => {
+      const token = await previewToken();
+      const result = await invoke(
+        ['order', 'execute', '--approve', token, '--approver', 'tester', '--input', input({ referenceQuoteId: QUOTE_ID })],
+        { env: CONFIGURED_ENV, routes: WRITE_ROUTES },
+      );
+
+      expect(result.envelope.ok).toBe(true);
+      const create = result.fetches.find((call) => call.method === 'POST' && call.url.endsWith('/executions'));
+      expect(create?.body).toMatchObject({ referenceQuoteId: QUOTE_ID });
+      // The contrast with the test above, and the reason supplying one still
+      // means something: the caller's quote is used as given, not replaced.
+      expect(quoteCalls(result), 'a supplied quote was re-minted anyway').toHaveLength(0);
+    });
+
+    it('is refused by the contract when it is present and malformed, before anything is sent', async () => {
+      // Absence is a decision; an empty string is a mistake, and the two must
+      // not be answered the same way. The refusal comes from the command
+      // contract rather than from this command, which is where it belongs.
+      const result = await invoke(['order', 'execute', '--input', input({ referenceQuoteId: '' })], {
+        env: CONFIGURED_ENV,
+        routes: WRITE_ROUTES,
+      });
+
+      expect(result.envelope.error?.code).toBe('INVALID_INPUT');
+      expect(result.envelope.error?.details).toMatchObject({
+        violations: [{ path: '/referenceQuoteId' }],
+      });
+      expect(result.fetches).toHaveLength(0);
+      expect(result.signerRuns).toHaveLength(0);
+    });
+
+    it('does not change which refusal a read-only install gives, which is the policy', async () => {
+      // This command used to refuse the missing quote BEFORE the policy gate,
+      // so a read-only install answered `order execute` with INVALID_INPUT and
+      // `order execute-many` with POLICY_DENIED for the same situation. An
+      // agent branching on the exit code was told the input was wrong when what
+      // was wrong was that it may not write at all.
+      const result = await invoke(['order', 'execute', '--input', withoutQuote()], {
+        env: CONFIGURED_ENV,
+        routes: WRITE_ROUTES,
+      });
+
+      expect(result.envelope.error?.code).toBe('POLICY_DENIED');
+      expect(result.fetches).toHaveLength(0);
+      expect(result.signerRuns).toHaveLength(0);
+    });
   });
 });
 
