@@ -40,6 +40,7 @@ wins and the plan should be corrected.
 | [0027](0027-the-choice-shows-itself.md) | The choice shows itself, and is never answered for anybody | Accepted | amends ADR-0025, ADR-0026 |
 | [0028](0028-mainnet-is-not-a-question.md) | Mainnet is not a question, and the pointer survives the cut | Accepted | amends ADR-0011, ADR-0022 |
 | [0029](0029-the-runner-is-an-optional-artifact.md) | The Runner ships as a third artifact, and an optional one | Proposed | amends ADR-0009 D-28, ADR-0010 |
+| [0030](0030-a-reservation-is-settled-per-leg.md) | A batch’s budget is settled against the legs that signed, not the command | Accepted | amends ADR-0014 §2 |
 
 ## Status vocabulary
 

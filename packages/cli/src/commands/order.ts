@@ -41,7 +41,7 @@ import { toExecutionOutcome } from '@waterx/predict-agent-sdk';
 
 import { exitCodeForThrown, isDirectClient, toEnvelopeError } from '../client.ts';
 import type { CommandContext } from '../context.ts';
-import { estimateWorstAcceptablePrice, parseDecimal } from '../decimal.ts';
+import { estimateWorstAcceptablePrice, formatDecimal, parseDecimal } from '../decimal.ts';
 import { CliError, isCliError } from '../errors.ts';
 import { EXIT_CODES } from '../exit-codes.ts';
 import {
@@ -341,16 +341,79 @@ async function authorize(
 }
 
 /**
- * Give back a budget reservation whose write signed nothing — so nothing can
- * have been sent. Anything signed keeps its reservation, whatever happened next:
- * a signed order whose fate is unknown must count against the budget.
+ * What a batch actually committed of the budget it reserved, or `undefined`
+ * when this process cannot say.
+ *
+ * The attribution rests on one fact and does not guess past it: the signing
+ * gate spends exactly one permit per leg that reaches the signer. So
+ *
+ *   signatures spent === legs that succeeded
+ *
+ * is proof that **no failed or skipped leg was ever signed** — every signature
+ * is accounted for by a leg that worked — and the budget of the rest provably
+ * did not leave. That is the shape the defect took: a two-leg batch whose
+ * second leg died on an expired quote, before any signature, kept both legs'
+ * budget because one leg had succeeded.
+ *
+ * When the counts disagree, some leg signed and then failed, and nothing here
+ * says which. Then this returns `undefined` and the whole reservation stands.
+ * Over-counting a ceiling costs an operator a refusal they can see and lift;
+ * under-counting hands an unattended loop room it has already spent.
  */
-function settleSpend(context: CommandContext, authorization: Authorized): void {
-  if (authorization.spend !== undefined && context.gate.stats.used === 0) {
-    const ledgers = context.ledgers();
-    ledgers.spend.release(authorization.spend.id);
-    ledgers.audit.append({ event: 'spend.released', id: authorization.spend.id }, context.now());
+function committedOf(
+  context: CommandContext,
+  legs: readonly NormalizedLeg[],
+  results: readonly (ExecuteManyResult | undefined)[] | undefined,
+): string | undefined {
+  const signed = context.gate.stats.used;
+  if (signed === 0) return '0';
+  // The call threw, so there is no per-leg account of what happened. Something
+  // was signed, and that is all this knows.
+  if (results === undefined) return undefined;
+  const succeeded = legs.map((leg, index) => (results[index]?.ok === true ? leg : undefined));
+  if (succeeded.filter((leg) => leg !== undefined).length !== signed) return undefined;
+  let total = 0n;
+  for (const leg of succeeded) {
+    if (leg === undefined || leg.sizeUnit !== 'WXUSD_BUDGET') continue;
+    total += parseDecimal(leg.size) ?? 0n;
   }
+  return formatDecimal(total);
+}
+
+/**
+ * Settle a budget reservation against what the write actually committed.
+ *
+ * A write that signed nothing gives all of it back — nothing can have been
+ * sent. Anything signed keeps its share, whatever happened next: a signed order
+ * whose fate is unknown must count against the budget.
+ *
+ * `committed` is how a batch says which share that is (ADR-0030). Omitted — the
+ * single-order case, where the gate's own count is the whole attribution, and
+ * the ambiguous batch, where there is nothing to attribute — the reservation is
+ * all-or-nothing exactly as before.
+ */
+function settleSpend(context: CommandContext, authorization: Authorized, committed?: string): void {
+  if (authorization.spend === undefined) return;
+  const id = authorization.spend.id;
+  const ledgers = context.ledgers();
+
+  if (context.gate.stats.used === 0 || committed === '0') {
+    ledgers.spend.release(id);
+    ledgers.audit.append({ event: 'spend.released', id }, context.now());
+    return;
+  }
+  if (committed === undefined) return;
+  // What this reservation holds — NOT `spend.total`, which is the scope's
+  // running total after it. Settling against that would compare one order's
+  // commitment with every order the scope ever authorized.
+  const reserved = parseDecimal(authorization.buyAmount ?? '0');
+  const actual = parseDecimal(committed);
+  if (reserved === null || actual === null || actual >= reserved) return;
+  ledgers.spend.settle(id, committed);
+  ledgers.audit.append(
+    { event: 'spend.settled', id, reserved: formatDecimal(reserved), committed },
+    context.now(),
+  );
 }
 
 /**
@@ -1114,7 +1177,7 @@ export async function orderExecuteMany(context: CommandContext): Promise<unknown
     auditWrite(context, 'order.execute-many', authorization, [], error);
     throw error;
   } finally {
-    settleSpend(context, authorization);
+    settleSpend(context, authorization, committedOf(context, legs, results));
   }
   auditWrite(
     context,

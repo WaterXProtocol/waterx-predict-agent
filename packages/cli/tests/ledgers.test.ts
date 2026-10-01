@@ -109,6 +109,67 @@ describe('a budget belongs to the scope it was written under', () => {
     expect(edited.spend.elsewhere('scope1_old')).toEqual({ scopes: 0, total: '0' });
   });
 
+  // A batch reserves once, before any leg is signed, because that is the only
+  // order in which the batch can be refused before it starts. `release` is then
+  // the wrong instrument for a batch that placed some of its legs: it is
+  // all-or-nothing, so one filled leg kept the budget of the legs that were
+  // never sent, for the life of the scope (ADR-0030).
+  describe('settling a reservation against what it committed', () => {
+    it('gives back the difference, and keeps counting what was committed', () => {
+      const path = ledgerPath();
+      const reserved = createFileLedgers(path).spend.reserve('scope1_a', '4.400000', '10.000000', NOW);
+      expect(reserved.total).toBe('4.4');
+
+      createFileLedgers(path).spend.settle(reserved.id, '2.200000');
+      // Another invocation sees it: this is a durable control, not a number
+      // held by the process that happened to place the batch.
+      expect(createFileLedgers(path).spend.total('scope1_a')).toBe('2.2');
+    });
+
+    it('is a release when nothing was committed', () => {
+      const path = ledgerPath();
+      const reserved = createFileLedgers(path).spend.reserve('scope1_a', '4.400000', '10.000000', NOW);
+      createFileLedgers(path).spend.settle(reserved.id, '0');
+      expect(createFileLedgers(path).spend.total('scope1_a')).toBe('0');
+      // One representation of "counts for nothing", so a reader does not have
+      // to know whether a zero got there by release or by settlement.
+      expect(createFileLedgers(path).spend.elsewhere('scope1_other')).toEqual({ scopes: 0, total: '0' });
+    });
+
+    it('never raises a reservation, whatever it is asked for', () => {
+      // The direction that matters. A reservation is what the ceiling was
+      // checked against; letting a settle exceed it would commit money past a
+      // ceiling nothing ever cleared.
+      const path = ledgerPath();
+      const reserved = createFileLedgers(path).spend.reserve('scope1_a', '4.000000', '10.000000', NOW);
+      createFileLedgers(path).spend.settle(reserved.id, '9.000000');
+      expect(createFileLedgers(path).spend.total('scope1_a')).toBe('4');
+    });
+
+    it('leaves an unparseable amount and a released reservation alone', () => {
+      const path = ledgerPath();
+      const reserved = createFileLedgers(path).spend.reserve('scope1_a', '4.000000', '10.000000', NOW);
+      // Budget is given back on evidence; a number nobody could read is none.
+      createFileLedgers(path).spend.settle(reserved.id, 'two and a bit');
+      expect(createFileLedgers(path).spend.total('scope1_a')).toBe('4');
+
+      createFileLedgers(path).spend.release(reserved.id);
+      createFileLedgers(path).spend.settle(reserved.id, '3.000000');
+      expect(createFileLedgers(path).spend.total('scope1_a'), 'a released reservation stayed released').toBe('0');
+    });
+
+    it('frees the ceiling it gave back, for the next invocation', () => {
+      // The whole point, stated as the thing an operator feels: budget that a
+      // never-sent leg was holding is budget the next order can use.
+      const path = ledgerPath();
+      const reserved = createFileLedgers(path).spend.reserve('scope1_a', '4.400000', '5.000000', NOW);
+      expect(() => createFileLedgers(path).spend.reserve('scope1_a', '2.200000', '5.000000', NOW)).toThrow(/POLICY_DENIED|cumulative/u);
+
+      createFileLedgers(path).spend.settle(reserved.id, '2.200000');
+      expect(createFileLedgers(path).spend.reserve('scope1_a', '2.200000', '5.000000', NOW).total).toBe('4.4');
+    });
+  });
+
   it('does not count a reservation that was released', () => {
     const path = ledgerPath();
     const ledgers = createFileLedgers(path);

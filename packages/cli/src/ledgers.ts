@@ -150,6 +150,22 @@ export interface SpendLedger {
   reserve(scope: string, amount: string, ceiling: string, now: Date): { id: string; total: string };
   /** Give back a reservation whose order was never signed. */
   release(id: string): void;
+  /**
+   * Reduce a reservation to what its write actually committed.
+   *
+   * A batch reserves once, for the whole intent, before any leg is signed —
+   * which is the only order that can refuse the batch before it starts. When
+   * some legs then sign and others never do, `release` is the wrong tool: it is
+   * all-or-nothing, so a batch with one filled leg kept the budget of the legs
+   * that were never sent, for the life of the scope (ADR-0030).
+   *
+   * It may only ever REDUCE. A settle that asked for more than was reserved
+   * would let a write commit money past a ceiling nothing ever cleared, so a
+   * larger amount is ignored rather than honoured. Settling to zero or less is a
+   * release, and is recorded as one, so there is a single representation of
+   * "this reservation counts for nothing".
+   */
+  settle(id: string, committed: string): void;
   /** What is reserved against `scope` right now. */
   total(scope: string): string;
   /**
@@ -178,6 +194,25 @@ function elsewhereIn(records: readonly SpendRecord[], scope: string): { scopes: 
     total += parseDecimal(record.amount) ?? 0n;
   }
   return { scopes: others.size, total: formatDecimal(total) };
+}
+
+/**
+ * One reservation, reduced to what it committed. Never raised.
+ *
+ * Reducing is safe in the only direction that matters: it gives back budget for
+ * money that provably did not leave. Raising would be the opposite — a write
+ * committing more than the amount its ceiling was checked against — so an
+ * amount at or above the reservation leaves the record exactly as it is.
+ */
+function settleRecord(record: SpendRecord, committed: string): SpendRecord {
+  const asked = parseDecimal(committed);
+  const reserved = parseDecimal(record.amount);
+  // An unparseable amount keeps the reservation whole. Budget is given back on
+  // evidence; a number nobody could read is not evidence.
+  if (asked === null || reserved === null || record.released) return record;
+  if (asked <= 0n) return { ...record, released: true };
+  if (asked >= reserved) return record;
+  return { ...record, amount: formatDecimal(asked) };
 }
 
 function sumOf(records: readonly SpendRecord[], scope: string): bigint {
@@ -263,6 +298,12 @@ export type AuditEvent =
     }
   | { readonly event: 'spend.reserved'; readonly id: string; readonly scope: string; readonly amount: string; readonly total: string }
   | { readonly event: 'spend.released'; readonly id: string }
+  /**
+   * A reservation reduced to what its write committed (ADR-0030). Both amounts
+   * are written: "reserved 4.4, committed 2.2" is the whole account of a batch
+   * that placed one leg of two, and the difference is what came back.
+   */
+  | { readonly event: 'spend.settled'; readonly id: string; readonly reserved: string; readonly committed: string }
   | {
       readonly event: 'account.adopted';
       readonly key: string;
@@ -416,6 +457,10 @@ export function createFileLedgers(
         file.update((state) => {
           state.spend = state.spend.map((record) => (record.id === id ? { ...record, released: true } : record));
         }),
+      settle: (id, committed) =>
+        file.update((state) => {
+          state.spend = state.spend.map((record) => (record.id === id ? settleRecord(record, committed) : record));
+        }),
       total: (scope) => formatDecimal(sumOf(file.read().spend, scope)),
       elsewhere: (scope) => elsewhereIn(file.read().spend, scope),
     },
@@ -452,6 +497,9 @@ export function createMemoryLedgers(): {
       reserve: (scope, amount, ceiling, now) => reserveInto(state.spend, scope, amount, ceiling, now),
       release: (id) => {
         state.spend = state.spend.map((record) => (record.id === id ? { ...record, released: true } : record));
+      },
+      settle: (id, committed) => {
+        state.spend = state.spend.map((record) => (record.id === id ? settleRecord(record, committed) : record));
       },
       total: (scope) => formatDecimal(sumOf(state.spend, scope)),
       elsewhere: (scope) => elsewhereIn(state.spend, scope),
