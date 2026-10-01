@@ -1,7 +1,7 @@
 /**
  * Shared fixtures for direct mode: the mainnet deployment document (the
  * consolidated `schema_version: 2` waterx-config, as `main-v2` serves it), and
- * bytes built by the same `@waterx/sdk` 6.0.0 builder the backend uses.
+ * bytes built by the same `@waterx/sdk` 6.x builder (6.1.0 pinned) the backend uses.
  */
 import { readFileSync } from 'node:fs';
 

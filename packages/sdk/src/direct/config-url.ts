@@ -10,6 +10,18 @@
  * appending to it would 404 as `…/mainnet.json/mainnet.json`), a query or
  * fragment (appending would land inside it), a non-https scheme, and GitHub
  * (rate-limited, and forbidden by the config repo; the CDN is the source).
+ *
+ * Those rules are the fleet's, and their one reference implementation is
+ * `@waterx/sdk`'s `waterxConfigUrlFromRoot`. This package does not import it at
+ * runtime: `@waterx/sdk` peers on `@mysten/sui` / `@mysten/bcs` and declares
+ * `engines.node >=22`, and this SDK publishes with one runtime dependency and a
+ * Node 20 floor (AGENTS.md "Runtime and dependency policy", held by
+ * `tests/workspace.test.ts`). So the rules are restated here and held to the
+ * SDK helper by `tests/config-url.test.ts`, which runs the same inputs through
+ * both and requires the same verdict and the same URL. What is owned here and
+ * nowhere else: the per-network default, the retired names, the error class,
+ * and one allowance the SDK does not make — plain `http://` to a loopback host,
+ * so `cli:bundle:check` can serve the document from its local stub.
  */
 import type { DirectNetwork } from './deployment.ts';
 
@@ -58,10 +70,9 @@ export function normalizeWaterxConfigRoot(raw: string): string {
   if (trimmed === '') {
     throw new WaterxConfigUrlError(`${WATERX_CONFIG_URL_ENV} is empty; set it to a CDN ROOT such as ${EXAMPLE}, or leave it unset for the network's default.`);
   }
-  const root = trimmed.replace(/\/+$/u, '');
   let url: URL;
   try {
-    url = new URL(root);
+    url = new URL(trimmed);
   } catch {
     throw new WaterxConfigUrlError(`${WATERX_CONFIG_URL_ENV} is not a URL — got "${raw}". Set it to a CDN ROOT such as ${EXAMPLE}.`);
   }
@@ -76,7 +87,8 @@ export function normalizeWaterxConfigRoot(raw: string): string {
       `${WATERX_CONFIG_URL_ENV} must not point at ${hostname} — got "${raw}". GitHub is rate-limited and forbidden by the config repo; use the waterx-config CDN, e.g. ${EXAMPLE}.`,
     );
   }
-  if (url.pathname.replace(/\/+$/u, '').toLowerCase().endsWith('.json')) {
+  const path = url.pathname.replace(/\/+$/u, '');
+  if (path.toLowerCase().endsWith('.json')) {
     throw new WaterxConfigUrlError(
       `${WATERX_CONFIG_URL_ENV} must be a CDN ROOT with no filename — got "${raw}". Set it to e.g. ${EXAMPLE}; <network>.json is appended.`,
     );
@@ -86,7 +98,9 @@ export function normalizeWaterxConfigRoot(raw: string): string {
       `${WATERX_CONFIG_URL_ENV} must be a CDN ROOT with no query or fragment — got "${raw}". Set it to e.g. ${EXAMPLE}; <network>.json is appended.`,
     );
   }
-  return root;
+  // Composed from the parsed URL, as `waterxConfigUrlFromRoot` does, so the two
+  // agree byte for byte (host case, default port).
+  return `${url.origin}${path}`;
 }
 
 /**

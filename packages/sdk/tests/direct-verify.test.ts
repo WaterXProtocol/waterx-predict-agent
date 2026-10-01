@@ -1,9 +1,9 @@
 /**
  * The verifier, against transactions built by the SAME builder the backend uses.
  *
- * `@waterx/sdk` 6.0.0 is the version the backend builds with — the first that
- * reads the consolidated `schema_version: 2` waterx-config — and it is a dev
- * dependency here only. The shared objects its builder
+ * `@waterx/sdk` 6.1.0 is pinned here: the 6.x line the backend builds with, the
+ * first that reads the consolidated `schema_version: 2` waterx-config — and it is
+ * a dev dependency here only. The shared objects its builder
  * leaves unresolved are filled in offline, so these are the bytes the backend
  * would return minus the object versions — which the verifier does not read.
  *

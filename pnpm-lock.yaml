@@ -154,8 +154,8 @@ importers:
         specifier: ^24.12.0
         version: 24.13.3
       '@waterx/sdk':
-        specifier: 6.0.0
-        version: 6.0.0(@mysten/bcs@2.1.1)(@mysten/sui@2.26.2(typescript@5.9.3))
+        specifier: 6.1.0
+        version: 6.1.0(@mysten/bcs@2.1.1)(@mysten/sui@2.26.2(typescript@5.9.3))
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
@@ -446,8 +446,8 @@ packages:
     resolution: {integrity: sha512-e47/3bCOyeHZnHCLeDbUDRe2z562sLnbaIjtQ5gcvKVcB/FuhzHYg1mxTeWCJxT7V8Of9E7KJwWSSXb6dqZ6jw==}
     engines: {node: '>=18'}
 
-  '@waterx/sdk@6.0.0':
-    resolution: {integrity: sha512-2H9yIbY+Pm4+GYBkOLn1DRxFpPg3wYm7AlznnCQ8nVaOHtxkHL8JECbJrv7EnNWyG1d2kcOBAtb2qUSJYkK+GA==}
+  '@waterx/sdk@6.1.0':
+    resolution: {integrity: sha512-5Y6KEHOE1/NuBsgSV4VuHe1WGiuFu4QmXezVP4LIiRByd0OLICX9Od9twQ/M50kn7YcZsAWjmse7ykPr+cOYWg==}
     engines: {node: '>=22'}
     peerDependencies:
       '@mysten/bcs': ^1.9.0
@@ -1026,7 +1026,7 @@ snapshots:
     dependencies:
       zod: 3.25.76
 
-  '@waterx/sdk@6.0.0(@mysten/bcs@2.1.1)(@mysten/sui@2.26.2(typescript@5.9.3))':
+  '@waterx/sdk@6.1.0(@mysten/bcs@2.1.1)(@mysten/sui@2.26.2(typescript@5.9.3))':
     dependencies:
       '@mysten/bcs': 2.1.1
       '@mysten/sui': 2.26.2(typescript@5.9.3)

@@ -843,6 +843,9 @@ read is `WATERX_CONFIG_URL`, a CDN **ROOT** with no filename; the client reads
 Pass a different root as `waterxConfigUrl`. A value ending in `.json`, with a
 query or fragment, on plain `http://` (loopback excepted) or on a GitHub host is
 refused with `WaterxConfigUrlError` when the client is built — never rewritten.
+These are the fleet's rules as `@waterx/sdk`'s `waterxConfigUrlFromRoot`
+implements them (held to it by a parity test; it is not a runtime dependency),
+plus one local allowance: plain `http://` to a loopback host, for a local stub.
 `waterxConfigDocumentUrl(network, root?)`, `normalizeWaterxConfigRoot(root)` and
 `assertNoRetiredWaterxConfigUrlEnv(env)` are exported for hosts that read the
 variable themselves.

@@ -38,16 +38,11 @@ describe('WATERX_CONFIG_URL', () => {
     );
   });
 
-  it('refuses a document URL, a GitHub host and plain http', () => {
-    for (const value of [
-      'https://main-v2.waterx-config.pages.dev/mainnet.json',
-      'https://raw.githubusercontent.com/WaterXProtocol/waterx-config/main',
-      'http://main-v2.waterx-config.pages.dev',
-    ]) {
-      const error = refusal(() => load({ WATERX_CONFIG_URL: value }));
-      expect(error.code).toBe('CONFIG_INVALID');
-      expect(error.message).toMatch(/WATERX_CONFIG_URL/u);
-    }
+  it('refuses an invalid root at load as CONFIG_INVALID, naming the variable', () => {
+    // The URL rules themselves are the SDK's and tested there; this is the mapping.
+    const error = refusal(() => load({ WATERX_CONFIG_URL: 'https://main-v2.waterx-config.pages.dev/mainnet.json' }));
+    expect(error.code).toBe('CONFIG_INVALID');
+    expect(error.message).toMatch(/WATERX_CONFIG_URL/u);
   });
 
   it('refuses the retired environment names instead of ignoring them', () => {

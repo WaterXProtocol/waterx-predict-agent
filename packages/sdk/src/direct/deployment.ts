@@ -13,7 +13,7 @@
  * IDENTITY (`published_at`, `original_id`, `version`) stays under `packages.*`,
  * every shared-object id lives under `objects.<domain>.*`. The legacy
  * per-package shape (ids beside `published_at`, no `schema_version`) is refused
- * outright rather than read half-right: `@waterx/sdk` 6.0.0 — the builder the
+ * outright rather than read half-right: `@waterx/sdk` 6.x — the builder the
  * backend uses — rejects it at `create()` too.
  *
  * Fetched rather than shipped: a package upgrade moves `published_at`, and a
