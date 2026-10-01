@@ -169,7 +169,7 @@ export async function runtimeConfigure(context: CommandContext): Promise<unknown
   const written = changes.filter((change) => change.status === 'WRITTEN');
   if (written.length > 0) file.write(`${JSON.stringify(next, null, 2)}\n`);
   // `next` is what reads these back and says what is still missing.
-  context.pointTo('waterx-predict next');
+  context.pointTo(`${context.invokedAs} next`);
 
   /**
    * A value the environment supplies wins over the file (see `config.ts`), so a

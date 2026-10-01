@@ -762,6 +762,9 @@ function createContext(
       signal: (atLeastMs?: number) => deadline(Math.max(config.timeoutMs, atLeastMs ?? 0)),
       exitAs: options.exitAs,
       pointTo: options.pointTo,
+      // Resolved once: a PATH lookup per printed command would answer the same
+      // thing every time and cost a syscall each.
+      invokedAs: (io.findExecutable?.(CLI_NAME) ?? null) === null ? `npx --no ${CLI_NAME}` : CLI_NAME,
       diagnostic,
       nodeVersion: io.nodeVersion,
       now: io.now,
