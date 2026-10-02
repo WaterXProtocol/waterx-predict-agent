@@ -96,11 +96,29 @@ describe('the skill document', () => {
     expect(text).toContain('is not an API error code');
   });
 
-  it('sends a reader to the shipped rules by their installed path', () => {
-    // A path relative to this repository is unusable to the reader this
-    // document is for: they have a `node_modules` directory and no checkout.
-    expect(renderAgentSkill()).toContain(
-      'node_modules/@waterx/predict-agent-sdk/AGENT_INSTRUCTIONS.md',
+  it('sends a reader to the shipped rules without naming an install layout', () => {
+    /**
+     * This test used to REQUIRE the path it now forbids.
+     *
+     * The reasoning was right as far as it went — a path relative to the
+     * repository is useless to somebody who has a `node_modules` and no checkout
+     * — and it picked the layout of ONE install. The documented setup is
+     * `npm install github:…`, which installs the repository: there is no
+     * `node_modules/@waterx/predict-agent-sdk/` in it, so the first instruction an
+     * external agent is given was a file it could not open. The test had pinned
+     * that as the specification.
+     *
+     * `AGENT_INSTRUCTIONS.md` ships beside `SKILL.md` in every shape, which is
+     * what this document already said further down.
+     */
+    const text = renderAgentSkill();
+    expect(text).toMatch(/AGENT_INSTRUCTIONS\.md`?,? shipped beside this file/u);
+    // Scoped to the rules' own path. One other `node_modules` mention stands and
+    // should: it names the schema package and says in the same breath that the
+    // file "exists only if you installed it too. Check before you read it" — a
+    // hedged pointer is not the same defect as an unconditional one.
+    expect(text, 'the rules must not be behind an install layout').not.toMatch(
+      /node_modules\/[^\s`]*AGENT_INSTRUCTIONS/u,
     );
   });
 

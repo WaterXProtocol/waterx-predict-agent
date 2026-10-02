@@ -34,6 +34,8 @@
  * against the server's own `effectiveBuyCapacity`, so the local ceiling can never
  * authorize more than the exchange currently allows.
  */
+import { chooseAPolicy } from './capabilities.ts';
+import { CLI_NAME } from './version.ts';
 import { createHash } from 'node:crypto';
 
 import { CliError } from './errors.ts';
@@ -236,6 +238,13 @@ export interface WriteRequest {
   /** For the delegated-auto capacity check. Undefined when it was not read. */
   readonly effectiveBuyCapacity?: string | undefined;
   readonly now: Date;
+  /**
+   * How this CLI is invoked here, so a refusal names a command that runs.
+   *
+   * Optional, and absent means the `npx --no` form: that one works after
+   * `npm install` whatever the install shape, where the bare name does not.
+   */
+  readonly invokedAs?: string | undefined;
 }
 
 export interface WriteAuthorization {
@@ -255,7 +264,7 @@ export interface WriteAuthorization {
   readonly checks: readonly string[];
 }
 
-const denyReadOnly = (command: string): CliError =>
+const denyReadOnly = (command: string, invokedAs: string): CliError =>
   new CliError(
     'POLICY_DENIED',
     `The execution policy is read-only, so \`${command}\` was refused locally. Nothing was sent, no quote was minted and no signer process was started.`,
@@ -265,8 +274,7 @@ const denyReadOnly = (command: string): CliError =>
       // A command, because this reaches a caller that cannot `export`
       // anything — and the CHOOSER, because which mode to be in is the
       // operator's decision and needs all three in front of it (ADR-0021).
-      remedy:
-        'Run `waterx-predict policy` for the three modes and what each allows. The operator takes one with `waterx-predict policy set --mode <mode> --yes`.',
+      remedy: chooseAPolicy(invokedAs),
     },
   );
 
@@ -304,7 +312,7 @@ export function authorizeWrite(
   policy: ExecutionPolicy,
   request: WriteRequest,
 ): WriteAuthorization {
-  if (policy.mode === 'read-only') throw denyReadOnly(request.command);
+  if (policy.mode === 'read-only') throw denyReadOnly(request.command, request.invokedAs ?? `npx --no ${CLI_NAME}`);
 
   const expected = writeIntentDigest(request.legs);
 

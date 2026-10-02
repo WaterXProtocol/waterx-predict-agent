@@ -126,8 +126,8 @@ Run `npm install github:WaterXProtocol/waterx-predict-agent`, then `npx --no wat
 
 That installs both binaries from this repository (ADR-0019): npm clones it,
 the root `prepare` builds the workspace with pnpm and assembles what the two
-binaries run, and npm installs the result. It needs a git that can read this
-private repository, and about a minute to build.
+binaries run, and npm installs the result. It needs about a minute to build, and
+nothing else: the repository is public, so no credential is involved.
 
 **npm will warn about that `prepare` script.** Recent npm prints `1 package has
 install scripts not yet covered by allowScripts` and suggests
@@ -163,8 +163,11 @@ or the account. An operator who wants the key sealed runs `keystore init` and
 first half is the two operator artifacts (`pnpm cli:bundle`): the CLI, and the
 keystore signer it needs, whose steps `next` hands to whoever may run them. Both are built and walked to READY against a local stub
 in CI. ADR-0010 and ADR-0012 are Accepted, so a release may carry them;
-**none has been made yet**. `npm install github:…` is not an installation
-path — the repository root is a private workspace with no binary.
+**none has been made yet**, so `npm install github:…` — the sentence at the top of
+this file — is how both binaries are installed until one is (ADR-0019). The root
+package is `private` in the npm sense and is never published to a registry; its
+`prepare` builds the workspace and exposes the two binaries, which is what makes
+the git install work.
 
 **The CLI trades in direct mode by default** (ADR-0013), the way the perp
 agent does: the public WaterX routes, the agent wallet as the owner's
@@ -218,6 +221,16 @@ setup step. The SDK library still requires a deployment to be named.
 
 ## Safety
 
-Never point this at mainnet funds, production tokens or production order
-endpoints during development. The API allowance is a WaterX policy, not an
-on-chain security boundary, and delegation is authorized outside this repository.
+**This runtime reads production by default.** With no deployment named it is
+mainnet (ADR-0011), so the instruction here used to forbid what the default does.
+Two different things:
+
+- **Reading** production is the default and is deliberate. Point it elsewhere with
+  `WATERX_PREDICT_ENVIRONMENT=testnet` when you want to.
+- **Spending** on it is not. The policy starts at `read-only` and only an operator
+  lifts it, so no amount of agent instruction places an order; and during
+  development nothing should lift it against mainnet funds, production tokens or
+  production order endpoints.
+
+The API allowance is a WaterX policy, not an on-chain security boundary, and
+delegation is authorized outside this repository.

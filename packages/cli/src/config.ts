@@ -17,6 +17,8 @@
  * value — an error message that quotes the secret it is objecting to has leaked
  * it to every log the message reaches.
  */
+import { chooseAPolicy } from './capabilities.ts';
+import { CLI_NAME, invocationOf } from './version.ts';
 import {
   assertNoRetiredWaterxConfigUrlEnv,
   normalizeWaterxConfigRoot,
@@ -164,6 +166,15 @@ export interface ConfigSources {
   timeoutMs?: number | undefined;
   /** From `--policy`. May only narrow the configured policy. */
   policy?: string | undefined;
+  /**
+   * Resolves a binary on PATH, so a printed command is spelled for THIS machine.
+   *
+   * Here because the read-only warning rides on every answer and names two
+   * commands. It was spelled for a global install, which the documented setup is
+   * not — and the invocation was threaded through the structured suggestions
+   * while the prose kept a hard-coded name.
+   */
+  findExecutable?(name: string): string | null;
 }
 
 interface FileConfig {
@@ -487,7 +498,7 @@ export function loadConfig(sources: ConfigSources): ResolvedConfig {
       // The command, not an `export`: this warning rides on EVERY answer, so it
       // is one of the most-read surfaces here, and a tool host cannot export
       // anything into a shell that outlives its own process (ADR-0021).
-      'The execution policy defaults to read-only on mainnet: reads and previews work, and no order is placed. Run `waterx-predict policy` for the three modes and what each allows; the operator takes one with `waterx-predict policy set --mode <mode> --yes`.',
+      `The execution policy defaults to read-only on mainnet: reads and previews work, and no order is placed. ${chooseAPolicy(invocationOf(sources.findExecutable?.(CLI_NAME) ?? null))}`,
     );
   }
   if (policy.mode === 'delegated-auto') {

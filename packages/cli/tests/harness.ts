@@ -89,8 +89,20 @@ export interface InvokeOptions {
   readonly nowIso?: string;
   /** Command names that resolve on PATH. Absent means none do. */
   readonly executables?: readonly string[];
-  /** False for a local install: this CLI's own name does not resolve on PATH. */
-  readonly cliOnPath?: boolean;
+  /**
+   * Where this CLI's own name resolves.
+   *
+   * `true` or absent: a global install, outside `node_modules`, so the bare name
+   * is what a person types. `false`: it does not resolve at all. `'local'`: it
+   * resolves INSIDE `node_modules/.bin`, which is what `npx --no waterx-predict`
+   * looks like from inside itself — on PATH for the duration of that one command
+   * and nowhere afterwards.
+   *
+   * The third case is the one that was missing, and it is the one that was wrong:
+   * the lookup succeeded, so the bare name was printed, and it is the exact
+   * situation where the bare name fails for whoever runs the next command.
+   */
+  readonly cliOnPath?: boolean | 'local';
   /**
    * Answers any request `routes` does not name. Direct mode needs it: its order
    * builds are real transaction bytes, made per request, not canned bodies.
@@ -417,7 +429,11 @@ export async function invoke(
     // the keystore. `cliOnPath: false` is the local install, where the name is
     // on PATH inside one `npx` command and nowhere afterwards.
     findExecutable: (name) => {
-      if (name === CLI_NAME) return options.cliOnPath === false ? null : `/usr/local/bin/${name}`;
+      if (name === CLI_NAME) {
+        if (options.cliOnPath === false) return null;
+        if (options.cliOnPath === 'local') return `/repo/node_modules/.bin/${name}`;
+        return `/usr/local/bin/${name}`;
+      }
       return options.executables?.includes(name) === true ? `/usr/local/bin/${name}` : null;
     },
     readFile: (path) => files[path] ?? null,

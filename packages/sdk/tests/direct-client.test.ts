@@ -1341,3 +1341,143 @@ describe('the Runner’s two-step write', () => {
     expect((await client.getMarket(id)).market.status).toBe('CLOSED');
   });
 });
+
+/**
+ * A search that lands on a hub.
+ *
+ * `/predict/browse` returns TWO shapes of row and this client read one of them. A
+ * `hub` names a GROUP of markets and carries no market of its own, so a search
+ * for `btc-dip-45000-y-2026` — which matches the hub grouping the Bitcoin
+ * threshold markets — projected nothing, and the answer was AMBIGUOUS with
+ * nothing to choose from. The same endpoint WITHOUT a query returned that market
+ * in full, which is why `list` showed it with a live quote and `search` could not
+ * find it at all.
+ *
+ * Following a hub is dereferencing, not matching: the server said this text names
+ * that group, and this asks the server what is in it.
+ */
+describe('a hub in the search results', () => {
+  const hub = { kind: 'hub', event: { id: 'ev-1', slug: 'btc-below-y-2026', title: 'Bitcoin below price' } };
+  /**
+   * Each market gets its OWN round and on-chain id.
+   *
+   * The first version of these fixtures shared one `round`, and the projected
+   * `marketId` comes from `trade.marketId` — so two different catalog markets
+   * collapsed to one id, the dedup removed one, and three tests failed for a
+   * reason that was in the fixture rather than in the code.
+   */
+  const roundFor = (n: number) => ({
+    ...round,
+    id: `${String(n).padStart(8, '0')}-963e-4b67-8978-7bc0b27d6867`,
+    sides: [
+      { key: 'up', oddsCents: 43, trade: { marketId: normalizeSuiAddress(`0x${String(n).repeat(64).slice(0, 64)}`), selection: 'YES' } },
+      { key: 'down', oddsCents: 58, trade: { marketId: normalizeSuiAddress(`0x${String(n).repeat(64).slice(0, 64)}`), selection: 'NO' } },
+    ],
+  });
+  const inHub = (slug: string, n: number) => ({
+    kind: 'market',
+    market: { id: `cat-${String(n)}`, slug, title: null, category: 'crypto', display: { question: slug } },
+    nextRound: roundFor(n),
+  });
+
+  it('follows it, so its markets become candidates instead of nothing', async () => {
+    const { client } = setup({
+      overrides: {
+        'GET predict/browse': () => ({ data: { items: [hub], nextCursor: null } }),
+        'GET predict/events/btc-below-y-2026': () => ({
+          data: { items: [inHub('btc-dip-45000-y-2026', 4), inHub('btc-dip-55000-y-2026', 5)] },
+        }),
+      },
+    });
+    const { markets, resolution } = await client.searchMarkets({ search: 'btc dip' });
+    expect(markets.length).toBeGreaterThanOrEqual(2);
+    expect(resolution?.status).toBe('AMBIGUOUS');
+    // The number a caller can act on. It counted the server's ROWS, so a match on
+    // one hub reported `matchCount: 1` and offered nothing to choose from — a
+    // number that was true about a thing nobody can trade.
+    expect(resolution?.matchCount).toBeGreaterThanOrEqual(2);
+  });
+
+  it('resolves when the query IS one of the expanded markets’ handles', async () => {
+    // Pasting a slug that `list` printed must not make somebody disambiguate
+    // between the twelve markets of the group it belongs to.
+    const { client } = setup({
+      overrides: {
+        'GET predict/browse': () => ({ data: { items: [hub], nextCursor: null } }),
+        'GET predict/events/btc-below-y-2026': () => ({
+          data: { items: [inHub('btc-dip-45000-y-2026', 4), inHub('btc-dip-55000-y-2026', 5)] },
+        }),
+      },
+    });
+    const { markets, resolution } = await client.searchMarkets({ search: 'btc-dip-45000-y-2026' });
+    expect(resolution?.status).toBe('RESOLVED');
+    // WHICH market it chose, checked through the market the id belongs to: the
+    // projected `marketId` is the on-chain one, not the handle that was typed.
+    const chosen = markets.find((m) => m.marketId === resolution?.marketId);
+    expect(chosen?.aliases).toContain('btc-dip-45000-y-2026');
+  });
+
+  it('still refuses to resolve a text that names several markets', async () => {
+    // The guard on the rule above. An exact handle resolves; a group name does
+    // not, however few markets it holds.
+    const { client } = setup({
+      overrides: {
+        'GET predict/browse': () => ({ data: { items: [hub], nextCursor: null } }),
+        'GET predict/events/btc-below-y-2026': () => ({
+          data: { items: [inHub('btc-dip-45000-y-2026', 4), inHub('btc-dip-55000-y-2026', 5)] },
+        }),
+      },
+    });
+    const { resolution } = await client.searchMarkets({ search: 'bitcoin below price' });
+    expect(resolution?.status).toBe('AMBIGUOUS');
+    expect(resolution?.marketId).toBeNull();
+  });
+
+  it('counts a market once when it arrives both directly and through a hub', async () => {
+    const { client } = setup({
+      overrides: {
+        'GET predict/browse': () => ({ data: { items: [hub, inHub('btc-dip-45000-y-2026', 4)], nextCursor: null } }),
+        'GET predict/events/btc-below-y-2026': () => ({ data: { items: [inHub('btc-dip-45000-y-2026', 4)] } }),
+      },
+    });
+    const { markets } = await client.searchMarkets({ search: 'btc' });
+    const ids = markets.map((m) => m.marketId);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it('skips a hub it cannot read rather than failing the whole search', async () => {
+    // One unavailable group must not take the search down with it. Its markets
+    // are missing from the candidates, which is the state before this existed.
+    const { client } = setup({
+      overrides: {
+        'GET predict/browse': () => ({ data: { items: [hub, inHub('other-market', 7)], nextCursor: null } }),
+        'GET predict/events/btc-below-y-2026': () => {
+          throw new Error('unavailable');
+        },
+      },
+    });
+    const { markets } = await client.searchMarkets({ search: 'btc' });
+    expect(markets.some((m) => m.aliases.includes('other-market'))).toBe(true);
+  });
+
+  it('bounds how many hubs one search follows', async () => {
+    // A query matching many groups must not become one request per group without
+    // limit. The rest stay unexpanded and the answer says AMBIGUOUS.
+    const many = Array.from({ length: 20 }, (_, i) => ({
+      kind: 'hub',
+      event: { id: `ev-${String(i)}`, slug: `hub-${String(i)}`, title: 'g' },
+    }));
+    const { client, waterx } = setup({
+      overrides: {
+        'GET predict/browse': () => ({ data: { items: many, nextCursor: null } }),
+        ...Object.fromEntries(
+          many.map((h) => [`GET predict/events/${h.event.slug}`, () => ({ data: { items: [] } })]),
+        ),
+      },
+    });
+    await client.searchMarkets({ search: 'x' });
+    const followed = waterx.calls.filter((c) => c.path.startsWith('predict/events/')).length;
+    expect(followed).toBeGreaterThan(0);
+    expect(followed).toBeLessThanOrEqual(6);
+  });
+});

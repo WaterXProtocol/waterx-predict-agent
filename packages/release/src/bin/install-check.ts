@@ -144,7 +144,16 @@ const main = (argv: readonly string[]): number => {
       `bare: the first step the agent may run was ${JSON.stringify(own[0])} — a host cannot finish setup from that`,
     );
     expect(
-      own[1] === 'waterx-predict configure --fromKeystore',
+      // `npx --no`, like the keystore step above it.
+      //
+      // This asserted the BARE name, in a check that installs a tarball into a
+      // project and then invokes the CLI through `npx --no` itself — so it was
+      // requiring the one spelling that fails here, and requiring the prefix for
+      // the keystore in the same list. That inconsistency is the defect an
+      // external tester reported: `node_modules/.bin` is on PATH for the duration
+      // of one `npx` command and nowhere afterwards, so the bare form is
+      // `command not found` for whoever runs what they were just handed.
+      own[1] === 'npx --no waterx-predict configure --fromKeystore',
       `bare: the second step the agent may run was ${JSON.stringify(own[1])}`,
     );
     expect(

@@ -44,6 +44,7 @@
  * that treated "you are not set up yet" as a crash would never reach the step
  * that sets it up.
  */
+import { chooseAPolicy } from '../capabilities.ts';
 import {
   buildAuthorizationUrl,
   describeOnboarding,
@@ -818,7 +819,7 @@ function decide(facts: NextFacts): NextAnswer {
         facts.readOnlyByDefault === true
           ? ' This runtime is read-only by default on mainnet (nobody has chosen a policy).'
           : ' The execution policy is read-only.'
-      } Choosing what it may sign is the operator\u2019s: \`waterx-predict policy\` lists the three modes with what each allows, and \`waterx-predict policy set --mode <mode> --yes\` takes one. Reads still work.`,
+      } Choosing what it may sign is the operator\u2019s. ${chooseAPolicy(facts.binary)} Reads still work.`,
       suggestions,
     );
   }

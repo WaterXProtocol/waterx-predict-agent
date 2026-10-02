@@ -1116,3 +1116,51 @@ describe('the invocation this runtime prints', () => {
     expect(bare, 'a bare CLI command beside npx-prefixed keystore commands').toEqual([]);
   });
 });
+
+describe('a command printed from inside an npx invocation', () => {
+  /**
+   * The documented setup is `npm install`, which puts the binary in
+   * `node_modules/.bin` — on PATH for the duration of one `npx --no
+   * waterx-predict …` and nowhere afterwards.
+   *
+   * The first fix asked only whether the name was on PATH. Inside that npx
+   * command it IS, so the bare name was printed — the one invocation that fails
+   * for whoever runs the next command. The condition was true at the single
+   * moment it needed to be false, which is why the local-install tests passed:
+   * they modelled "does not resolve" and not "resolves, in there".
+   */
+  const bareIn = (document: string): string[] =>
+    [...document.matchAll(/(?<!npx --no )(?<![\w/.-])waterx-predict(?:-keystore)? [a-z]/gu)].map((m) => m[0]);
+
+  it('prints no bare invocation anywhere in the answer', async () => {
+    const result = await invoke(['next'], { env: {}, cliOnPath: 'local' });
+    const document = JSON.stringify(result.stdout);
+    // Every mention must carry the prefix. Checked over the WHOLE answer rather
+    // than over the suggestions, because the defect was prose that no structured
+    // field passed through.
+    expect(bareIn(document), document.slice(0, 400)).toEqual([]);
+  });
+
+  it('and not in `meta.nextCommand`, which rides on every answer', async () => {
+    // A second command, because the first version of this test checked only
+    // `next` — and `next` names its own `nextCommand`, so the bare DEFAULT was
+    // invisible to it. Every command that does not name one carried it, which is
+    // most of them, on the field a tool host reads every time.
+    const result = await invoke(['market', 'get', '--marketId', 'wxp1.bad'], { env: {}, cliOnPath: 'local' });
+    expect(bareIn(JSON.stringify(result.stdout))).toEqual([]);
+  });
+
+  it('still prints the bare name for a global install', async () => {
+    // The guard on the test above: prefixing unconditionally would be wrong the
+    // other way round.
+    //
+    // Scoped to THIS CLI's own commands. The keystore is a different binary with
+    // its own lookup, and `npx --no waterx-predict-keystore` is the right answer
+    // for it when it is not installed — asserting `npx --no` appears nowhere
+    // would be asserting that another binary's absence goes unreported.
+    const result = await invoke(['next'], { env: {}, cliOnPath: true });
+    const document = JSON.stringify(result.stdout);
+    const bare = [...document.matchAll(/(?<!npx --no )(?<![\w/.-])waterx-predict (?!-)[a-z]/gu)];
+    expect(bare.length, 'a global install should print its own name plainly').toBeGreaterThan(0);
+  });
+});

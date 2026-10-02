@@ -90,7 +90,9 @@ import {
   type PublicActivityResponse,
   type PublicBet,
   type PublicBetsResponse,
+  type PublicBrowseItem,
   type PublicBrowseResponse,
+  type PublicEventResponse,
   type PublicCatalogMarket,
   type PublicDelegatedResponse,
   type PublicAccount,
@@ -282,6 +284,15 @@ const apiError = (
   details?: Record<string, unknown>,
 ): PredictAgentApiError =>
   new PredictAgentApiError(0, { code, message, retryable: false, ...(details === undefined ? {} : { details }) });
+
+/**
+ * How many hubs one search follows.
+ *
+ * A hub is one extra request. Six covers every query seen so far — `btc` matches
+ * eight items of which three are hubs — and a query that matches more is reported
+ * as AMBIGUOUS with what was found rather than turned into fifty round trips.
+ */
+const HUBS_FOLLOWED = 6;
 
 const PHASE_STATUS: Readonly<Record<string, PredictMarketStatus>> = {
   scheduled: 'PREGAME',
@@ -880,6 +891,39 @@ export class PredictDirectClient {
   }
 
   /**
+   * The markets a hub groups, fetched one request per hub.
+   *
+   * Bounded, and the bound is a refusal to make a search unbounded rather than a
+   * guess at a good number: a query matching many hubs expands the first few and
+   * the rest stay as they were, which is reported as AMBIGUOUS with the
+   * candidates that were found. Silently expanding fifty would turn one command
+   * into fifty requests.
+   *
+   * A hub that cannot be read is skipped, not raised. Its markets are missing
+   * from the candidates, which is the state before this existed, and a search
+   * that fails entirely because one group is unavailable would be worse.
+   */
+  private async expandHubs(
+    items: readonly PublicBrowseItem[],
+    signal?: AbortSignal,
+  ): Promise<PublicBrowseItem[]> {
+    const slugs = items.flatMap((item) =>
+      item.market === undefined && item.event?.slug !== undefined ? [item.event.slug] : [],
+    );
+    if (slugs.length === 0) return [];
+    const out: PublicBrowseItem[] = [];
+    for (const slug of slugs.slice(0, HUBS_FOLLOWED)) {
+      try {
+        const event = await this.http.get<PublicEventResponse>(R.event(slug), {}, signal);
+        out.push(...event.items);
+      } catch {
+        // Skipped. See above: one unreadable group must not fail the search.
+      }
+    }
+    return out;
+  }
+
+  /**
    * The catalog, from `/predict/browse`, one market per on-chain market of each
    * listed round. `search` is matched by the SERVER (`q`); the resolution says
    * RESOLVED only when exactly one market came back AND the server said there
@@ -892,13 +936,30 @@ export class PredictDirectClient {
       { limit, ...(query.search === undefined ? {} : { q: query.search }) },
       signal,
     );
-    const rounds = page.items.flatMap((item) => (item.nextRound?.id === undefined ? [] : [item.nextRound.id]));
+    // Two shapes come back, and reading only one of them was B1. A `hub` names a
+    // GROUP of markets and carries no market of its own, so a search that landed
+    // on one yielded nothing to resolve against — while the same endpoint without
+    // a query returned those markets in full, which is why `list` showed them
+    // with live quotes and `search` could not find them.
+    //
+    // Following a hub is dereferencing, not matching: the server said this text
+    // names that group, and this asks the server what is in it. No text is
+    // compared here.
+    const items = [...page.items, ...(await this.expandHubs(page.items, signal))];
+    const rounds = items.flatMap((item) => (item.nextRound?.id === undefined ? [] : [item.nextRound.id]));
     const boards = await this.boards(rounds, signal);
-    let markets = page.items.flatMap((item) =>
+    const seen = new Set<string>();
+    let markets = items.flatMap((item) =>
       item.market === undefined || item.nextRound === undefined || item.nextRound === null
         ? []
         : this.project(item.market, item.nextRound, boards),
-    );
+    ).filter((market) => {
+      // A hub's markets can also arrive as their own rows, so the two sources
+      // overlap. Deduped by the id an agent would trade, not by position.
+      if (seen.has(market.marketId)) return false;
+      seen.add(market.marketId);
+      return true;
+    });
     if (query.category !== undefined) {
       const wanted = query.category.toLowerCase();
       markets = markets.filter((market) => market.category.toLowerCase() === wanted);
@@ -924,18 +985,42 @@ export class PredictDirectClient {
     // of them means the caller got the name wrong.
     const matched = page.items.length;
     const more = page.nextCursor !== null && page.nextCursor !== undefined;
+    const normalized = query.search.trim().toLowerCase();
     // All three, and the third is the one that was missing: the server matched
     // exactly one thing, no page follows it, and that thing survived into
     // exactly one market here.
-    const unique = matched === 1 && !more && markets.length === 1;
+    const singleRow = matched === 1 && !more && markets.length === 1;
+
+    // Or the caller named a market by an identifier the server itself supplies.
+    //
+    // This is an exact equality against `marketId` and the slug `list` prints —
+    // never a title, never a substring, never a prefix — so it cannot resolve to
+    // a market nobody asked for, which is the failure the comment above is about.
+    // It exists because a hub expands to twelve markets and making somebody
+    // disambiguate between twelve when they pasted one of them exactly is a
+    // worse answer than the one it replaces.
+    const named = markets.filter(
+      (market) =>
+        market.marketId.toLowerCase() === normalized ||
+        // `aliases` is the contract's own answer to "what does the server match
+        // on for this market" — published for exactly this, so an agent can see
+        // the handle instead of guessing at it.
+        market.aliases.some((alias) => alias.toLowerCase() === normalized),
+    );
+    const unique = singleRow || named.length === 1;
+    const resolved = named.length === 1 ? named[0]! : markets[0];
+
     const resolution: PredictMarketResolution = {
       status: unique ? 'RESOLVED' : matched === 0 && !more ? 'NOT_FOUND' : 'AMBIGUOUS',
-      normalizedQuery: query.search.trim().toLowerCase(),
-      marketId: unique ? markets[0]!.marketId : null,
-      // A floor when the server paged: `/predict/browse` reports no total, so a
-      // truncated page can only say "at least this many". That is never read as
-      // a unique answer, because `more` forbids RESOLVED on its own.
-      matchCount: matched,
+      normalizedQuery: normalized,
+      marketId: unique && resolved !== undefined ? resolved.marketId : null,
+      // The candidates a caller can choose between, which is what the question
+      // "which market?" is actually asking. It used to count the server's ROWS —
+      // so a search that matched one hub reported `matchCount: 1` and offered
+      // nothing to choose from, and the number was true about a thing the caller
+      // could not trade. A floor when the server paged: `/predict/browse` reports
+      // no total, so a truncated page can only say "at least this many".
+      matchCount: Math.max(markets.length, matched),
     };
     return { markets, resolution };
   }
