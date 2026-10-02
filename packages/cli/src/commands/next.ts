@@ -296,6 +296,12 @@ export interface NextFacts {
   readonly readOnlyByDefault?: boolean;
   /** Direct mode (ADR-0013): the grant is the on-chain delegation alone. */
   readonly direct?: boolean;
+  /**
+   * How to invoke this CLI on THIS machine. Every command printed below is
+   * built from it rather than from a constant, because the constant was right
+   * only for a global install and the documented setup is a local one.
+   */
+  readonly binary: string;
   /** Absent when no session was attempted, because the local setup is incomplete. */
   readonly session?: SessionFact;
   /** Absent when the listing was not read; `failed` when the read failed. */
@@ -324,7 +330,6 @@ export interface NextFacts {
 
 /* ── Building suggestions ────────────────────────────────────────────────── */
 
-const BINARY = 'waterx-predict';
 
 /** Leaves the characters an id or a decimal is made of alone, and quotes the rest. */
 const shellWord = (value: string): string =>
@@ -338,7 +343,8 @@ const shellWord = (value: string): string =>
  * either fails or, worse, improvises one — and one told to run a write by a
  * command whose whole premise is "do what it says" has been told to trade.
  */
-function suggest(
+function buildSuggestion(
+  binary: string,
   command: string,
   known: Readonly<Record<string, string | true>>,
   why: string,
@@ -381,7 +387,7 @@ function suggest(
     command,
     input: known,
     argv,
-    invocation: [BINARY, ...shown].join(' '),
+    invocation: [binary, ...shown].join(' '),
     classification: spec.classification,
     why,
     ...(needs.length > 0 ? { needsFromUser: needs } : {}),
@@ -434,11 +440,20 @@ export function decideNext(facts: NextFacts): NextAnswer {
   const decided = decide(facts);
   const account = facts.account;
   if (account === undefined || 'failed' in account) return decided;
-  const notes = exposureNotes(account.positions, account.unsettled, facts.now ?? new Date());
+  const notes = exposureNotes(account.positions, account.unsettled, facts.now ?? new Date(), facts.binary);
   return notes.length === 0 ? decided : { ...decided, notes };
 }
 
 function decide(facts: NextFacts): NextAnswer {
+  // Closed over rather than threaded through eighteen call sites, and named the
+  // same, so a suggestion cannot be built from anything but this machine's
+  // invocation.
+  const suggest = (
+    command: string,
+    known: Readonly<Record<string, string | true>> = {},
+    why = '',
+    needs: readonly NeededValue[] = [],
+  ): NextSuggestion => buildSuggestion(facts.binary, command, known, why, needs);
   // 1. Local setup. Operator gaps come first even when an owner gap exists too:
   //    an owner cannot grant anything to an agent whose address nobody has.
   const gaps = facts.requirements.filter(
@@ -555,7 +570,7 @@ function decide(facts: NextFacts): NextAnswer {
           ? []
           : [
               {
-                run: `${BINARY} onboard --wait`,
+                run: `${facts.binary} onboard --wait`,
                 command: 'runtime.onboard',
                 why: 'Prints the link again, opens the page on THIS machine (which is the operator\u2019s call, not yours \u2014 do not pass `--no-open`), and polls until the owner\u2019s grant lands — then adopts the account it was granted on. A wait that runs out cancels nothing: run it again.',
                 safeBecause:
@@ -934,7 +949,7 @@ function setupSteps(
       address !== undefined && facts.agentWallet !== undefined && facts.agentWallet.toLowerCase() !== address.toLowerCase();
     if (missing.has('agentWallet') || missing.has('signer') || mismatched) {
       agent.push({
-        run: `${BINARY} configure --fromKeystore${mismatched ? ' --replace' : ''}`,
+        run: `${facts.binary} configure --fromKeystore${mismatched ? ' --replace' : ''}`,
         command: 'runtime.configure',
         why: `Writes the keystore's address and the signer command into this machine's config file${
           address === undefined ? ', once the keystore exists' : ` (${address})`
@@ -948,7 +963,7 @@ function setupSteps(
 
   if (missing.has('agentWallet')) {
     operator.push({
-      run: `${BINARY} configure --agentWallet <the address your signer holds>`,
+      run: `${facts.binary} configure --agentWallet <the address your signer holds>`,
       why: 'A custom signer is configured, so only its operator knows which address it signs for. `configure` persists it in the config file, which an `export` in one process cannot do.',
     });
   }
@@ -1069,6 +1084,7 @@ async function gatherFacts(context: CommandContext): Promise<NextFacts> {
                 : ` (from ${config.configPath})`,
         }),
     ...(keystore === undefined ? {} : { keystore }),
+    binary: context.invokedAs,
   };
 
   const local = resolveRequirements(config, undefined, 'No session has been opened yet.');

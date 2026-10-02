@@ -13,6 +13,7 @@ import type { IntentStore, MarketCatalog } from '@waterx/predict-agent-sdk';
 import type { WriteLedgers } from '../src/context.ts';
 import { run, type CliIo } from '../src/index.ts';
 import { createMemoryLedgers } from '../src/ledgers.ts';
+import { CLI_NAME } from '../src/version.ts';
 import type { PathFacts, PathStat, RunnerSocket } from '../src/runner-ipc.ts';
 
 export interface Invocation {
@@ -88,6 +89,8 @@ export interface InvokeOptions {
   readonly nowIso?: string;
   /** Command names that resolve on PATH. Absent means none do. */
   readonly executables?: readonly string[];
+  /** False for a local install: this CLI's own name does not resolve on PATH. */
+  readonly cliOnPath?: boolean;
   /**
    * Answers any request `routes` does not name. Direct mode needs it: its order
    * builds are real transaction bytes, made per request, not canned bodies.
@@ -407,7 +410,16 @@ export async function invoke(
       return Promise.resolve(fakeRunnerSocket(script, runnerRecord));
     },
     pathStat: options.pathStat ?? (script === undefined ? () => null : runnerPathStat()),
-    findExecutable: (name) => (options.executables?.includes(name) === true ? `/usr/local/bin/${name}` : null),
+    // The CLI itself resolves unless a test says otherwise, which is the
+    // ordinary install and keeps every assertion about a printed command
+    // reading as a person would type it. `executables` stays what it was — the
+    // OTHER binaries this machine has — so a keystore test still controls only
+    // the keystore. `cliOnPath: false` is the local install, where the name is
+    // on PATH inside one `npx` command and nowhere afterwards.
+    findExecutable: (name) => {
+      if (name === CLI_NAME) return options.cliOnPath === false ? null : `/usr/local/bin/${name}`;
+      return options.executables?.includes(name) === true ? `/usr/local/bin/${name}` : null;
+    },
     readFile: (path) => files[path] ?? null,
     homeDir: () => options.homeDir ?? null,
     readStdin: () => Promise.resolve(options.stdin ?? ''),

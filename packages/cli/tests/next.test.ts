@@ -943,6 +943,7 @@ describe('decideNext precedence', () => {
     positions: held(3),
   };
   const everythingWrong: NextFacts = {
+    binary: 'waterx-predict',
     requirements: satisfied,
     writes: 'NEEDS_APPROVAL',
     session: { ok: true },
@@ -1075,5 +1076,43 @@ describe('a configured wallet that disagrees with the keystore', () => {
       },
     });
     expect(answer.headline).toContain('WATERX_PREDICT_AGENT_WALLET');
+  });
+});
+
+describe('the invocation this runtime prints', () => {
+  // Every command printed for somebody to run was built from a constant, and
+  // the constant is right only for a GLOBAL install. The documented setup is
+  // `npm install`, which puts the binary in `node_modules/.bin` — on PATH for
+  // the duration of one `npx` command and nowhere afterwards. So an operator
+  // ran `npx --no waterx-predict next`, was handed `waterx-predict policy set
+  // …`, pasted it and got `command not found`.
+  //
+  // The keystore's commands were already spelled the working way, which made it
+  // worse: one answer carried commands that run beside commands that do not,
+  // and nothing said which was which.
+  it('names the bare command where the binary is on PATH', async () => {
+    const result = await invoke(['next'], { env: {} });
+    const data = result.envelope.data as { suggestions?: { invocation: string }[] };
+    for (const suggestion of data.suggestions ?? []) {
+      expect(suggestion.invocation).toMatch(/^waterx-predict /u);
+    }
+  });
+
+  it('names the npx form where it is not, which is the documented install', async () => {
+    const result = await invoke(['next'], { env: {}, cliOnPath: false });
+    const data = result.envelope.data as { suggestions?: { invocation: string }[] };
+    expect(data.suggestions?.length ?? 0).toBeGreaterThan(0);
+    for (const suggestion of data.suggestions ?? []) {
+      expect(suggestion.invocation, 'a command the operator cannot run').toMatch(/^npx --no waterx-predict /u);
+    }
+  });
+
+  it('spells the CLI and the keystore the same way in one answer', async () => {
+    // The failure was not that one form is wrong. It was that both appeared at
+    // once, so nothing in the output said which lines would work.
+    const result = await invoke(['next'], { env: {}, cliOnPath: false });
+    const text = JSON.stringify(result.envelope.data);
+    const bare = text.match(/(?<!npx --no )waterx-predict (?!-)/gu) ?? [];
+    expect(bare, 'a bare CLI command beside npx-prefixed keystore commands').toEqual([]);
   });
 });

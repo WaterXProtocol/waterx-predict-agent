@@ -165,7 +165,7 @@ export function runtimePolicy(context: CommandContext): Promise<unknown> {
   const policy = context.config.policy;
   // Not one of the choices: taking one is the operator's, and the commands that
   // take a wider mode carry `--yes` — which `pointTo` refuses anyway (ADR-0022).
-  context.pointTo('waterx-predict next');
+  context.pointTo(`${context.invokedAs} next`);
   const realFunds = context.config.network === 'mainnet' || context.config.deploymentSource === 'DEFAULT';
   const choices = policyChoices(policy.mode, policy.hasConfiguredScope);
   // The screen, one line per call: a diagnostic is truncated past 2000
@@ -264,7 +264,7 @@ export async function runtimePolicySet(context: CommandContext): Promise<unknown
     file.write(`${JSON.stringify({ ...existing, policy: { ...held, mode: requested } }, null, 2)}\n`);
   }
 
-  context.pointTo('waterx-predict next');
+  context.pointTo(`${context.invokedAs} next`);
   // The environment beats the file (`config.ts`), so a write it will shadow
   // must not report as a policy that now applies.
   const shadowed = policy.source === 'ENVIRONMENT' || policy.source === 'FLAG';
@@ -388,7 +388,7 @@ export function runtimePolicyScopeSet(context: CommandContext): Promise<unknown>
     file.write(`${JSON.stringify({ ...existing, policy: { ...held, scope } }, null, 2)}\n`);
   }
 
-  context.pointTo('waterx-predict policy');
+  context.pointTo(`${context.invokedAs} policy`);
   return Promise.resolve({
     configFile: file.path,
     scope,

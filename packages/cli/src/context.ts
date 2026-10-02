@@ -124,6 +124,24 @@ export interface CommandContext {
    */
   pointTo(command: string): void;
   /**
+   * How to invoke this CLI on THIS machine: `waterx-predict`, or
+   * `npx --no waterx-predict` when the name does not resolve on PATH.
+   *
+   * Every command this runtime prints for somebody to run is built from it.
+   * The bare name was assumed, and it is right only for a global install — the
+   * documented setup is `npm install`, which puts the binary in
+   * `node_modules/.bin`, on PATH for the duration of one `npx` command and
+   * nowhere afterwards. So an operator ran `npx --no waterx-predict next`, was
+   * handed `waterx-predict policy set …`, pasted it, and got `command not
+   * found`. The keystore's commands were already spelled the working way, which
+   * made it worse: one answer carried commands that run beside commands that do
+   * not, and nothing said which was which.
+   *
+   * Decided once per process from the same PATH lookup `keystore-probe` uses,
+   * so what is printed is what works here rather than what works somewhere.
+   */
+  readonly invokedAs: string;
+  /**
    * `--yes`: a person\u2019s consent to widen what this runtime may sign.
    *
    * A dispatcher flag rather than an input field, like `--approve` — see

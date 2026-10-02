@@ -13,7 +13,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { formatScaled, parseScaled } from '../src/direct/protection.ts';
+import { formatPrice, formatScaled, parseScaled, PRICE_ONE } from '../src/direct/protection.ts';
 
 const SCALE = 6;
 
@@ -51,5 +51,31 @@ describe('reading a scaled decimal', () => {
     // Deliberately NOT made symmetric with the writer. The asymmetry is the
     // design: one direction reads quantities, the other writes a valuation.
     expect(() => parseScaled('-1.5', SCALE, 'size')).toThrow(/non-negative/u);
+  });
+});
+
+describe('one trade, one average price', () => {
+  // `order execute` reported 0.957071 and `order reconcile` reported 0.957 for
+  // the same fill. One derived the average from the money and the shares; the
+  // other read odds the feed publishes at one decimal. Odds are what was
+  // quoted, and the average price is what the trade came to — rounding one into
+  // the other is a different number about a different thing, and a caller
+  // measuring quote-to-fill deviation gets the rounding back as signal.
+  const average = (amount: string, shares: string): string =>
+    formatPrice((parseScaled(amount, SCALE, 'amount') * PRICE_ONE) / parseScaled(shares, SCALE, 'shares'));
+
+  it('derives the price the two readers must agree on', () => {
+    expect(average('5', '11.6')).toBe('0.431034');
+    // The beta's own numbers: 2.2 wxUSD bought 2.298677 shares.
+    // Truncated, not rounded: BigInt division goes toward zero, and a price
+    // rounded UP is a price the money did not buy.
+    expect(average('2.2', '2.298677')).toBe('0.957072');
+  });
+
+  it('is not the odds rounded to a tenth of a cent', () => {
+    // The assertion that makes the first one mean something: these differ, so
+    // the two paths were reporting different numbers and one of them was the
+    // quote rather than the fill.
+    expect(average('5', '11.6')).not.toBe('0.431');
   });
 });

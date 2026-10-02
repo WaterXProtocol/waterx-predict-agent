@@ -58,6 +58,8 @@ export function exposureNotes(
   positions: readonly PredictPositionSummary[],
   unsettled: readonly PredictExecutionSummary[],
   now: Date,
+  /** How to invoke this CLI here; `look` is a command somebody runs. */
+  binary = 'waterx-predict',
 ): ExposureNote[] {
   const notes: ExposureNote[] = [];
 
@@ -74,7 +76,7 @@ export function exposureNotes(
       says: `${String(positions.length)} position(s) hold ${formatDecimal(deployed)} wxUSD at cost.${
         unpriced.length === 0 ? '' : ` ${String(unpriced.length)} of them cannot be priced right now, so what they are worth is not a number this can give.`
       }`,
-      look: 'waterx-predict account positions',
+      look: `${binary} account positions`,
     });
     if (unpriced.length > 0) {
       // Its own total, not the portfolio's: this is the part of the cost whose
@@ -86,7 +88,7 @@ export function exposureNotes(
       notes.push({
         kind: 'UNPRICED_POSITION',
         says: `No live sell-side quote for ${String(unpriced.length)} position(s), holding ${unpricedCost} wxUSD of cost: their value and PnL are unknown, not zero. A market that stopped quoting is usually closed, resolved or paused — an exit may not be available at any price, and if it RESOLVED the money comes back only by being claimed, which this runtime cannot do (\`describe\` → \`position claim\`). Collect it from the web app as the account owner.`,
-        look: 'waterx-predict market get',
+        look: `${binary} market get`,
       });
     }
   }
@@ -105,7 +107,7 @@ export function exposureNotes(
       notes.push({
         kind: 'BELOW_KEEPER_MINIMUM',
         says: `${execution.executionId} is a BUY of ${execution.size} wxUSD, below the keeper's ${String(KEEPER_MIN_FILL_USD)} wxUSD minimum fill. It will be cancelled rather than filled, and its escrow is held until it is.`,
-        look: `waterx-predict order reconcile --executionId ${execution.executionId}`,
+        look: `${binary} order reconcile --executionId ${execution.executionId}`,
       });
       continue;
     }
@@ -113,7 +115,7 @@ export function exposureNotes(
       notes.push({
         kind: 'UNSETTLED_TOO_LONG',
         says: `${execution.executionId} was submitted ${String(Math.floor(age / MINUTES))} minutes ago and has not settled. Its escrow is held until it fills, is cancelled or expires — this is money that is neither a position nor a balance.`,
-        look: `waterx-predict order reconcile --executionId ${execution.executionId}`,
+        look: `${binary} order reconcile --executionId ${execution.executionId}`,
       });
     }
   }

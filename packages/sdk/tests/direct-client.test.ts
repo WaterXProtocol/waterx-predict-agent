@@ -487,7 +487,11 @@ describe('placing a buy', () => {
       status: 'FILLED',
       terminal: true,
       fee: { available: false, reason: 'EMBEDDED_IN_PRICE' },
-      fill: { filledAmount: '5', filledShares: '11.6', avgFillPrice: '0.431', txDigest: 'FillDigest' },
+      // 5 / 11.6, not the feed's one-decimal odds. The two readers of one
+      // trade disagreed — execute said 0.957071 and reconcile said 0.957 —
+      // because this one was reporting what was QUOTED where the other
+      // reported what the money and the shares came to.
+      fill: { filledAmount: '5', filledShares: '11.6', avgFillPrice: '0.431034', txDigest: 'FillDigest' },
     });
     // Asked of the whole history, never of `active`: the case this read exists
     // for is a position that is no longer active.
