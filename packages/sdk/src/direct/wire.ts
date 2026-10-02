@@ -13,6 +13,8 @@
 export const PUBLIC_ROUTES = {
   /** `predict/predict.controller.ts:175` */
   browse: 'predict/browse',
+  /** A hub's markets. `:slug` is the EVENT's slug, not a market's. */
+  event: (slug: string) => `predict/events/${encodeURIComponent(slug)}`,
   /** `predict/predict.controller.ts:419-460` — keyed by round id, then side key. */
   quotes: 'predict/quotes',
   quotesBid: 'predict/quotes/bid',
@@ -139,11 +141,41 @@ export interface PublicCatalogMarket {
   display?: { question?: string | null } | null;
 }
 
-/** `predict/application/predict-browse.service.ts:120-147` */
+/**
+ * One row of `predict/browse`, and there are TWO shapes of it.
+ *
+ * `kind` discriminates them, and reading only the first shape is what made an
+ * exact market name unfindable: a search for `btc-dip-45000-y-2026` matches the
+ * HUB that groups the Bitcoin threshold markets, which carries an `event` and no
+ * `market` at all. Dropping it left zero markets to resolve against, so the
+ * answer was AMBIGUOUS with nothing to choose from — while the same endpoint
+ * WITHOUT a query returned that market in full, which is why `list` showed it
+ * with a live quote and `search` could not find it.
+ */
 export interface PublicBrowseItem {
+  /** `hub` carries `event`; the rest carry `market` and `nextRound`. */
   kind: string;
   market?: PublicCatalogMarket;
   nextRound?: PublicRound | null;
+  /** Present on a hub: a group of markets, named but not tradeable itself. */
+  event?: PublicBrowseEvent;
+}
+
+/**
+ * A hub's event. Only its `slug` is used — to follow it to the markets it groups
+ * — because `preview` carries outcome codes and cents, not market ids, and an
+ * agent may take a `marketId` only from something the server resolved.
+ */
+export interface PublicBrowseEvent {
+  id: string;
+  slug: string;
+  title?: string | null;
+  category?: string;
+}
+
+/** `predict/events/:slug` — the markets a hub groups, in browse's own shape. */
+export interface PublicEventResponse {
+  items: PublicBrowseItem[];
 }
 
 export interface PublicBrowseResponse {
