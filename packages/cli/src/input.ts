@@ -176,6 +176,17 @@ async function readBaseDocument(sources: InputSources): Promise<Record<string, u
  * from the defaults that are reported back — `validateCommandInput` does not
  * coerce, and neither does this.
  */
+/**
+ * The shapes one command's input may take: itself, or each arm of its `oneOf`.
+ *
+ * Flat for a command with no alternatives, so one rule covers both and a reader
+ * does not have to hold two.
+ */
+function variantsOf(schema: AgentCommandSpec['input']): readonly { properties?: Record<string, unknown> }[] {
+  const arms = (schema as { oneOf?: { properties?: Record<string, unknown> }[] }).oneOf;
+  return arms === undefined || arms.length === 0 ? [schema as { properties?: Record<string, unknown> }] : arms;
+}
+
 export async function buildCommandInput(
   command: AgentCommandSpec,
   sources: InputSources,
@@ -200,7 +211,28 @@ export async function buildCommandInput(
   }
 
   const defaultsApplied: Record<string, unknown> = {};
-  const wantsAccount = Object.hasOwn(properties, 'accountId');
+  /**
+   * Whether this command has a place for an adopted account to go.
+   *
+   * It read the ROOT properties, and `order.preview` / `order.execute` declare a
+   * bare `oneOf` — one order, or a batch — so the root has none and the default
+   * was never applied. `account positions` took the adopted account and the two
+   * commands that trade did not, which is the inconsistency reported: an agent
+   * that had just adopted an account still had to name it to preview an order.
+   *
+   * Filled only for a variant the caller's own input could satisfy. The batch
+   * variant has no `accountId` — each leg carries its own — and these schemas set
+   * `additionalProperties: false`, so filling one in regardless would make a
+   * perfectly good batch invalid. A variant is applicable when it declares every
+   * key the caller supplied; when none is, nothing is filled and the validator
+   * reports the shape rather than a field this added.
+   */
+  const applicable = variantsOf(command.input).filter((variant) =>
+    Object.keys(input).every((key) => Object.hasOwn(variant.properties ?? {}, key)),
+  );
+  const wantsAccount =
+    Object.hasOwn(properties, 'accountId') ||
+    applicable.some((variant) => Object.hasOwn(variant.properties ?? {}, 'accountId'));
   if (wantsAccount && input.accountId === undefined) {
     /**
      * Configuration first, then the adoption. An operator who wrote the account

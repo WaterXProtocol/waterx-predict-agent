@@ -239,9 +239,18 @@ describe('asking for help', () => {
     const asCommand = await invoke(['help']);
     const asFlag = await invoke(['--help']);
 
-    expect(asCommand.envelope.error?.code).toBe('USAGE');
+    // The equivalence is the point of this test, and it still holds. What
+    // changed is the answer both give: this asserted `USAGE` and exit 1, because
+    // that was what they did — and asking a tool to describe itself is not a
+    // misuse of it, so a caller branching on the status read its own successful
+    // question as a failure.
+    expect(asCommand.exit).toBe(EXIT_CODES.OK);
     expect(asCommand.exit).toBe(asFlag.exit);
-    expect(asCommand.envelope.error?.message).toBe(asFlag.envelope.error?.message);
+    expect(asCommand.envelope.ok).toBe(true);
+    expect(asCommand.envelope.error).toBeUndefined();
+    expect(asCommand.envelope.data).toEqual(asFlag.envelope.data);
+    // And the document is the machine-readable half of what was asked for.
+    expect((asCommand.envelope.data as { commands?: string[] }).commands?.length ?? 0).toBeGreaterThan(5);
     // The reference goes to stderr and stdout still carries an envelope,
     // because a caller that always parses stdout must never find prose there.
     expect(asCommand.stderr.length).toBeGreaterThan(0);

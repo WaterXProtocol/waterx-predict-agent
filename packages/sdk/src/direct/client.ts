@@ -294,6 +294,89 @@ const apiError = (
  */
 const HUBS_FOLLOWED = 6;
 
+/**
+ * A title rendered from a market's own structured predicate.
+ *
+ * **Rendered, not invented.** Every token comes from the catalog —
+ * `display.ticker`, `display.predicate.op`, `.target`, `.window` — so this is a
+ * presentation of what the server said and not a claim of its own, and it is
+ * reproducible from the same fields by anybody. `undefined` whenever a field is
+ * missing or an operator is one this does not know, because a half-rendered
+ * question is worse than the slug: the slug at least cannot be misread as a
+ * statement of what the market asks.
+ *
+ * Only `threshold` is rendered today. Other families either carry a `title` or a
+ * `display.question` already, and inventing a sentence for a shape nobody has
+ * looked at is how a market comes to be described as something it is not.
+ */
+function predicateTitle(display: PublicCatalogMarket['display']): string | undefined {
+  // A blank the catalog left to be filled. `metricLabel` is a template —
+  // "Will Anthropic's valuation hit __ by December 31?" — and `optionName` is
+  // this leg's value for it, "↑$2.5T". Substituting is not composing a sentence;
+  // the `__` is there for exactly this, and both halves are the server's words.
+  const filled = labelTemplate(display);
+  if (filled !== undefined) return filled;
+
+  const rendered = predicateParts(display);
+  return rendered === undefined ? undefined : `Will ${rendered.subject} be ${rendered.relation} ${rendered.by}?`;
+}
+
+/** `metricLabel` with its blank filled by `optionName`, when both are there. */
+function labelTemplate(display: PublicCatalogMarket['display']): string | undefined {
+  const fields = display as { metricLabel?: string; optionName?: string } | null | undefined;
+  const label = fields?.metricLabel;
+  const option = fields?.optionName;
+  if (typeof label !== 'string' || typeof option !== 'string' || !label.includes('__')) return undefined;
+  return label.replace('__', option);
+}
+
+/** What YES, or NO, resolves to — from the same parts, in the same words. */
+function predicateOutcome(display: PublicCatalogMarket['display'], yes: boolean): string | undefined {
+  // The catalog's own name for this leg, where it has one. `↑$2.5T` is what the
+  // venue calls it, and YES is that leg resolving true.
+  const option = (display as { optionName?: string } | null | undefined)?.optionName;
+  if (typeof option === 'string' && option !== '') return yes ? option : `NOT ${option}`;
+
+  const rendered = predicateParts(display);
+  if (rendered === undefined) return undefined;
+  return yes
+    ? `${rendered.subject} ${rendered.relation} ${rendered.by}`
+    : `${rendered.subject} NOT ${rendered.relation} ${rendered.by}`;
+}
+
+/** The pieces both renderings share, or `undefined` if any is missing. */
+function predicateParts(
+  display: PublicCatalogMarket['display'],
+): { subject: string; relation: string; by: string } | undefined {
+  const predicate = (display as { predicate?: { kind?: string; op?: string; target?: number; window?: string } } | null | undefined)
+    ?.predicate;
+  const ticker = (display as { ticker?: string } | null | undefined)?.ticker;
+  if (predicate?.kind !== 'threshold' || ticker === undefined) return undefined;
+  if (typeof predicate.target !== 'number' || !Number.isFinite(predicate.target)) return undefined;
+  const relation = THRESHOLD_RELATION[predicate.op ?? ''];
+  const by = WINDOW_PHRASE[predicate.window ?? ''];
+  if (relation === undefined || by === undefined) return undefined;
+  // Grouped, not currency-formatted: the catalog does not say which currency the
+  // target is in, and a `$` this added would be a fact nobody supplied.
+  return { subject: ticker, relation, by: `${predicate.target.toLocaleString('en-US')} ${by}` };
+}
+
+/** The comparisons this knows. An unknown one yields no rendering at all. */
+const THRESHOLD_RELATION: Record<string, string | undefined> = {
+  lte: 'at or below',
+  lt: 'below',
+  gte: 'at or above',
+  gt: 'above',
+};
+
+/** The windows this knows, phrased as a deadline rather than a duration. */
+const WINDOW_PHRASE: Record<string, string | undefined> = {
+  year: 'at any point this year',
+  month: 'at any point this month',
+  week: 'at any point this week',
+  day: 'at any point today',
+};
+
 const PHASE_STATUS: Readonly<Record<string, PredictMarketStatus>> = {
   scheduled: 'PREGAME',
   open: 'PREGAME',
@@ -845,7 +928,12 @@ export class PredictDirectClient {
       const yesAsk = priceText(ask[yesSide]);
       const noAsk = priceText(noSide === undefined ? boards.no[round.id]?.[yesSide] : ask[noSide]);
       const tradeable = status !== 'CLOSED' && yesAsk !== null;
-      const base = market.title ?? market.display?.question ?? market.slug;
+      // The slug is the LAST resort now, not the second. Half the tradeable
+      // catalog has a null `title` and a null `display.question` — every crypto
+      // threshold market does — so half of what a person read was
+      // `btc-dip-45000-y-2026`, and an agent relaying it was relaying an
+      // identifier as a question.
+      const base = market.title ?? market.display?.question ?? predicateTitle(market.display) ?? market.slug;
       const title = legs.length > 1 ? `${base} — ${yesSide}` : base;
       out.push({
         marketId: leg.marketId,
@@ -858,14 +946,16 @@ export class PredictDirectClient {
         outcomes: [
           {
             outcomeId: 'YES',
-            name: yesSide,
+            name: predicateOutcome(market.display, true) ?? yesSide,
+            sideKey: yesSide,
             impliedProbability: null,
             indicativeBid: priceText(bid[yesSide]),
             indicativeAsk: yesAsk,
           },
           {
             outcomeId: 'NO',
-            name: noSide ?? `not ${yesSide}`,
+            name: predicateOutcome(market.display, false) ?? noSide ?? `not ${yesSide}`,
+            ...(noSide === undefined ? {} : { sideKey: noSide }),
             impliedProbability: null,
             indicativeBid: noSide === undefined ? null : priceText(bid[noSide]),
             indicativeAsk: noAsk,

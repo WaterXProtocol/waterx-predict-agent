@@ -348,19 +348,40 @@ export async function run(io: CliIo): Promise<number> {
     // positional cannot be intercepted, so there is now a spelling that works
     // whichever way this was installed.
     const askedForHelp = parsed.flags.has('help') || parsed.path[0] === 'help';
-    if (parsed.path.length === 0 || askedForHelp) {
-      // Usage goes to stderr and stdout still gets an envelope, because a caller
-      // that always parses stdout must never find prose there.
+    if (askedForHelp) {
+      // Asking a tool to describe itself is not a misuse of it. This printed the
+      // reference and then exited 1 — the code for "you got it wrong" — so a
+      // caller that branches on the exit status read its own successful question
+      // as a failure, and the most likely first invocation was the one that
+      // looked broken.
+      //
+      // Usage still goes to stderr and stdout still gets an envelope, because a
+      // caller that always parses stdout must never find prose there. The
+      // document carries the command list, which is the machine-readable half of
+      // what was asked for.
+      command = 'runtime.help';
+      diagnostic(USAGE);
+      emitEnvelope(
+        io.streams,
+        successEnvelope(
+          command,
+          requestId,
+          {
+            usage: `${invocationOf(io.findExecutable?.(CLI_NAME) ?? null)} <command> [--flags] [--json]`,
+            commands: CAPABILITIES.map((entry) => entry.id),
+            reference: 'The full reference is on stderr; `command-schema` has the contract for one command.',
+          },
+          withPointer(undefined, nextCommand),
+        ),
+        redactor,
+      );
+      return EXIT_CODES.OK;
+    }
+    if (parsed.path.length === 0) {
       diagnostic(USAGE);
       throw new CliError(
         'USAGE',
-        // Keyed on whether help was ASKED FOR, not on whether a path was
-        // given. `--help` carries no path, so it was being answered "no command
-        // was given" — about the one invocation that said exactly what it
-        // wanted.
-        askedForHelp
-          ? 'Help was requested. The command reference is on stderr; `command-schema` has the machine-readable form.'
-          : `No command was given. Run \`${invocationOf(io.findExecutable?.(CLI_NAME) ?? null)} describe\` for the capability inventory.`,
+        `No command was given. Run \`${invocationOf(io.findExecutable?.(CLI_NAME) ?? null)} describe\` for the capability inventory.`,
       );
     }
 
