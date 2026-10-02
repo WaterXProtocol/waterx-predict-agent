@@ -201,10 +201,11 @@ done
 end_check
 
 # ---------------------------------------------------------------------------------------------
-begin_check 4 "every .claude/skills/*/SKILL.md has a frontmatter description ≤ $DESCRIPTION_LIMIT_CHARS chars" \
+begin_check 4 "every .claude/skills/*/SKILL.md and plugins/*/skills/*/SKILL.md has a frontmatter description ≤ $DESCRIPTION_LIMIT_CHARS chars" \
   "Claude Code loads every skill's description into every session and caps it at 1,536 characters; the body loads only on trigger, so the description is what decides whether the skill fires."
-if [ -d .claude/skills ]; then
-  for s in .claude/skills/*/; do
+# plugins/<plugin>/skills/ is a plugin marketplace's skill tree (waterx-commons itself has one).
+if [ -d .claude/skills ] || ls -d plugins/*/skills >/dev/null 2>&1; then
+  for s in .claude/skills/*/ plugins/*/skills/*/; do
     [ -d "$s" ] || continue
     sk="${s}SKILL.md"
     [ -f "$sk" ] || { fail "$sk: missing"; continue; }
