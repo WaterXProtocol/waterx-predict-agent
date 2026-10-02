@@ -1,9 +1,9 @@
 name: harness
 
-# The coding-agent files (CLAUDE.md at the root and in each package, the
-# AGENTS.md symlinks Codex reads, .codex/config.toml, docs/knowledge-hub) are
-# read by every agent session; this keeps them in the shape both tools load.
-# Shell only — no install, so it runs in seconds.
+# The coding-agent files (AGENTS.md at the root, in packages/ and in each package — no
+# CLAUDE.md anywhere — .codex/config.toml, docs/knowledge-hub) load in every agent session; this keeps them in
+# the shape both tools load. scripts/agent-hooks/check-harness.sh is vendored byte-for-byte from
+# Bucket-Protocol/waterx-commons (harness/lint); update it there, then copy it here.
 on:
   push:
     branches: ['**']
