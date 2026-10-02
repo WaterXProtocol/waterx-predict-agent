@@ -13,6 +13,7 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { accessSync, constants as fsConstants, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { sep } from 'node:path';
 import { connect } from 'node:net';
 import { homedir } from 'node:os';
 
@@ -102,7 +103,7 @@ import {
 import { probeKeystore } from './keystore-probe.ts';
 import { adoptionKey, createFileLedgers } from './ledgers.ts';
 import { createNodeSignerRunner, type SignerRunner } from './signer.ts';
-import { CLI_NAME, CLI_VERSION } from './version.ts';
+import { CLI_NAME, CLI_VERSION, invocationOf } from './version.ts';
 
 export interface CliIo {
   readonly argv: readonly string[];
@@ -281,6 +282,7 @@ function refusal(capability: Capability): CliError {
   );
 }
 
+
 export async function run(io: CliIo): Promise<number> {
   const redactor = new Redactor();
   for (const key of SECRET_ENV_KEYS) redactor.register(io.env[key]);
@@ -355,7 +357,7 @@ export async function run(io: CliIo): Promise<number> {
         // wanted.
         askedForHelp
           ? 'Help was requested. The command reference is on stderr; `command-schema` has the machine-readable form.'
-          : 'No command was given. Run `waterx-predict describe` for the capability inventory.',
+          : `No command was given. Run \`${invocationOf(io.findExecutable?.(CLI_NAME) ?? null)} describe\` for the capability inventory.`,
       );
     }
 
@@ -371,9 +373,10 @@ export async function run(io: CliIo): Promise<number> {
         command = capability.id;
         throw refusal(capability);
       }
+      const here = invocationOf(io.findExecutable?.(CLI_NAME) ?? null);
       throw new CliError(
         'UNKNOWN_COMMAND',
-        `\`${resolved.invocation}\` is not a command. Run \`waterx-predict describe\` for the capability inventory, or \`waterx-predict command-schema\` for the contract.`,
+        `\`${resolved.invocation}\` is not a command. Run \`${here} describe\` for the capability inventory, or \`${here} command-schema\` for the contract.`,
         { invocation: resolved.invocation, known: CAPABILITIES.map((entry) => entry.id) },
       );
     }
@@ -401,6 +404,10 @@ export async function run(io: CliIo): Promise<number> {
       explicitPath: requireFlagValue(parsed.flags, 'config'),
       timeoutMs: parseTimeoutFlag(parsed.flags),
       policy: requireFlagValue(parsed.flags, 'policy'),
+      // So the warning that rides on every answer names a command this machine
+      // can run. Optional, because a caller that supplied no lookup gets the
+      // `npx --no` form, which works after `npm install` either way.
+      ...(io.findExecutable === undefined ? {} : { findExecutable: io.findExecutable.bind(io) }),
     });
     redactor.register(config.token);
     timeoutMs = config.timeoutMs;
@@ -764,7 +771,7 @@ function createContext(
       pointTo: options.pointTo,
       // Resolved once: a PATH lookup per printed command would answer the same
       // thing every time and cost a syscall each.
-      invokedAs: (io.findExecutable?.(CLI_NAME) ?? null) === null ? `npx --no ${CLI_NAME}` : CLI_NAME,
+      invokedAs: invocationOf(io.findExecutable?.(CLI_NAME) ?? null),
       diagnostic,
       nodeVersion: io.nodeVersion,
       now: io.now,

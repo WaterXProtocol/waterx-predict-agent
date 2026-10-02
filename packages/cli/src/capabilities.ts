@@ -350,3 +350,17 @@ export const getCapability = (id: string): Capability | undefined => BY_ID.get(i
  */
 export const listRefusals = (): readonly Capability[] =>
   CAPABILITIES.filter((capability) => capability.status !== 'AVAILABLE');
+
+/**
+ * How an operator chooses a policy, spelled for the machine that will run it.
+ *
+ * One sentence in one place because three surfaces said it — the read-only
+ * warning on every answer, the refusal when a write is attempted, and `next` —
+ * and each had the bare name hard-coded. A local install puts the binary in
+ * `node_modules/.bin`, which is on PATH for the duration of one `npx` command and
+ * nowhere afterwards, so the bare form is `command not found` for the person who
+ * was just told to run it.
+ */
+export const chooseAPolicy = (invokedAs: string): string =>
+  `Run \`${invokedAs} policy\` for the three modes and what each allows. The operator takes one ` +
+  `with \`${invokedAs} policy set --mode <mode> --yes\`.`;
