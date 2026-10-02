@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check-harness.sh v1.0.0 (WL-2804) — agent-harness layout guard.
+# check-harness.sh v1.0.1 (WL-2804) — agent-harness layout guard.
 #
 # Keeps the repository's coding-agent files in the shape both tools read:
 # Claude Code loads CLAUDE.md, Codex loads AGENTS.md, so AGENTS.md must be a
@@ -144,10 +144,14 @@ for md in $(list_files | grep -E '(^|/)CLAUDE\.md$' | grep -v '/node_modules/');
       *) continue ;;
     esac
     case "$tok" in
-      http*|*//*|*..*|.|./|*.rs.bk) continue ;;
+      http*|*//*|*..*|.|./|/*|*.rs.bk) continue ;;   # URLs, slash commands, absolute paths
     esac
     [ -e "$dir/$tok" ] && continue
     [ -e "$ROOT/$tok" ] && continue
+    case "$tok" in
+      */*) : ;;
+      *) list_files | grep -qE "(^|/)$tok\$" && continue ;;   # a bare file name: any tracked file with that name counts
+    esac
     echo "WARN: $md names \`$tok\`, which does not exist here (fine for an external path; a typo otherwise)"
   done
 done
