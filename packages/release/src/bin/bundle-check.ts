@@ -376,7 +376,11 @@ async function main(argv: readonly string[]): Promise<number> {
       `after init: the operator's steps were ${JSON.stringify(stepRuns(second))}`,
     );
     walk.expect(
-      JSON.stringify(agentRuns(second)) === JSON.stringify(['waterx-predict configure --fromKeystore']),
+      // `npx --no`, like the operator's step asserted directly above. Both come
+      // from one `next` answer in one install, and this required the prefix for
+      // the keystore and forbade it for the CLI — the inconsistency a tester
+      // reported, written down as the specification.
+      JSON.stringify(agentRuns(second)) === JSON.stringify(['npx --no waterx-predict configure --fromKeystore']),
       `after init: the agent's steps were ${JSON.stringify(agentRuns(second))}`,
     );
 
