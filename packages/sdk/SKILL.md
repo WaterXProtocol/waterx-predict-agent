@@ -19,7 +19,7 @@ How far you can take it depends on the surface you hold, so establish that first
 
 `READ_THE_RULES`
 
-After `npm install`, the operating rules are on disk at `node_modules/@waterx/predict-agent-sdk/AGENT_INSTRUCTIONS.md`. Read them before anything else. They are not background: each rule is a refusal you would otherwise meet with money in flight.
+The operating rules are in `AGENT_INSTRUCTIONS.md`, shipped beside this file. Read them before anything else. They are not background: each rule is a refusal you would otherwise meet with money in flight.
 
 For the exact shape of a call, use the SDK's own types — its `.d.ts` IS the contract as your compiler sees it. `@waterx/predict-agent-schema` publishes the same contract as plain JSON for a surface that cannot import a Node module, but the SDK does not depend on it, so `node_modules/@waterx/predict-agent-schema/agent-commands.json` exists only if you installed it too. Check before you read it.
 

@@ -315,8 +315,14 @@ async function readBuyCapacity(
  * unauthorized write continues.
  */
 interface Authorized extends WriteAuthorization {
-  /** The cumulative-budget reservation, released if nothing ends up signed. */
-  readonly spend: { readonly id: string; readonly total: string } | undefined;
+  /**
+   * The cumulative-budget reservation, released if nothing ends up signed.
+   *
+   * `scope` so the total can be re-read after settling: `total` is the figure at
+   * the moment of RESERVING, and the same response reports it beside an audit
+   * line that has since reduced it.
+   */
+  readonly spend: { readonly id: string; readonly total: string; readonly scope: string } | undefined;
 }
 
 async function authorize(
@@ -348,11 +354,12 @@ async function authorize(
     );
   }
   const scope = context.config.policy.scope;
-  let spend: { id: string; total: string } | undefined;
+  let spend: { id: string; total: string; scope: string } | undefined;
   if (authorization.buyAmount !== undefined && scope !== undefined) {
     const ledgers = context.ledgers();
     const digest = scopeDigest(scope);
-    spend = ledgers.spend.reserve(digest, authorization.buyAmount, scope.maxCumulativeBuyAmount ?? '0', request.now);
+    const reservation = ledgers.spend.reserve(digest, authorization.buyAmount, scope.maxCumulativeBuyAmount ?? '0', request.now);
+    spend = { ...reservation, scope: digest };
     ledgers.audit.append(
       { event: 'spend.reserved', id: spend.id, scope: digest, amount: authorization.buyAmount, total: spend.total },
       request.now,
@@ -415,6 +422,7 @@ function committedOf(
  * the ambiguous batch, where there is nothing to attribute — the reservation is
  * all-or-nothing exactly as before.
  */
+/** Reduce a reservation to what the write actually committed. */
 function settleSpend(context: CommandContext, authorization: Authorized, committed?: string): void {
   if (authorization.spend === undefined) return;
   const id = authorization.spend.id;
@@ -464,6 +472,22 @@ function auditWrite(
   );
 }
 
+/**
+ * What the scope's cumulative budget stands at right now.
+ *
+ * `undefined` when the ledger cannot be read, which falls back to the reserved
+ * figure: a number that is a step stale is better than none, and the alternative
+ * is failing a response that has already placed an order.
+ */
+function settledTotal(context: CommandContext, authorization: Authorized): string | undefined {
+  if (authorization.spend === undefined) return undefined;
+  try {
+    return context.ledgers().spend.total(authorization.spend.scope);
+  } catch {
+    return undefined;
+  }
+}
+
 /** What the result records about the decision. Never the approval's provenance. */
 const policyRecord = (context: CommandContext, authorization: Authorized): unknown => ({
   mode: context.config.policy.mode,
@@ -475,7 +499,12 @@ const policyRecord = (context: CommandContext, authorization: Authorized): unkno
   ...(authorization.spend !== undefined
     ? {
         cumulativeBuy: {
-          authorizedUnderScope: authorization.spend.total,
+          // Read HERE, not carried from the reservation. `spend.total` is the
+          // figure at the moment the budget was reserved, and settling happens
+          // between then and now — so a batch whose second leg never left reported
+          // the reserved 4.3 beside an audit line that had already reduced it to
+          // 2.2. The ledger was right; the answer was one step behind it.
+          authorizedUnderScope: settledTotal(context, authorization) ?? authorization.spend.total,
           ceiling: context.config.policy.scope?.maxCumulativeBuyAmount ?? null,
           released: context.gate.stats.used === 0,
           // The budget belongs to the EXACT scope, so a scope that was edited
@@ -565,7 +594,16 @@ function previewPolicy(
   legs: readonly NormalizedLeg[],
   intent: string,
   effectiveBuyCapacity: string | undefined,
-  issue: boolean,
+  /**
+   * Whether to mint a token, and when not, WHY not.
+   *
+   * It was a boolean, and the two reasons not to mint one are different facts
+   * reported through the same branch: a batch leg is covered by the batch's token,
+   * and an infeasible order is covered by nothing. A blocked order answered
+   * `APPROVAL_REQUIRED` with "this leg is approved with the batch's token" — a
+   * sentence that was not merely stale but false.
+   */
+  issue: 'MINT' | 'BATCH_LEG' | 'INFEASIBLE',
 ): unknown {
   const policy = context.config.policy;
   const base = { mode: policy.mode, source: policy.source, intentDigest: intent };
@@ -581,11 +619,22 @@ function previewPolicy(
   }
 
   if (policy.mode === 'interactive') {
-    if (!issue) {
+    if (issue === 'BATCH_LEG') {
       return {
         ...base,
         decision: 'APPROVAL_REQUIRED',
         detail: 'This leg is approved with the batch’s token, not on its own.',
+      };
+    }
+    if (issue === 'INFEASIBLE') {
+      return {
+        ...base,
+        // Not `APPROVAL_REQUIRED`: no approval would help. The findings beside
+        // this say what is wrong, and an agent reading the decision alone must
+        // not conclude that a person's signature is the missing piece.
+        decision: 'WOULD_BE_REFUSED',
+        detail:
+          'No token was issued: this order cannot be placed as described, so an approval would authorize something that fails. See `feasibility.findings`.',
       };
     }
     return { ...base, ...issueApproval(context, intent) };
@@ -947,7 +996,7 @@ async function previewOneLeg(context: CommandContext, leg: NormalizedLeg, issue:
       [leg],
       intent,
       allowance === null ? undefined : allowance.effectiveBuyCapacity,
-      issue && feasibility.blocking.length === 0,
+      !issue ? 'BATCH_LEG' : feasibility.blocking.length > 0 ? 'INFEASIBLE' : 'MINT',
     ),
     nextStep: {
       command: 'order execute',

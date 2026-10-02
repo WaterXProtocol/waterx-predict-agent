@@ -314,7 +314,10 @@ export async function run(io: CliIo): Promise<number> {
    * never a dead end — and a command may name a better one. It may NOT name a
    * command that cannot be run as printed: see `pointTo`.
    */
-  let nextCommand = `${CLI_NAME} next`;
+  // Spelled for this machine, like every other printed command. This one is read
+  // by a tool host on EVERY answer, which made it the most-read bare invocation
+  // left after the suggestions were threaded.
+  let nextCommand = `${invocationOf(io.findExecutable?.(CLI_NAME) ?? null)} next`;
   const pointTo = (candidate: string): void => {
     // A placeholder is a value somebody has to choose, and `--yes` is a
     // person's consent. Handing either back as "the command to run next" is

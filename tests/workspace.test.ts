@@ -1624,3 +1624,57 @@ function sourceFiles(relativeDir: string): string[] {
   }
   return out;
 }
+
+/**
+ * What the published documents promise about where things are and who decides.
+ *
+ * Each of these was a contradiction an external agent met first, and two were
+ * self-contradictions — the right statement was already elsewhere in the same
+ * file:
+ *
+ *  - SKILL.md named `node_modules/@waterx/predict-agent-sdk/AGENT_INSTRUCTIONS.md`
+ *    as the first thing to read. The documented setup installs the REPOSITORY, so
+ *    that directory does not exist, and the same file said "shipped beside this
+ *    file" further down.
+ *  - AGENT_INSTRUCTIONS led with "the default policy is interactive", with
+ *    mainnet's read-only as an exception — and mainnet is the default deployment,
+ *    so the rare half was stated as the rule. An agent that read it told its user
+ *    the wrong person had to approve.
+ *  - README said `npm install github:…` "is not an installation path" eighty
+ *    lines after telling the reader to run exactly that.
+ */
+describe('the published documents do not contradict the runtime', () => {
+  const read = (path: string): string => readFileSync(join(ROOT, path), 'utf8');
+
+  it('points at the instructions by where they ship, not by an install path', () => {
+    for (const file of ['agent-instructions/SKILL.md', 'packages/sdk/SKILL.md']) {
+      const skill = read(file);
+      expect(skill, file).not.toMatch(/node_modules\/@waterx\/predict-agent-sdk\/AGENT_INSTRUCTIONS/u);
+      expect(skill, file).toMatch(/AGENT_INSTRUCTIONS\.md`?,? shipped beside this file/u);
+    }
+  });
+
+  it('states the policy a mainnet reader actually gets, first', () => {
+    const rules = read('agent-instructions/AGENT_INSTRUCTIONS.md');
+    const sentence = rules.split('\n').find((line) => line.includes('read-only until the operator')) ?? '';
+    expect(sentence, 'the rule about policy defaults is gone').not.toBe('');
+    // read-only before interactive, because that is the order a reader meets them
+    // in on the deployment they are on.
+    expect(sentence.indexOf('read-only')).toBeLessThan(sentence.indexOf('default is interactive'));
+  });
+
+  it('does not tell a reader the install it just told them to run is not one', () => {
+    const readme = read('README.md');
+    expect(readme).toMatch(/npm install github:/u);
+    expect(readme).not.toMatch(/is not an installation\s+path/u);
+    expect(readme, 'the repository is public').not.toMatch(/git that can read this\s+private repository/u);
+  });
+
+  it('separates reading production from spending on it', () => {
+    // "Never point this at mainnet" forbade the default. Reading production is the
+    // default and deliberate; spending needs an operator to lift `read-only`.
+    const safety = read('README.md').slice(read('README.md').indexOf('## Safety'));
+    expect(safety).toMatch(/reads production by default/iu);
+    expect(safety).toMatch(/read-only/u);
+  });
+});

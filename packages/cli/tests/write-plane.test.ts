@@ -1181,6 +1181,25 @@ describe('a preview will not arm an order the account cannot place', () => {
     expect(data.policy.approvalToken, 'no approval for an order that cannot be placed').toBeUndefined();
   });
 
+  it('says WHY no token was issued, rather than asking for an approval that cannot help', async () => {
+    // Withholding the token was half the fix. The decision still read
+    // `APPROVAL_REQUIRED` with "this leg is approved with the batch's token" —
+    // the branch for a batch leg, reached by a blocked single order — so the
+    // sentence was not stale but false, and an agent reading the decision alone
+    // would go and find a person.
+    const result = await previewOf(SELL, { [POSITIONS_PATH]: holding('2.890000') });
+    const data = result.envelope.data as {
+      policy: { decision?: string; detail?: string; approvalToken?: string };
+    };
+
+    expect(data.policy.decision).toBe('WOULD_BE_REFUSED');
+    expect(data.policy.detail ?? '').toMatch(/cannot be placed as described/u);
+    expect(data.policy.detail ?? '', 'the batch sentence must not reach a single order').not.toMatch(
+      /batch/u,
+    );
+    expect(data.policy.approvalToken).toBeUndefined();
+  });
+
   it('refuses to approve a SELL of a position the account does not hold', async () => {
     const result = await previewOf(SELL, { [POSITIONS_PATH]: { status: 200, body: { positions: [], nextCursor: null } } });
     const data = result.envelope.data as { feasibility: { blocking: string[] }; policy: { approvalToken?: string } };
@@ -1396,6 +1415,22 @@ describe('order execute-many is never atomic', () => {
         reserved: '30',
         committed: '10',
       });
+    });
+
+    it('reports the settled total, not the one it reserved', async () => {
+      // The response said 30 beside an audit line that had already reduced it to
+      // 10. The ledger was right and the answer was one step behind, so an agent
+      // reading the response believed 20 wxUSD of budget was gone that was not —
+      // the exact wrong conclusion this fix exists to prevent.
+      const ledgers = createMemoryLedgers();
+      const result = await oneGoodLeg(ledgers);
+      const policy = (result.envelope.data as { policy: { cumulativeBuy: { authorizedUnderScope: string } } }).policy;
+
+      expect(policy.cumulativeBuy.authorizedUnderScope).toBe('10');
+      // And it agrees with the ledger, which is the only authority on it.
+      expect(policy.cumulativeBuy.authorizedUnderScope).toBe(
+        ledgers.spend.total(scopeDigest(parsedScope())),
+      );
     });
 
     it('leaves the ceiling able to take what the unsent leg was holding', async () => {

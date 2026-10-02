@@ -65,7 +65,13 @@ const STEPS: readonly AgentSkillStep[] = [
     id: 'READ_THE_RULES',
     title: 'Read the shipped rules first',
     body: [
-      'After `npm install`, the operating rules are on disk at `node_modules/@waterx/predict-agent-sdk/AGENT_INSTRUCTIONS.md`. Read them before anything else. They are not background: each rule is a refusal you would otherwise meet with money in flight.',
+      // Beside this file, not at a path. The path named one install shape — the
+      // SDK package by name — and the documented setup installs the REPOSITORY,
+      // where there is no `node_modules/@waterx/predict-agent-sdk/` at all. So the
+      // first instruction an agent is given was a file it could not open, and
+      // this document already said the right thing further down: shipped beside
+      // this file, which is where it is in every shape.
+      'The operating rules are in `AGENT_INSTRUCTIONS.md`, shipped beside this file. Read them before anything else. They are not background: each rule is a refusal you would otherwise meet with money in flight.',
       'For the exact shape of a call, use the SDK\'s own types — its `.d.ts` IS the contract as your compiler sees it. `@waterx/predict-agent-schema` publishes the same contract as plain JSON for a surface that cannot import a Node module, but the SDK does not depend on it, so `node_modules/@waterx/predict-agent-schema/agent-commands.json` exists only if you installed it too. Check before you read it.',
       'If `waterx-predict` is on PATH, `waterx-predict describe` and `waterx-predict command-schema` are the authoritative answer for THIS build and outrank any document, including this one.',
       'Holding the CLI, the rest of this route is one loop: run `waterx-predict next --json`, do what it says, run it again. It stops you where a person has to act and names them (`NEXT_IS_A_ROUTE_NOT_A_MANDATE`); the steps below are what its states mean.',

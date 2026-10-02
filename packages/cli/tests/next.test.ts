@@ -1129,14 +1129,25 @@ describe('a command printed from inside an npx invocation', () => {
    * moment it needed to be false, which is why the local-install tests passed:
    * they modelled "does not resolve" and not "resolves, in there".
    */
+  const bareIn = (document: string): string[] =>
+    [...document.matchAll(/(?<!npx --no )(?<![\w/.-])waterx-predict(?:-keystore)? [a-z]/gu)].map((m) => m[0]);
+
   it('prints no bare invocation anywhere in the answer', async () => {
     const result = await invoke(['next'], { env: {}, cliOnPath: 'local' });
     const document = JSON.stringify(result.stdout);
     // Every mention must carry the prefix. Checked over the WHOLE answer rather
     // than over the suggestions, because the defect was prose that no structured
     // field passed through.
-    const bare = [...document.matchAll(/(?<!npx --no )(?<![\w/.-])waterx-predict(?:-keystore)? [a-z]/gu)];
-    expect(bare.map((m) => m[0]), document.slice(0, 400)).toEqual([]);
+    expect(bareIn(document), document.slice(0, 400)).toEqual([]);
+  });
+
+  it('and not in `meta.nextCommand`, which rides on every answer', async () => {
+    // A second command, because the first version of this test checked only
+    // `next` — and `next` names its own `nextCommand`, so the bare DEFAULT was
+    // invisible to it. Every command that does not name one carried it, which is
+    // most of them, on the field a tool host reads every time.
+    const result = await invoke(['market', 'get', '--marketId', 'wxp1.bad'], { env: {}, cliOnPath: 'local' });
+    expect(bareIn(JSON.stringify(result.stdout))).toEqual([]);
   });
 
   it('still prints the bare name for a global install', async () => {
