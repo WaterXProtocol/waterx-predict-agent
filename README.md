@@ -214,7 +214,7 @@ setup step. The SDK library still requires a deployment to be named.
 - [`docs/adr/`](docs/adr) — binding architecture decisions.
 - [`docs/AGENT_INSTALLATION_AND_RUNTIME_PLAN.md`](docs/AGENT_INSTALLATION_AND_RUNTIME_PLAN.md)
   — the planning narrative. Never evidence that something exists.
-- [`AGENTS.md`](AGENTS.md) — working rules for coding agents in this repository.
+- [`CLAUDE.md`](CLAUDE.md) — working rules for coding agents in this repository (`AGENTS.md` is a symlink to it; each `packages/<pkg>/CLAUDE.md` adds that package's rules).
 
 ## Safety
 

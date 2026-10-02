@@ -1,0 +1,18 @@
+name: harness
+
+# The coding-agent files (CLAUDE.md at the root and in each package, the
+# AGENTS.md symlinks Codex reads, .codex/config.toml, docs/knowledge-hub) are
+# read by every agent session; this keeps them in the shape both tools load.
+# Shell only — no install, so it runs in seconds.
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  layout:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/agent-hooks/check-harness.sh
