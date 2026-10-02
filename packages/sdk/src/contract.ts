@@ -892,7 +892,18 @@ export type PredictMarketStatus = 'PREGAME' | 'IN_PLAY' | 'CLOSED' | 'RESOLVED';
  */
 export interface PredictMarketOutcome {
   outcomeId: PredictOutcomeId;
+  /**
+   * What this outcome resolves to, in words.
+   *
+   * The catalog's own side key where it says something — and rendered from the
+   * market's predicate where it does not, because the keys for a threshold market
+   * are `up` and `down` and YES is `up` on a market asking whether a price
+   * *dipped*. A reader who takes `up` for "the price went up" has it exactly
+   * backwards, and `sideKey` keeps the raw value so nothing is lost.
+   */
   name: string;
+  /** The catalog's own key for this side, when it has one. Never interpreted. */
+  sideKey?: string;
   /** Mid-market, derived from bid/ask. Null when either side is missing. */
   impliedProbability: PriceString | null;
   indicativeBid: PriceString | null;

@@ -1481,3 +1481,89 @@ describe('a hub in the search results', () => {
     expect(followed).toBeLessThanOrEqual(6);
   });
 });
+
+/**
+ * What a person reads, when the catalog gives no sentence.
+ *
+ * Half the tradeable catalog has a null `title` AND a null `display.question` —
+ * every crypto threshold market does — so half of what was shown was
+ * `btc-dip-45000-y-2026`, and an agent relaying it was relaying an identifier as
+ * a question. Worse for the outcome: the side keys are `up` and `down`, and YES is
+ * `up` on a market asking whether a price *dipped*, so a reader who takes `up` for
+ * "the price went up" has it exactly backwards.
+ *
+ * Everything here is RENDERED from fields the catalog supplies. Nothing is
+ * composed about a shape the server did not describe, and an unknown operator or a
+ * missing field yields no rendering at all — the slug is a poor title but it cannot
+ * be misread as a statement of what the market asks.
+ */
+describe('a market with no title of its own', () => {
+  const thresholdMarket = (over: Record<string, unknown> = {}) => ({
+    kind: 'market',
+    market: {
+      id: 'cat-t',
+      slug: 'btc-dip-45000-y-2026',
+      title: null,
+      category: 'crypto',
+      display: { kind: 'crypto', ticker: 'BTCUSD', predicate: { kind: 'threshold', op: 'lte', target: 45000, window: 'year' }, ...over },
+    },
+    nextRound: round,
+  });
+  const listed = async (item: unknown) => {
+    const { client } = setup({
+      overrides: { 'GET predict/browse': () => ({ data: { items: [item], nextCursor: null } }) },
+    });
+    return (await client.getMarkets({ limit: 5 })).markets[0];
+  };
+
+  it('renders the question from its own predicate', async () => {
+    expect((await listed(thresholdMarket()))?.title).toBe(
+      'Will BTCUSD be at or below 45,000 at any point this year?',
+    );
+  });
+
+  it('names the outcome by what it resolves to, and keeps the raw key', async () => {
+    const market = await listed(thresholdMarket());
+    const yes = market?.outcomes.find((o) => o.outcomeId === 'YES');
+    expect(yes?.name).toBe('BTCUSD at or below 45,000 at any point this year');
+    // Nothing is lost: `up` is what the catalog says, and it stays sayable.
+    expect(yes?.sideKey).toBe('up');
+    expect(market?.outcomes.find((o) => o.outcomeId === 'NO')?.name).toContain('NOT');
+  });
+
+  it('fills the blank the catalog left, when it left one', async () => {
+    // `metricLabel` is a template and `optionName` is this leg's value for it. The
+    // `__` is there for exactly this substitution; both halves are the server's.
+    const market = await listed(
+      thresholdMarket({
+        ticker: undefined,
+        metricLabel: 'Will Anthropic’s valuation hit __ by December 31?',
+        optionName: '↑$2.5T',
+      }),
+    );
+    expect(market?.title).toBe('Will Anthropic’s valuation hit ↑$2.5T by December 31?');
+    expect(market?.outcomes.find((o) => o.outcomeId === 'YES')?.name).toBe('↑$2.5T');
+  });
+
+  it('falls back to the slug rather than rendering half a question', async () => {
+    // An operator this does not know, and a window this does not know. Each must
+    // yield NO rendering: a sentence missing its comparison or its deadline reads
+    // as a complete question about something else.
+    for (const broken of [{ op: 'between' }, { window: 'fortnight' }, { target: 'soon' }]) {
+      const market = await listed(
+        thresholdMarket({ predicate: { kind: 'threshold', op: 'lte', target: 45000, window: 'year', ...broken } }),
+      );
+      expect(market?.title, JSON.stringify(broken)).toBe('btc-dip-45000-y-2026');
+    }
+  });
+
+  it('leaves a market that HAS a title alone', async () => {
+    // The guard. A rendering must never displace what the venue wrote.
+    const market = await listed({
+      kind: 'market',
+      market: { id: 'c', slug: 's', title: 'Will the U.S. invade Iran?', category: 'politics', display: { kind: 'crypto', ticker: 'X', predicate: { kind: 'threshold', op: 'lte', target: 1, window: 'year' } } },
+      nextRound: round,
+    });
+    expect(market?.title).toBe('Will the U.S. invade Iran?');
+  });
+});

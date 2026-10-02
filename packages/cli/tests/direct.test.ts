@@ -920,3 +920,47 @@ describe('direct mode', () => {
     expect(result.signerRuns).toHaveLength(0);
   });
 });
+
+describe('what an adopted account is the default for', () => {
+  /**
+   * `account positions` took the adopted account and `order preview` did not.
+   *
+   * The default-filling read the ROOT `properties`, and `order.preview` and
+   * `order.execute` declare a bare `oneOf` — one order, or a batch — so the root
+   * has none and the default was never applied. An agent that had just adopted an
+   * account still had to name it to preview an order, which is the one command
+   * where naming it is most likely to be a copy of something it already knows.
+   */
+  it('fills the account into an order it did not name', async () => {
+    const { run } = setup();
+    // `next` adopts, as it does on a first run with one authorized account.
+    await run(['next']);
+
+    const marketId = await resolveMarket(run);
+    const { accountId: _omitted, ...withoutAccount } = buy(marketId);
+    const preview = await run(['order', 'preview', '--input', JSON.stringify(withoutAccount)]);
+
+    expect(preview.envelope.ok, JSON.stringify(preview.envelope.error)).toBe(true);
+    // And it SAYS it filled it: a default applied silently is a value nobody
+    // chose appearing in an order.
+    expect(preview.envelope.meta?.defaultsApplied).toMatchObject({ accountId: ACCOUNT_ID });
+  });
+
+  it('leaves a batch alone, because each leg carries its own', async () => {
+    // The guard, and the reason this is not an unconditional fill: the batch
+    // variant declares no `accountId`, and these schemas set
+    // `additionalProperties: false`, so adding one would make a good batch
+    // invalid. A variant is applicable only when it declares every key supplied.
+    const { run } = setup();
+    await run(['next']);
+
+    const marketId = await resolveMarket(run);
+    const batch = { orders: [buy(marketId), buy(marketId)] };
+    const preview = await run(['order', 'preview', '--input', JSON.stringify(batch)]);
+
+    expect(preview.envelope.ok, JSON.stringify(preview.envelope.error)).toBe(true);
+    expect((preview.envelope.meta?.defaultsApplied ?? {}) as Record<string, unknown>).not.toHaveProperty(
+      'accountId',
+    );
+  });
+});

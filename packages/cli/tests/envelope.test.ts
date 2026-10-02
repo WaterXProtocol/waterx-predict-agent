@@ -50,7 +50,9 @@ describe('the stdout envelope', () => {
     expect(result.stderr).toContain('Usage: waterx-predict');
     expect(result.stdout).not.toContain('Usage:');
     // Parses cleanly: the whole stream is the document, with no banner around it.
-    expect(result.envelope.ok).toBe(false);
+    // `ok: true` now — the stream separation is what this test is about, and help
+    // being a success rather than a usage error is asserted where that belongs.
+    expect(result.envelope.ok).toBe(true);
   });
 
   it('carries a request id that ties stdout to stderr', async () => {
