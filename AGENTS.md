@@ -119,8 +119,10 @@ A task is complete only when:
 
 ## System boundaries and sources of truth
 
-This SDK is one part of a multi-repository system. Resolve sibling paths from the common parent
-directory of the checkouts rather than hard-coding a developer's home path.
+This SDK is one part of a multi-repository system. When a change here makes a waterx-commons
+handbook page, architecture map or plugin skill wrong, name it in your summary; fix it in
+waterx-commons only when asked. Resolve sibling paths from the common parent directory of the
+checkouts rather than hard-coding a developer's home path.
 
 | Concern | Source of truth | This repository's role |
 | --- | --- | --- |
