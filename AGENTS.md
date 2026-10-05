@@ -52,6 +52,16 @@ Lessons not already in this file, a package file, the ADRs, or the backlog live 
 before starting work in an unfamiliar area, and add a note when something cost real time that the
 next session would otherwise rediscover.
 
+Shared skills: `.claude/settings.json` enables the waterx-commons plugins waterx-harness
+(`/waterx-harness:adopt-harness-standard`, `/waterx-harness:harness-transform`,
+`/waterx-harness:knowledge-hub-lesson`) and waterx-review (`/waterx-review:waterx-code-review`).
+Claude Code loads them after you accept the workspace-trust prompt, with your own GitHub access to
+the private Bucket-Protocol/waterx-commons (a different organization from this repository, so you
+need read access there as well), and not in cloud sessions; Codex users link them into
+`~/.agents/skills` ([waterx-commons plugins,
+"Codex"](https://github.com/Bucket-Protocol/waterx-commons/tree/main/plugins)). This file and the
+package `AGENTS.md` files win over a plugin skill.
+
 ## Safety and test policy
 
 Never use real private keys, production tokens, mainnet funds, or production order endpoints during
