@@ -7,6 +7,27 @@ layout. This file holds the two sets of rules that apply to the code of every pa
 invariants (the SDK implements them, and the CLI, Runner and adapters must not route around them)
 and the runtime and dependency rules.
 
+## Packages and dependency direction
+
+| Package | Name | What it is |
+| --- | --- | --- |
+| `packages/sdk` | `@waterx/predict-agent-sdk` | Published execution core; owns the vendored wire contract and streaming |
+| `packages/schema` | `@waterx/predict-agent-schema` | Published command contract and validator; generates `schemas/` |
+| `packages/cli` | `@waterx/predict-agent-cli` | `waterx-predict`: reads and writes behind an enforced policy; `private`, ships only as the operator bundle |
+| `packages/runner` | `@waterx/predict-agent-runner` | Durable job store, daemon, scheduler, reconciliation; `private`, Node 24 |
+| `packages/signer-browser` | `@waterx/predict-agent-signer-browser` | Browser-wallet signer process for `interactive`; `private` |
+| `packages/signer-keystore` | `@waterx/predict-agent-signer-keystore` | Unattended keystore signer process for `delegated-auto`; `private` |
+| `packages/adapters` | `@waterx/predict-agent-adapters` | Host-neutral instructions, tool projection, subprocess dispatcher; generates `agent-instructions/`; `private` |
+| `packages/mcp` | `@waterx/predict-agent-mcp` | MCP stdio transport over the adapters, nothing more; `private` |
+| `packages/e2e` | `@waterx/predict-agent-e2e` | Subprocess harness; the only place that spawns processes; has not run; `private` |
+| `packages/release` | `@waterx/predict-agent-release` | SBOM, preflight, consumer installs, the CLI bundle; `private` permanently |
+
+Dependency direction is one-way and enforced by `tests/workspace.test.ts`: the SDK and the schema
+depend on nothing else here, the CLI and Runner depend on both, and adapters depend on the CLI and
+the schema, never the SDK. That is the point of the split — daemon, storage, CLI-parsing and adapter
+dependencies must never reach the published SDK. The two signer packages carry `@mysten/sui`, so
+they are reached as processes and never imported (the test lists them under `PROVIDERS`).
+
 ## Trading invariants
 
 Mistakes here can place duplicate or mispriced orders. Preserve each with an explicit test.
