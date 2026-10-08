@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# waterx-commons/harness/lint/check-harness.sh v1.1.0
+# waterx-commons/harness/lint/check-harness.sh v1.4.0
 #
 # Checks a repository against the WaterX agent-harness standard
 # (Bucket-Protocol/waterx-commons, harness/STANDARD.md). Repos vendor this file as
@@ -19,10 +19,18 @@
 # files (submodule contents excluded); elsewhere it walks the tree minus build directories.
 #
 # Portability: bash 3.2 (macOS /bin/bash) and up; coreutils, find, grep, awk, sed, git.
-# jq is used for hook JSON when present; a grep fallback covers its absence.
+# JSON and .codex/rules are read with awk, so the result is the same with or without jq.
 set -u
 
-VERSION="1.1.0"
+VERSION="1.4.0"
+# Released versions of harness/hooks/lib/shell-segments.sh and their sha256, for check 10.
+# Every release of the segmenter adds a line here (CI fails when the current one is missing).
+KNOWN_SEGMENTERS="
+1.1.0 7123ebaf34af6b32e84576fc293e04a563efc00138854aedcad9f50e0531dc52
+1.2.0 cfddb05f94e0dc0ab68dfff983312dff48f6e7af478ae5f45473b12c02d287d4
+1.2.1 a9a54b5202aeaccaef3fb814dbfd984315169b6ef881c1d0d5721627146eb96b
+1.2.2 3a932c2fa209a6d6b80dd1b5e2a7ea17f110eff1e6551f22eae6b0978817ab1c
+"
 ROOT=""
 HUB=""
 REPORT_ONLY=0
@@ -134,9 +142,10 @@ warn() { # advisory finding
 }
 end_check() { [ $CHECK_FINDINGS -eq 0 ] && printf '    ok\n'; return 0; }
 
-# A directory under .claude/skills or .agents/skills belongs to checks 3/4, not 1, 5 or 7:
-# vendored skill bundles ship their own AGENTS.md / CLAUDE.md, which hide nothing outside the bundle.
-in_skill_tree() { case "$1" in .claude/skills/*|.agents/skills/*|*/.claude/skills/*|*/.agents/skills/*) return 0;; esac; return 1; }
+# A directory under .claude/skills, .agents/skills or a marketplace's plugins/<plugin>/skills (the
+# trees check 4 scans) belongs to checks 3/4, not 1, 5 or 7: vendored skill bundles ship their own
+# AGENTS.md / CLAUDE.md, which hide nothing outside the bundle.
+in_skill_tree() { case "$1" in .claude/skills/*|.agents/skills/*|*/.claude/skills/*|*/.agents/skills/*|plugins/*/skills/*) return 0;; esac; return 1; }
 
 echo "check-harness v$VERSION — root: $ROOT$( [ $REPORT_ONLY -eq 1 ] && printf ' (report-only)')"
 echo
@@ -262,10 +271,12 @@ done
 end_check
 
 # ---------------------------------------------------------------------------------------------
-begin_check 4 "every .claude/skills/*/SKILL.md has a frontmatter description ≤ $DESCRIPTION_LIMIT_CHARS chars" \
+begin_check 4 "every .claude/skills/*/SKILL.md and plugins/*/skills/*/SKILL.md has a frontmatter description ≤ $DESCRIPTION_LIMIT_CHARS chars" \
   "Claude Code loads every skill's description into every session and caps it at 1,536 characters; the body loads only on trigger, so the description is what decides whether the skill fires."
-if [ -d .claude/skills ]; then
-  for s in .claude/skills/*/; do
+# plugins/<plugin>/skills/ is a plugin marketplace's skill tree (waterx-commons itself has one;
+# STANDARD.md rule 15).
+if [ -d .claude/skills ] || ls -d plugins/*/skills >/dev/null 2>&1; then
+  for s in .claude/skills/*/ plugins/*/skills/*/; do
     [ -d "$s" ] || continue
     sk="${s}SKILL.md"
     [ -f "$sk" ] || { fail "$sk: missing"; continue; }
@@ -330,17 +341,139 @@ fi
 end_check
 
 # ---------------------------------------------------------------------------------------------
-begin_check 6 "Claude hooks and ask-permissions have Codex twins" \
-  "A Claude Code hook never runs under Codex. Codex reads .codex/hooks.json with the same schema, so the same scripts should be wired there; a permissions.ask entry needs a .codex/rules prefix_rule with decision=\"prompt\"."
+# JSON and Starlark readers shared by checks 6 and 9. Plain awk, so the result does not depend on
+# whether jq is installed.
+JSON_LEAVES_AWK='
+function ws() { while (i <= n && index(" \t\r\n", substr(s, i, 1))) i++ }
+function pstring(    c, out) {
+  i++; out = ""
+  while (i <= n) {
+    c = substr(s, i, 1)
+    if (c == "\"") { i++; STR = out; return 1 }
+    if (c == "\\") {
+      c = substr(s, i + 1, 1); i += 2
+      if (c == "n") out = out "\\n"; else if (c == "t") out = out "\\t"; else if (c == "r") out = out "\\r"
+      else if (c == "u") { out = out "?"; i += 4 } else if (c == "b" || c == "f") out = out " "
+      else out = out c
+      continue
+    }
+    out = out c; i++
+  }
+  return 0
+}
+function pvalue(path,    c, key, idx, tok) {
+  ws(); c = substr(s, i, 1)
+  if (c == "{") {
+    i++; ws(); if (substr(s, i, 1) == "}") { i++; return 1 }
+    while (1) {
+      ws(); if (substr(s, i, 1) != "\"" || !pstring()) return 0
+      key = STR; ws(); if (substr(s, i, 1) != ":") return 0
+      i++; if (!pvalue(path == "" ? key : path "." key)) return 0
+      ws(); c = substr(s, i, 1); i++
+      if (c == ",") continue
+      return c == "}"
+    }
+  }
+  if (c == "[") {
+    i++; ws(); idx = 0; if (substr(s, i, 1) == "]") { i++; return 1 }
+    while (1) {
+      if (!pvalue(path "." idx)) return 0
+      idx++; ws(); c = substr(s, i, 1); i++
+      if (c == ",") continue
+      return c == "]"
+    }
+  }
+  if (c == "\"") { if (!pstring()) return 0; OUT = OUT path "\t" STR "\n"; return 1 }
+  tok = ""
+  while (i <= n && index("-+.0123456789eEtruefalsn", substr(s, i, 1))) { tok = tok substr(s, i, 1); i++ }
+  if (tok == "") return 0
+  OUT = OUT path "\t" tok "\n"; return 1
+}
+BEGIN {
+  s = ""; cnt = 0
+  while ((getline line) > 0) s = (cnt++ ? s "\n" : "") line
+  n = length(s); i = 1
+  if (!pvalue("")) exit 2
+  ws(); if (i <= n) exit 2
+  printf "%s", OUT
+}'
+json_leaves() { # <file>: "<dotted.path>\t<value>" per scalar leaf; exit 2 on invalid JSON
+  LC_ALL=C awk "$JSON_LEAVES_AWK" < "$1"
+}
+
+# Every prefix_rule(..., decision = "prompt") pattern in the .rules files on stdin, one per line,
+# words space-joined; a list of alternatives inside a pattern expands to one line per choice.
+# harness/hooks/lib/shell-segments.sh carries the same program as SHSEG_PROMPT_RULES_AWK, which the
+# ask hook's Codex mode reads its prefixes with; this lint is vendored alone, so it keeps its own
+# copy. The two must stay identical: check-harness.test.sh fails when their output differs.
+PROMPT_RULES_AWK='
+function addtok(t, v) { NT++; TT[NT] = t; TV[NT] = v }
+function expand(e, prefix,    k, m, parts) {
+  if (e > NE) { print substr(prefix, 2); return }
+  m = split(EL[e], parts, "\034")
+  for (k = 1; k <= m; k++) expand(e + 1, prefix " " parts[k])
+}
+BEGIN {
+  s = ""; while ((getline line) > 0) s = s line "\n"
+  n = length(s); i = 1; NT = 0
+  while (i <= n) {
+    c = substr(s, i, 1)
+    if (index(" \t\r\n", c)) { i++; continue }
+    if (c == "#") { while (i <= n && substr(s, i, 1) != "\n") i++; continue }
+    if (c == "\"" || c == "\047") {
+      q = c; v = ""; i++
+      while (i <= n && substr(s, i, 1) != q) { if (substr(s, i, 1) == "\\") { i++ } v = v substr(s, i, 1); i++ }
+      i++; addtok("S", v); continue
+    }
+    if (c ~ /[A-Za-z_]/) { v = ""; while (i <= n && substr(s, i, 1) ~ /[A-Za-z0-9_]/) { v = v substr(s, i, 1); i++ } addtok("I", v); continue }
+    addtok("P", c); i++
+  }
+  for (t = 1; t <= NT; t++) {
+    if (!(TT[t] == "I" && TV[t] == "prefix_rule" && TV[t + 1] == "(")) continue
+    t += 2; d = 1; key = ""; decision = "allow"; NE = 0; inpat = 0; depth = 0
+    for (; t <= NT && d > 0; t++) {
+      if (TT[t] == "P" && (TV[t] == "(" || TV[t] == "[" || TV[t] == "{")) { d++; if (inpat && TV[t] == "[") { depth++; if (depth == 2) { NE++; EL[NE] = ""; alt = 1 } } continue }
+      if (TT[t] == "P" && (TV[t] == ")" || TV[t] == "]" || TV[t] == "}")) { d--; if (inpat && TV[t] == "]") { depth--; if (depth == 0) inpat = 0 } continue }
+      if (d == 1 && TT[t] == "I" && TV[t + 1] == "=") { key = TV[t]; t++; if (key == "pattern") inpat = 1; continue }
+      if (d == 1 && TT[t] == "S" && key == "decision") { decision = TV[t]; continue }
+      if (inpat && TT[t] == "S") {
+        if (depth == 1) { NE++; EL[NE] = TV[t] }
+        else if (depth == 2) { EL[NE] = EL[NE] (EL[NE] == "" ? "" : "\034") TV[t] }
+      }
+    }
+    t--
+    if (decision == "prompt" && NE > 0) expand(1, "")
+  }
+}'
+
+# A Claude permissions.ask entry as the command prefix it asks for: "Bash(gh workflow run:*)" and
+# "Bash(gh workflow run *)" both become "gh workflow run"; a wildcard inside the last word stays
+# ("Bash(npx tsx scripts/*)" -> "npx tsx scripts/*") and matches Codex patterns by that stem;
+# other tools print nothing.
+claude_ask_prefixes() { # <settings.json>
+  json_leaves "$1" 2>/dev/null | awk -F'\t' '$1 ~ /^permissions\.ask\.[0-9]+$/ { print $2 }' |
+    sed -n 's/^Bash(\(.*\))$/\1/p' | sed 's/:\*$//; s/[[:space:]]\*$//; s/[[:space:]][[:space:]]*/ /g; s/^ //; s/ $//' | grep -v '^$' | sort -u
+}
+codex_prompt_prefixes() { # <rules files...>
+  cat "$@" 2>/dev/null | LC_ALL=C awk "$PROMPT_RULES_AWK" | sed 's/[[:space:]][[:space:]]*/ /g' | sort -u
+}
+hook_commands() { # <json file>: one hook command per line ("<command> <args...>" for exec form)
+  json_leaves "$1" 2>/dev/null | awk -F'\t' '
+    $1 ~ /^hooks\.[^.]+\.[0-9]+\.hooks\.[0-9]+\.command$/ { k = $1; sub(/\.command$/, "", k); order[++n] = k; cmd[k] = $2 }
+    $1 ~ /^hooks\.[^.]+\.[0-9]+\.hooks\.[0-9]+\.args\.[0-9]+$/ { k = $1; sub(/\.args\.[0-9]+$/, "", k); args[k] = args[k] " " $2; exec[k] = 1 }
+    END { for (j = 1; j <= n; j++) print (exec[order[j]] ? "EXEC" : "SHELL") "\t" cmd[order[j]] args[order[j]] }'
+}
+
+begin_check 6 "Claude hooks and ask-permissions have Codex twins (same scripts; the same set of prompted command prefixes)" \
+  "A Claude Code hook never runs under Codex. Codex reads .codex/hooks.json with the same schema, so the same scripts should be wired there; the Bash prefixes in permissions.ask and the prefix_rule(..., decision=\"prompt\") patterns in .codex/rules must be the same set, or a command needs a human in one tool and runs silently in the other."
 hook_scripts() { # <json file>: basenames of the scripts hook commands run
   # The script is the first word that is a path (`bash scripts/x.sh` -> x.sh), else the first word.
-  if command -v jq >/dev/null 2>&1; then
-    jq -r '.hooks // {} | to_entries[] | .value[]? | .hooks[]? | .command? // empty' "$1" 2>/dev/null
-  else
-    grep -o '"command"[[:space:]]*:[[:space:]]*"\([^"\\]\|\\.\)*"' "$1" | sed 's/^"command"[[:space:]]*:[[:space:]]*"//; s/"$//'
-  fi | sed 's/\\"//g; s/"//g' |
+  hook_commands "$1" | cut -f2- | sed 's/\\"//g; s/"//g' |
     awk '{ w = $1; for (i = 1; i <= NF; i++) if ($i ~ /\//) { w = $i; break }; n = split(w, p, "/"); if (p[n] != "") print p[n] }' | sort -u
 }
+for jf in .claude/settings.json .codex/hooks.json; do
+  if [ -f "$jf" ] && ! json_leaves "$jf" >/dev/null 2>&1; then fail "$jf: not valid JSON"; fi
+done
 if [ -f .claude/settings.json ]; then
   claude_hooks=$(hook_scripts .claude/settings.json)
   if [ -n "$claude_hooks" ]; then
@@ -359,17 +492,34 @@ if [ -f .claude/settings.json ]; then
       done
     fi
   fi
-  if command -v jq >/dev/null 2>&1; then
-    asks=$(jq -r '.permissions.ask[]? // empty' .claude/settings.json 2>/dev/null)
-  else
-    asks=$(tr -d '\n' < .claude/settings.json | grep -o '"ask"[[:space:]]*:[[:space:]]*\[[[:space:]]*"' 2>/dev/null)
-  fi
-  if [ -n "$asks" ]; then
-    if ! ls .codex/rules/*.rules >/dev/null 2>&1 || ! grep -qs 'decision[[:space:]]*=[[:space:]]*"prompt"' .codex/rules/*.rules; then
-      msg=".codex/rules/*.rules: no prefix_rule(..., decision=\"prompt\") twin for permissions.ask in .claude/settings.json"
-      if git_ignored .codex/rules/x.rules; then warn "$msg (.codex/ is git-ignored here)"; else fail "$msg"; fi
+fi
+asks=""; [ -f .claude/settings.json ] && asks=$(claude_ask_prefixes .claude/settings.json)
+rules=$(ls .codex/rules/*.rules 2>/dev/null)
+prompts=""; [ -n "$rules" ] && prompts=$(codex_prompt_prefixes $rules)
+if [ -n "$asks" ] || [ -n "$prompts" ]; then
+  rules_ignored=0; git_ignored .codex/rules/x.rules && rules_ignored=1
+  # side<TAB>prefix for each prefix missing on the other side; "word*" on the Claude side matches by stem.
+  diff_sets=$(
+    { printf '%s\n' "$asks" | awk 'NF { print "A\t" $0 }'; printf '%s\n' "$prompts" | awk 'NF { print "C\t" $0 }'; } |
+      awk -F'\t' '
+        $1 == "A" { na++; a[na] = $2 } $1 == "C" { nc++; c[nc] = $2 }
+        function covers(x, y,    stem) { if (x == y) return 1; if (x ~ /\*$/) { stem = substr(x, 1, length(x) - 1); return substr(y, 1, length(stem)) == stem } return 0 }
+        END {
+          for (i = 1; i <= na; i++) { f = 0; for (j = 1; j <= nc; j++) if (covers(a[i], c[j])) f = 1; if (!f) print "A\t" a[i] }
+          for (j = 1; j <= nc; j++) { f = 0; for (i = 1; i <= na; i++) if (covers(a[i], c[j])) f = 1; if (!f) print "C\t" c[j] }
+        }')
+  # Every "A" line (an ask without a prompt rule) comes before the "C" lines (the reverse).
+  while IFS="$(printf '\t')" read -r side p; do
+    [ -n "$p" ] || continue
+    if [ "$side" = A ]; then
+      msg=".codex/rules: no prefix_rule(pattern = [$(printf '%s' "$p" | awk '{ for (i = 1; i <= NF; i++) printf "%s\"%s\"", (i > 1 ? ", " : ""), $i }')], decision = \"prompt\") for permissions.ask \"Bash($p:*)\""
+      if [ $rules_ignored -eq 1 ]; then warn "$msg (.codex/ is git-ignored here)"; else fail "$msg"; fi
+    else
+      fail ".claude/settings.json: no permissions.ask \"Bash($p:*)\" for the Codex prompt rule [$p]"
     fi
-  fi
+  done <<EOF
+$diff_sets
+EOF
 fi
 end_check
 
@@ -394,10 +544,8 @@ while IFS= read -r f; do
   while IFS="$(printf '\t')" read -r ln s; do
     [ -n "$s" ] || continue
     case "$s" in *'*'*|*'<'*|*'>'*|*'{'*|*'$'*) continue;; esac
-    # Skip things that are not paths even though they look like one: versions, domains.
-    case "$s" in *.app|*.com|*.io|*.dev|*.org|*.net) continue;; esac
-    printf '%s' "$s" | grep -Eq '^[0-9]+(\.[0-9]+)+' && continue
-    # A bare name (`index.ts`, `knex.raw`) is as often a convention or an identifier as a file.
+    # A bare name (`index.ts`, `knex.raw`) is as often a convention or an identifier as a file;
+    # versions (`1.2.3`) and domains (`api.waterx.app`) have no slash, so this skips them too.
     case "$s" in */*) ;; *) continue ;; esac
     # Paths into build trees (node_modules/..., .next/) and submodules are outside this tree.
     first=${s%%/*}; skip=0; for pd in $PRUNE_DIRS; do [ "$first" = "$pd" ] && skip=1; done; [ $skip -eq 1 ] && continue
@@ -427,6 +575,111 @@ if [ ! -f "$HUB/README.md" ]; then
   else
     fail "$HUB/README.md: missing (copy harness/templates/docs/knowledge-hub/README.md from waterx-commons, or pass --hub <dir> when the hub lives elsewhere)"
   fi
+fi
+end_check
+
+# ---------------------------------------------------------------------------------------------
+begin_check 9 "hook commands resolve their scripts from the repository root" \
+  "Both tools run a hook in the session's working directory, which is a subdirectory whenever the session starts in one, so a relative script path exits 127 and the hook silently does nothing. Claude Code documents \${CLAUDE_PROJECT_DIR} (\"the project root where the session started\"; double-quoted in shell form, https://code.claude.com/docs/en/hooks); Codex documents \"\$(git rev-parse --show-toplevel)\" for repo-local hooks (https://learn.chatgpt.com/docs/hooks)."
+# relative_words <command>: words that name a repository-relative path (contain a slash, do not
+# start with /, ~, $ or a quote, and are not an option or URL).
+relative_words() {
+  printf '%s\n' "$1" | sed 's/\$([^)]*)/ROOT/g' | tr ' ' '\n' | sed "s/^[\"']//; s/[\"']\$//" |
+    awk '/\// && $0 !~ /^(\/|~|\$|ROOT|-|[a-z]+:\/\/)/ { print }'
+}
+check_hook_roots() { # <file> <tool>
+  local f=$1 tool=$2 kind cmd rel
+  [ -f "$f" ] || return 0
+  while IFS="$(printf '\t')" read -r kind cmd; do
+    [ -n "$cmd" ] || continue
+    rel=$(relative_words "$cmd" | head -1)
+    if [ "$tool" = claude ]; then
+      if [ -n "$rel" ]; then
+        fail "$f: hook command \"$cmd\" runs $rel relative to the session cwd; write \"\$CLAUDE_PROJECT_DIR/$rel\" (or \${CLAUDE_PROJECT_DIR} in exec form)"
+      elif printf '%s' "$cmd" | grep -q 'git rev-parse --show-toplevel'; then
+        fail "$f: hook command \"$cmd\" resolves the root with git; Claude Code documents \$CLAUDE_PROJECT_DIR, which also works outside a git checkout"
+      elif [ "$kind" = SHELL ] && printf '%s' "$cmd" | grep -q 'CLAUDE_PROJECT_DIR' && ! printf '%s' "$cmd" | grep -q '"\${\{0,1\}CLAUDE_PROJECT_DIR'; then
+        fail "$f: hook command \"$cmd\" leaves \$CLAUDE_PROJECT_DIR unquoted; a project path with a space splits it (wrap it in double quotes)"
+      fi
+    else
+      if [ -n "$rel" ]; then
+        fail "$f: hook command \"$cmd\" runs $rel relative to the session cwd; write \"\$(git rev-parse --show-toplevel)/$rel\""
+      elif printf '%s' "$cmd" | grep -q 'CLAUDE_PROJECT_DIR'; then
+        fail "$f: hook command \"$cmd\" uses \$CLAUDE_PROJECT_DIR, which Codex does not set; write \"\$(git rev-parse --show-toplevel)/...\""
+      fi
+    fi
+  done <<EOF
+$(hook_commands "$f")
+EOF
+}
+check_hook_roots .claude/settings.json claude
+check_hook_roots .codex/hooks.json codex
+end_check
+
+# ---------------------------------------------------------------------------------------------
+begin_check 10 "a vendored scripts/agent-hooks/lib/shell-segments.sh is a released version, unedited (advisory)" \
+  "Hooks in every repo classify commands through the same segmenter (STANDARD.md rule 12); a copy that says one version and holds other code makes two repos with the same version line behave differently."
+seg=scripts/agent-hooks/lib/shell-segments.sh
+sha256_of() {
+  if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | awk '{ print $1 }'
+  elif command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{ print $1 }'
+  elif command -v openssl >/dev/null 2>&1; then openssl dgst -sha256 "$1" | awk '{ print $NF }'
+  fi
+}
+if [ -f "$seg" ]; then
+  seg_v=$(sed -n '2p' "$seg" | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+$' | sed 's/^v//')
+  seg_sha=$(sha256_of "$seg")
+  released=$(printf '%s\n' "$KNOWN_SEGMENTERS" | awk 'NF == 2 { printf "%sv%s", (n++ ? ", " : ""), $1 }')
+  want=$(printf '%s\n' "$KNOWN_SEGMENTERS" | awk -v v="$seg_v" 'NF == 2 && $1 == v { print $2 }')
+  if [ -z "$seg_v" ]; then
+    warn "$seg: no version line on line 2; re-vendor a released copy ($released)"
+  elif [ -z "$want" ]; then
+    warn "$seg: v$seg_v is not a released version (this lint knows $released); re-vendor it from waterx-commons"
+  elif [ -z "$seg_sha" ]; then
+    printf '    note: no sha256 tool found; %s content not compared\n' "$seg"
+  elif [ "$seg_sha" != "$want" ]; then
+    warn "$seg: says v$seg_v but its content differs from the released v$seg_v (sha256 $seg_sha); re-vendor it unchanged"
+  fi
+fi
+end_check
+
+# ---------------------------------------------------------------------------------------------
+begin_check 11 "no .claude/settings.local.json is committed" \
+  "settings.local.json holds one person's overrides and the approvals Claude Code saves on \"don't ask again\"; committed, it grants those permissions to everyone who clones the repo (STANDARD.md rule 14)."
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  tracked_local=$(git -c core.quotepath=off ls-files --cached -- 'settings.local.json' '*/settings.local.json' 2>/dev/null)
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    case "$f" in .claude/settings.local.json|*/.claude/settings.local.json) ;; *) continue ;; esac
+    if printf '%s\n' "$tracked_local" | grep -qxF "$f"; then
+      fail "$f: is tracked by git; remove it from the index (git rm --cached $f) and keep it local; Claude Code keeps it out of git only when it creates the file itself"
+    else
+      warn "$f: untracked but not ignored, so 'git add -A' would commit it; report the .gitignore line the team should add"
+    fi
+  done <<EOF
+$(git -c core.quotepath=off ls-files --cached --others --exclude-standard -- 'settings.local.json' '*/settings.local.json' 2>/dev/null)
+EOF
+fi
+end_check
+
+# ---------------------------------------------------------------------------------------------
+begin_check 12 "root AGENTS.md carries the six root parts of STANDARD.md §4 (advisory)" \
+  "Layout, scope, authorisation, multi-repo, memory and grounding each came from an incident or near miss; a root file without one leaves that rule unsaid. Wording may be adapted, so a miss is advisory: mark a reworded or translated part with <!-- harness: <part> --> on any of its lines."
+if [ -f AGENTS.md ] && [ ! -L AGENTS.md ]; then
+  # Joined to one lowercase line, so a phrase wrapped across lines still matches.
+  root_text=$(tr '\n' ' ' < AGENTS.md | tr -s ' ' | tr '[:upper:]' '[:lower:]')
+  for part in \
+    'layout|do not add a claude\.md|ignores every agents\.md' \
+    'scope|sets the scope|report and stop|deliverable is your findings' \
+    'authorisation|covers the one action|is not approval to' \
+    'multi-repo|one part of the waterx system|sibling checkout' \
+    'memory|knowledge-hub|knowledge hub' \
+    'grounding|tool result from this session|what is unverified'; do
+    name=${part%%|*}; pat=${part#*|}
+    if ! printf '%s' "$root_text" | grep -Eq -- "$pat|<!-- *harness: *$name *-->"; then
+      warn "AGENTS.md: no $name part (STANDARD.md §4); add it, or mark a reworded one with <!-- harness: $name -->"
+    fi
+  done
 fi
 end_check
 
